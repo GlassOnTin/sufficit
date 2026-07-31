@@ -357,6 +357,66 @@ def test_blackbox_agrees_with_analytic_fmm():
         <= bb_stats["max_bound"] + eps + 1e-12
 
 
+def _ising_torus_logZ_density_tm(m, betaJ):
+    """Exact log Z / N for the m x m periodic Ising lattice, weight
+    exp(betaJ * sum s_i s_j), via row transfer matrix."""
+    s = np.arange(2 ** m, dtype=np.uint64)
+    rot = (s >> np.uint64(1)) | ((s & np.uint64(1)) << np.uint64(m - 1))
+    intra = m - 2 * np.bitwise_count(s ^ rot).astype(float)
+    inter = m - 2 * np.bitwise_count(s[:, None] ^ s[None, :]).astype(float)
+    A = np.exp(betaJ * intra)[:, None] * np.exp(betaJ * inter)
+    return math.log(np.trace(np.linalg.matrix_power(A, m))) / (m * m)
+
+
+def test_ising_transfer_matrix_matches_exhaustive():
+    """Validate the truth generator itself on the 4x4 torus (2^16 states)."""
+    m = 4
+    bits = (np.arange(2 ** 16)[:, None] >> np.arange(16)[None, :]) & 1
+    spins = 1 - 2 * bits.astype(float)          # site (x, y) -> bit 4*x + y
+    energy = np.zeros(2 ** 16)
+    for x in range(m):
+        for y in range(m):
+            i = 4 * x + y
+            energy += spins[:, i] * (spins[:, 4 * ((x + 1) % m) + y]
+                                     + spins[:, 4 * x + (y + 1) % m])
+    for bJ in (0.005, 0.3):
+        exact = math.log(np.sum(np.exp(bJ * energy))) / 16
+        assert abs(_ising_torus_logZ_density_tm(m, bJ) - exact) < 1e-12
+
+
+def test_ising_cycle_enumeration():
+    """Anchored simple cycles on Z^2: one square and two dominoes below 8
+    edges; longer cycles appear once the cap is raised."""
+    assert sorted(sf._ising2d_anchored_cycles(7)) == [4, 6, 6]
+    assert len(sf._ising2d_anchored_cycles(11)) > 3
+
+
+def test_ising_cluster_expansion_certified():
+    """Phase 2: certified free-energy density inside the high-temperature
+    region, verified against the exact 10x10 transfer matrix (the bound
+    covers every m x m torus with m >= 8)."""
+    for bJ in (0.001, 0.005, 0.012):
+        truth = _ising_torus_logZ_density_tm(10, bJ)
+        c = sf.ising2d_logZ_density(bJ)
+        assert abs(c.value - truth) <= c.err * (1 + 1e-9) + 1e-15
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    # deep inside the region the certificate is tight enough to be useful
+    c = sf.ising2d_logZ_density(0.001, tol=1e-9)
+    assert c.err <= 1e-9
+    # beta = 0 is exact
+    c0 = sf.ising2d_logZ_density(0.0)
+    assert c0.value == pytest.approx(math.log(2.0)) and c0.err == 0.0
+
+
+def test_ising_refuses_outside_certified_region():
+    """The first rewrite with a validity region: outside the certified
+    convergence radius it must refuse, not extrapolate."""
+    with pytest.raises(ValueError):
+        sf.ising2d_logZ_density(0.1)          # beyond the certified radius
+    with pytest.raises(ValueError):
+        sf.ising2d_logZ_density(0.012, tol=1e-12)   # tol unreachable at L=8
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

@@ -553,3 +553,75 @@ class BlackboxHMatrix:
                          (f"blackbox-hmatrix far={len(self.far)} "
                           f"near={len(self.near)}",), self.fail_p)
         return cert, stats
+
+
+# ------------------------------------------------------------- Phase 2:
+# Gibbs-state observables via certified high-temperature cluster expansion.
+# 2D Ising, square lattice, weight exp(betaJ * sum s_i s_j). The tanh
+# expansion maps Z onto a polymer gas of connected even subgraphs with
+# weight t^|edges|, t = tanh(betaJ), compatibility = vertex-disjointness.
+# The Kotecky-Preiss condition (per-vertex form via a ghost polymer, cf.
+# Friedli-Velenik Thm 5.4) with the rigorous walk-encoding count
+# (# connected n-edge subgraphs through a vertex <= Delta^2n, Delta = 4)
+# gives: for x_s = t e^(1+s) * 16 with x_s^4/(1-x_s) <= 1, the cluster
+# terms of size >= L sum below e^(-s L) per site. This is the first
+# rewrite with a VALIDITY REGION: outside it, refuse.
+# Order cap L = 8: below 8 edges the only clusters are single polymers
+# that are simple cycles (pairs enter at 4+4, non-cycle polymers at 8),
+# so no Ursell machinery is needed yet. Raising the cap requires union
+# polymers and pair clusters. The Delta^2n count is ~26x conservative in
+# beta (certified radius betaJ < ~0.0167 vs true ~0.44); tightening the
+# subgraph count is the named improvement path.
+
+
+def _ising2d_anchored_cycles(max_edges):
+    """Edge counts of simple cycles on Z^2 whose lexicographically minimal
+    vertex is the origin, each counted once, up to max_edges edges."""
+    found = []
+
+    def extend(path, seen):
+        x, y = path[-1]
+        for nxt in ((x + 1, y), (x, y + 1), (x - 1, y), (x, y - 1)):
+            if nxt == (0, 0) and len(path) >= 3:
+                if path[1] < path[-1]:      # one orientation per cycle
+                    found.append(len(path))
+                continue
+            if nxt in seen or nxt < (0, 0) or len(path) >= max_edges:
+                continue
+            extend(path + [nxt], seen | {nxt})
+
+    extend([(0, 0)], {(0, 0)})
+    return found
+
+
+def ising2d_logZ_density(beta: float, J: float = 1.0,
+                         tol: float = None) -> Certified:
+    """Phase 2 rewrite: log Z per site for the 2D Ising model at inverse
+    temperature beta, certified by the cluster-expansion tail. Valid for
+    every m x m torus with m >= 8 and for the thermodynamic limit.
+    Raises outside the certified high-temperature region, or when the
+    requested tol is unreachable at the order cap."""
+    t = math.tanh(beta * J)
+    if t == 0.0:
+        return Certified(math.log(2.0), 0.0, Tier.RIGOROUS,
+                         ("ising2d-cluster t=0 exact",))
+    lo, hi = 0.0, 1.0                       # y* solves y^4 + y = 1
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if mid**4 + mid < 1 else (lo, mid)
+    t_max = lo / (math.e * 16)
+    if abs(t) >= t_max:
+        raise ValueError(
+            f"|tanh(beta J)|={abs(t):.4g} >= {t_max:.4g}: outside the "
+            "certified high-temperature region (KP with Delta^2n counting)")
+    L = 8
+    s = math.log(lo / (abs(t) * math.e * 16))
+    err = math.exp(-L * s)
+    if tol is not None and err > tol:
+        raise ValueError(f"certified tail {err:.3g} exceeds tol={tol:.3g} "
+                         "at this temperature (order cap L=8)")
+    f = math.log(2.0) + 2.0 * math.log(math.cosh(beta * J)) \
+        + sum(t**n for n in _ising2d_anchored_cycles(L - 1))
+    return Certified(f, err, Tier.RIGOROUS,
+                     (f"ising2d-cluster L={L} s={s:.3g} t={t:.4g} "
+                      "[Kotecky-Preiss]",))
