@@ -1670,3 +1670,139 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
                      Tier.RIGOROUS,
                      (f"chain-bracket marginal-lower ell={ell} N={N} "
                       f"iters={correction_iters} product-upper",))
+
+
+# ------------------------------------------- molecular-integrals pipeline:
+# the energy bracket on an actual molecule. H2 in STO-3G needs only
+# s-type Gaussian integrals, which have complete closed forms via the
+# Boys function — fully self-contained (no quantum-chemistry package;
+# the only external data is the published STO-3G hydrogen basis,
+# Hehre-Stewart-Pople). Second quantization via Jordan-Wigner on 4 spin
+# orbitals gives a 16x16 Fock-space Hamiltonian — bracketing it certifies
+# the ground energy over ALL particle-number sectors at once, and for H2
+# near equilibrium that sector is the neutral molecule. Verified three
+# ways in the tests: integrals vs 3D grid quadrature, dissociation vs
+# two isolated atoms, and an independent 2x2 MO-basis CI assembly
+# (exact FCI for this system by parity).
+
+
+def _sto3g_h():
+    """(exponent, contraction * primitive norm) for STO-3G hydrogen."""
+    prims = ((3.42525091, 0.15432897), (0.62391373, 0.53532814),
+             (0.16885540, 0.44463454))
+    return tuple((a, c * (2 * a / math.pi) ** 0.75) for a, c in prims)
+
+
+def _boys0(t):
+    return 1.0 if t < 1e-12 else 0.5 * math.sqrt(math.pi / t) \
+        * math.erf(math.sqrt(t))
+
+
+def _h2_integrals(R):
+    """(S, h, eri, enuc) for H2 at bond length R bohr in STO-3G:
+    2x2 overlap and core Hamiltonian, chemists'-notation (pq|rs) ERI."""
+    centers = [np.zeros(3), np.array([0.0, 0.0, R])]
+    prims = _sto3g_h()
+    S = np.zeros((2, 2))
+    h = np.zeros((2, 2))
+    for i, A in enumerate(centers):
+        for j, B in enumerate(centers):
+            ab2 = float(np.dot(A - B, A - B))
+            for a, ca in prims:
+                for b, cb in prims:
+                    p = a + b
+                    mu = a * b / p
+                    K = math.exp(-mu * ab2)
+                    P = (a * A + b * B) / p
+                    S[i, j] += ca * cb * (math.pi / p) ** 1.5 * K
+                    h[i, j] += ca * cb * mu * (3 - 2 * mu * ab2) \
+                        * (math.pi / p) ** 1.5 * K
+                    for C in centers:            # nuclear attraction, Z=1
+                        pc2 = float(np.dot(P - C, P - C))
+                        h[i, j] -= ca * cb * (2 * math.pi / p) * K \
+                            * _boys0(p * pc2)
+    eri = np.zeros((2, 2, 2, 2))
+    for i, A in enumerate(centers):
+        for j, B in enumerate(centers):
+            ab2 = float(np.dot(A - B, A - B))
+            for k, C in enumerate(centers):
+                for l, D in enumerate(centers):
+                    cd2 = float(np.dot(C - D, C - D))
+                    val = 0.0
+                    for a, ca in prims:
+                        for b, cb in prims:
+                            p = a + b
+                            Kab = math.exp(-a * b / p * ab2)
+                            P = (a * A + b * B) / p
+                            for c, cc in prims:
+                                for d, cd in prims:
+                                    q = c + d
+                                    Kcd = math.exp(-c * d / q * cd2)
+                                    Q = (c * C + d * D) / q
+                                    pq2 = float(np.dot(P - Q, P - Q))
+                                    val += ca * cb * cc * cd \
+                                        * 2 * math.pi ** 2.5 \
+                                        / (p * q * math.sqrt(p + q)) \
+                                        * Kab * Kcd \
+                                        * _boys0(p * q / (p + q) * pq2)
+                    eri[i, j, k, l] = val
+    return S, h, eri, 1.0 / R
+
+
+def hydrogen_atom_energy():
+    """<phi|T + V|phi> for a single STO-3G hydrogen atom (the
+    dissociation reference), from the same closed forms."""
+    prims = _sto3g_h()
+    e = s = 0.0
+    for a, ca in prims:
+        for b, cb in prims:
+            p = a + b
+            s += ca * cb * (math.pi / p) ** 1.5
+            e += ca * cb * (3 * a * b / p * (math.pi / p) ** 1.5
+                            - 2 * math.pi / p)
+    return e / s
+
+
+def sto3g_h2_hamiltonian(R):
+    """16x16 Fock-space Hamiltonian for H2/STO-3G at bond length R bohr
+    (Jordan-Wigner, nuclear repulsion included). The AO basis is first
+    Lowdin-orthogonalized so creation operators are fermionic."""
+    S, hmat, eri, enuc = _h2_integrals(R)
+    w, U = np.linalg.eigh(S)
+    Xo = U @ np.diag(w ** -0.5) @ U.T           # Lowdin S^(-1/2)
+    hmat = Xo @ hmat @ Xo
+    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
+    # Jordan-Wigner ladder operators on 4 spin orbitals (2*spatial+spin)
+    I2, Zm = np.eye(2), np.diag([1.0, -1.0])
+    low = np.array([[0.0, 1.0], [0.0, 0.0]])
+    ann = []
+    for pp in range(4):
+        mats = [Zm] * pp + [low] + [I2] * (3 - pp)
+        op = mats[0]
+        for mm in mats[1:]:
+            op = np.kron(op, mm)
+        ann.append(op)
+    H = enuc * np.eye(16)
+    for p in range(2):
+        for q in range(2):
+            for sp in range(2):
+                H += hmat[p, q] * ann[2 * p + sp].T @ ann[2 * q + sp]
+    for p in range(2):
+        for q in range(2):
+            for r in range(2):
+                for s2 in range(2):
+                    for sa in range(2):
+                        for sb in range(2):
+                            P, Q = 2 * p + sa, 2 * q + sb
+                            Rr, Ss = 2 * r + sa, 2 * s2 + sb
+                            H += 0.5 * eri[p, r, q, s2] \
+                                * ann[P].T @ ann[Q].T @ ann[Ss] @ ann[Rr]
+    return H
+
+
+def h2_energy_bracket(R: float) -> Certified:
+    """Certified two-sided bracket on the H2/STO-3G total ground energy
+    (hartree) at bond length R bohr — over all particle-number sectors."""
+    c = eigen_bracket(sto3g_h2_hamiltonian(R))
+    return replace(c, provenance=(f"h2-sto3g-bracket R={R:g} "
+                                  + c.provenance[0],))

@@ -1146,6 +1146,88 @@ def test_chain_bracket_tightens_with_ell():
     assert tight.err < 0.75 * wide.err
 
 
+def test_h2_integrals_against_quadrature():
+    """The closed-form s-Gaussian integrals against direct 3D grid
+    quadrature — catches every convention and prefactor bug."""
+    R = 1.4
+    S, h, eri, _ = sf._h2_integrals(R)
+    g = np.arange(-7.03, 8.0, 0.14)      # nuclei strictly off grid points
+    X, Y, Z = np.meshgrid(g, g, g, indexing="ij")
+    dv = 0.14 ** 3
+    A = np.array([0.0, 0.0, 0.0])
+    B = np.array([0.0, 0.0, R])
+
+    def ao(center):
+        r2 = (X - center[0])**2 + (Y - center[1])**2 + (Z - center[2])**2
+        out = np.zeros_like(X)
+        for a, cn in sf._sto3g_h():
+            out += cn * np.exp(-a * r2)
+        return out
+
+    def grad_ao(center):
+        r2 = (X - center[0])**2 + (Y - center[1])**2 + (Z - center[2])**2
+        gx = gy = gz = 0.0
+        for a, cn in sf._sto3g_h():
+            e = cn * np.exp(-a * r2)
+            gx = gx - 2 * a * (X - center[0]) * e
+            gy = gy - 2 * a * (Y - center[1]) * e
+            gz = gz - 2 * a * (Z - center[2]) * e
+        return gx, gy, gz
+
+    phiA, phiB = ao(A), ao(B)
+    assert np.sum(phiA * phiA) * dv == pytest.approx(S[0, 0], abs=1e-5)
+    assert np.sum(phiA * phiB) * dv == pytest.approx(S[0, 1], abs=1e-5)
+    # core h = kinetic (independent gradient quadrature) + nuclear
+    # attraction (singularity integrable, nuclei off grid points)
+    gA, gB = grad_ao(A), grad_ao(B)
+    Tnum = 0.5 * np.sum(gA[0] * gB[0] + gA[1] * gB[1] + gA[2] * gB[2]) * dv
+    rA = np.sqrt(X**2 + Y**2 + Z**2)
+    rB = np.sqrt(X**2 + Y**2 + (Z - R)**2)
+    Vnum = -np.sum(phiA * phiB * (1 / rA + 1 / rB)) * dv
+    assert Tnum + Vnum == pytest.approx(h[0, 1], abs=3e-3)
+    # ERI (00|11) via the closed-form erf potential of the B-B pair density
+    from scipy.special import erf
+    VB = np.zeros_like(X)
+    s = np.sqrt((X - B[0])**2 + (Y - B[1])**2 + (Z - B[2])**2)
+    for a, ca in sf._sto3g_h():
+        for b, cb in sf._sto3g_h():
+            q = a + b
+            VB += ca * cb * (np.pi / q) ** 1.5 * np.where(
+                s > 1e-8, erf(np.sqrt(q) * s) / np.maximum(s, 1e-30),
+                2 * math.sqrt(q / math.pi))
+    eri0011 = np.sum(phiA * phiA * VB) * dv
+    assert eri0011 == pytest.approx(eri[0, 0, 1, 1], abs=2e-4)
+
+
+def test_h2_bracket_dissociation_and_equilibrium():
+    """End-to-end: the certified bracket must reproduce two internal
+    truths — dissociation to two isolated atoms, and the independent
+    2x2 MO-basis CI (exact FCI for H2/STO-3G by parity)."""
+    # at R=50 monopole terms cancel exactly for s-orbitals, so the total
+    # must equal two isolated atoms to exponential accuracy
+    c_far = sf.h2_energy_bracket(50.0)
+    assert abs(c_far.value - 2 * sf.hydrogen_atom_energy()) < 1e-6
+    c_eq = sf.h2_energy_bracket(1.4)
+    assert c_eq.value + c_eq.err < c_far.value - c_far.err   # binding
+    # independent truth: MO-basis 2x2 CI from the same integrals
+    S, h, eri, enuc = sf._h2_integrals(1.4)
+    # NOTE: published STO-3G contractions normalize the AO only to ~1e-8
+    # (S11 != 1 exactly), so the MO normalization must use S11, not 1 —
+    # getting this wrong shifts the CI by 7e-9 and the bracket catches it
+    Cg = np.array([1, 1]) / math.sqrt(2 * (S[0, 0] + S[0, 1]))
+    Cu = np.array([1, -1]) / math.sqrt(2 * (S[0, 0] - S[0, 1]))
+    hg, hu = Cg @ h @ Cg, Cu @ h @ Cu
+    mo = lambda P, Q, R_, S_: np.einsum("pqrs,p,q,r,s->", eri, P, Q, R_, S_)
+    H2x2 = np.array([[2 * hg + mo(Cg, Cg, Cg, Cg), mo(Cg, Cu, Cg, Cu)],
+                     [mo(Cg, Cu, Cg, Cu), 2 * hu + mo(Cu, Cu, Cu, Cu)]])
+    e_ci = float(np.linalg.eigvalsh(H2x2)[0]) + enuc
+    assert abs(c_eq.value - e_ci) <= c_eq.err + 1e-9
+    assert c_eq.err < 1e-8
+    assert c_eq.tier == sf.Tier.RIGOROUS
+    # loose cross-reference to the published FCI/STO-3G value ~ -1.1373 Ha
+    assert -1.141 < c_eq.value < -1.133
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
