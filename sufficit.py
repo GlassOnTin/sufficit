@@ -577,9 +577,42 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
 # the value is amortization: each apply is cheap and certified.
 
 
+def _compress_certified(K, tol, n_probes, scale, rng):
+    """Adaptive certified low-rank factorization: (U, V, beta, rounds,
+    flops) with ||K - UV||_2 <= beta <= tol (each probe round fails with
+    prob 10^-n_probes), or None if full rank cannot certify tol."""
+    rank, full, flops, rounds = 4, min(K.shape), 0, 0
+    while True:
+        rounds += 1
+        Q, _ = np.linalg.qr(K @ rng.standard_normal((K.shape[1], rank)))
+        R = K @ rng.standard_normal((K.shape[1], n_probes))
+        R -= Q @ (Q.conj().T @ R)
+        beta = scale * float(np.max(np.linalg.norm(R, axis=0)))
+        flops += K.size * (rank + n_probes)
+        if beta <= tol or rank >= full:
+            break
+        rank = min(2 * rank, full)
+    if beta > tol:
+        return None
+    # doubling overshoots; trim rigorously: ||K - U'V'|| <= beta
+    # + sigma_{r'+1} of the certified factor, no new probes needed
+    U2, s2, Vt2 = np.linalg.svd(Q.conj().T @ K, full_matrices=False)
+    keep = max(1, int(np.searchsorted(-(beta + s2), -tol)) if len(s2) else 0)
+    flops += K.size * rank
+    return ((Q @ U2[:, :keep]) * s2[:keep], Vt2[:keep],
+            beta + (s2[keep] if keep < len(s2) else 0.0), rounds, flops)
+
+
 class BlackboxHMatrix:
     """Guarantee per apply(q): pointwise error <= eps * ||q||_2, with the
-    plan's stated fail_p. Tier RIGOROUS (exact arithmetic)."""
+    plan's stated fail_p. Tier RIGOROUS (exact arithmetic).
+
+    NOTE (negative result, kept so it is not re-learned): demodulating a
+    block by pair-direction phases D_T K D_S is a UNITARY transformation —
+    singular values are identical, so per-block directional demodulation
+    cannot reduce SVD ranks (measured: 12=12, 14=14 at k=150). The
+    high-frequency island needs the genuine multi-level butterfly
+    (row-split/column-merge with transfer operators), not implemented."""
 
     def __init__(self, kernel, tgt, src, eps, leaf_size=48, n_probes=10,
                  rng=None):
@@ -607,30 +640,15 @@ class BlackboxHMatrix:
                     * (math.sqrt(2.0) if np.issubdtype(
                         self.dtype, np.complexfloating) else 1.0)
             tol = eps / cnt[T.idx].max()
-            rank, full = 4, min(K.shape)
-            while True:
-                Q, _ = np.linalg.qr(K @ rng.standard_normal((K.shape[1], rank)))
-                R = K @ rng.standard_normal((K.shape[1], n_probes))
-                R -= Q @ (Q.conj().T @ R)
-                beta = scale * float(np.max(np.linalg.norm(R, axis=0)))
-                self.fail_p += 10.0 ** (-n_probes)
-                flops += K.size * (rank + n_probes)
-                if beta <= tol or rank >= full:
-                    break
-                rank = min(2 * rank, full)
-            if beta > tol:
+            res = _compress_certified(K, tol, n_probes, scale, rng)
+            if res is None:
                 raise ValueError(f"block {K.shape} not compressible to "
-                                 f"{tol:.3g}: probe bound {beta:.3g}")
-            # doubling overshoots; trim rigorously: ||K - U'V'|| <= beta
-            # + sigma_{r'+1} of the certified factor, no new probes needed
-            U2, s2, Vt2 = np.linalg.svd(Q.conj().T @ K, full_matrices=False)
-            keep = int(np.searchsorted(-(beta + s2), -tol)) if len(s2) else 0
-            keep = max(keep, 1)
-            flops += K.size * rank
-            if keep * (K.shape[0] + K.shape[1]) < K.size:
-                self.far.append((T.idx, S.idx, (Q @ U2[:, :keep]) * s2[:keep],
-                                 Vt2[:keep], beta + (s2[keep] if keep < len(s2)
-                                                     else 0.0)))
+                                 f"{tol:.3g}: full-rank probe failed")
+            U, V, beta, rounds, fl = res
+            self.fail_p += rounds * 10.0 ** (-n_probes)
+            flops += fl
+            if V.shape[0] * (K.shape[0] + K.shape[1]) < K.size:
+                self.far.append((T.idx, S.idx, U, V, beta))
             else:               # factors would cost more than the block does
                 self.near.append((T.idx, S.idx, K))
         for T, S in direct:

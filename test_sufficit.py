@@ -824,6 +824,47 @@ def test_helmholtz_compressibility_degrades_with_k():
     assert speedups[0] > speedups[1] > 1.0
 
 
+def test_demodulation_is_unitarily_vacuous():
+    """Negative result, locked in so it is not re-learned: demodulating a
+    kernel block by pair-direction phases is a unitary diagonal scaling,
+    so its singular values — hence any SVD-based rank — are IDENTICAL.
+    Per-block directional demodulation cannot extend the island; the
+    genuine multi-level butterfly factorization is required."""
+    rng = np.random.default_rng(32)
+    k = 150.0
+    src = 0.3 * (rng.uniform(-1, 1, 120) + 1j * rng.uniform(-1, 1, 120))
+    tgt = 1.5 + 0.3 * (rng.uniform(-1, 1, 150) + 1j * rng.uniform(-1, 1, 150))
+    K = _helmholtz_kernel(k)(tgt, src)
+    u = np.mean(tgt) - np.mean(src)
+    u /= abs(u)
+    dT = np.exp(-1j * k * (np.conj(u) * tgt).real)
+    dS = np.exp(1j * k * (np.conj(u) * src).real)
+    sv = np.linalg.svd(K, compute_uv=False)
+    svd = np.linalg.svd((dT[:, None] * K) * dS[None, :], compute_uv=False)
+    assert np.allclose(sv, svd, rtol=1e-10)
+
+
+def test_high_frequency_rank_law():
+    """Island cartography: measured block rank tracks the butterfly
+    parameter R = k * r_T * r_S / D — linear in k — so the H-matrix
+    degrades gracefully and the butterfly regime starts near R ~ min
+    block dimension (k in the thousands at this geometry)."""
+    rng = np.random.default_rng(35)
+    src = 0.25 * (rng.uniform(-1, 1, 200) + 1j * rng.uniform(-1, 1, 200))
+    tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, 200) + 1j * rng.uniform(-1, 1, 200))
+    rT = float(np.max(np.abs(tgt - np.mean(tgt))))
+    rS = float(np.max(np.abs(src - np.mean(src))))
+    D = abs(np.mean(tgt) - np.mean(src))
+    ranks = []
+    for k in (30.0, 60.0, 120.0):
+        sv = np.linalg.svd(_helmholtz_kernel(k)(tgt, src), compute_uv=False)
+        rank = int(np.sum(sv > 1e-4 * sv[0]))
+        R = k * rT * rS / D
+        assert 0.5 * R < rank < 3.0 * R + 10     # rank ~ R, linear in k
+        ranks.append(rank)
+    assert ranks[2] > 1.5 * ranks[0]             # genuinely growing with k
+
+
 def test_helmholtz_scatter_certified():
     """CEM beachhead: certified far field of a weak penetrable scatterer.
     Truth is the dense solve of the same discrete system (the declared
