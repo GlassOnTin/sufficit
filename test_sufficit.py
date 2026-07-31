@@ -1338,6 +1338,26 @@ def test_h_chain_bracket_past_formable():
     assert "marginal" in c.provenance[0]
 
 
+def test_molecular_multipliers_tighten():
+    """The bundle multipliers, ported to molecular windows (shared C on
+    atom overlaps, valid for ANY Hermitian C by qubit-level telescoping):
+    the certified lower bound must rise, containment must survive."""
+    from scipy.sparse.linalg import eigsh
+    truth = float(eigsh(sf.h_chain_fock_hamiltonian(6, 1.8),
+                        k=1, which="SA")[0][0])
+    plain = sf.h_chain_bracket(6, 1.8, ell=3, correction_iters=0)
+    corr = sf.h_chain_bracket(6, 1.8, ell=3)
+    assert corr.value - corr.err <= truth <= corr.value + corr.err
+    gain = (corr.value - corr.err) - (plain.value - plain.err)
+    # measured 0.066 Ha at H6/ell=3 — 10x weaker than Heisenberg's 59%
+    # gap closure, because the molecular gap is DOMINATED by flat far-term
+    # norm penalties (measured 1.04 of 1.79 Ha: pair-density ERIs decay
+    # as Coulomb 1/R, not exponentially, plus Lowdin hopping tails 0.31)
+    # and AM-GM charge penalties, neither of which multipliers address.
+    # The Cauchy-Schwarz far-term absorption is the named real fix.
+    assert gain > 0.04
+
+
 def test_h_chain_bracket_tightens_with_ell():
     wide = sf.h_chain_bracket(8, 1.8, ell=2)
     tight = sf.h_chain_bracket(8, 1.8, ell=3)

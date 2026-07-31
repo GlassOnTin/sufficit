@@ -2085,8 +2085,15 @@ def h2_polarized_bracket(R: float) -> Certified:
 # + (v+g)n_i + (v+g)n_j + (1/R-g), with the quadratic part bounded by
 # operator AM-GM, g(n_i-1)(n_j-1) >= -(g/2)[(n_i-1)^2 + (n_j-1)^2] —
 # local charge-fluctuation penalties absorbed into windows; linear parts
-# and constants exact; exponentially small far exchange terms take norm
-# bounds. Upper: product of exactly solved atom blocks, cross energies
+# and constants exact; remaining far terms take FLAT NORM BOUNDS — and
+# the autopsy (H6/ell=3) shows these dominate the gap: 1.04 of 1.79 Ha,
+# because pair-density ERIs like (01|45) decay only as Coulomb 1/R (the
+# distributions are compact; only their separation is large), plus
+# Lowdin hopping tails (0.31). Shared-C window multipliers (ported
+# below) recover just 0.066 Ha — they fix window-splitting looseness,
+# the minority term here. The real fix is Cauchy-Schwarz absorption,
+# g X'Y + h.c. >= -|g|(X'X + Y'Y) with X'X, Y'Y local window operators
+# — the named next step. Upper: product of exactly solved atom blocks, cross energies
 # by exact factorization of block-diagonal 1-RDMs (fermionic signs are
 # benign — cross operators move in even pairs). No correction
 # multipliers yet (the Heisenberg bundle machinery is the named
@@ -2201,9 +2208,75 @@ def _window_operator(hw, eriw, lin, quad, const):
     return np.asarray(H.todense())
 
 
-def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3) -> Certified:
+def _window_multipliers(mats, D, iters):
+    """Proximal-bundle ascent of sum_w lambda_min(M_w + [w>0] C x I
+    - [w<nw-1] I x C) over a shared Hermitian C (D x D) on the atom
+    overlaps. Telescoping holds at the qubit level for ANY C, so the
+    optimizer is pure quality — every window is re-certified downstream.
+    Windows are not translation-invariant, so the objective sums over
+    all of them; per-overlap C_w is the named refinement."""
+    dim, nw = len(mats[0]), len(mats)
+    E = dim // D
+    IE = np.eye(E)
+
+    def build(w, C):
+        M = mats[w]
+        if w > 0:
+            M = M + np.kron(C, IE)
+        if w < nw - 1:
+            M = M - np.kron(IE, C)
+        return M
+
+    def oracle(C):
+        tot, const, G = 0.0, 0.0, np.zeros((D, D))
+        for w in range(nw):
+            lam, Vv = np.linalg.eigh(build(w, C))
+            v = Vv[:, 0]
+            tot += lam[0]
+            const += float(v @ (mats[w] @ v))
+            Vl, Vr = v.reshape(D, E), v.reshape(E, D)
+            if w > 0:
+                G += Vl @ Vl.T
+            if w < nw - 1:
+                G -= Vr.T @ Vr
+        return tot, const, G
+
+    Cref, tau = np.zeros((D, D)), 1.0
+    fref, a0, g0 = oracle(Cref)
+    A, G = [a0], [g0]
+    best = (fref, Cref.copy())
+    for _ in range(iters - 1):
+        m = len(A)
+        gram = np.array([[np.sum(G[i] * G[j]) for j in range(m)]
+                         for i in range(m)])
+        b = np.array([A[i] + np.sum(G[i] * Cref) for i in range(m)])
+        mu = np.full(m, 1.0 / m)
+        eta = 1.0 / (1.0 + tau * float(np.max(np.abs(gram))))
+        for _ in range(250):
+            grad = b + tau * (gram @ mu)
+            mu = mu * np.exp(-eta * (grad - grad @ mu))
+            mu /= mu.sum()
+        g = sum(w_ * Gi for w_, Gi in zip(mu, G))
+        Cnew = Cref + tau * g
+        fnew, an, gn = oracle(Cnew)
+        A.append(an)
+        G.append(gn)
+        if len(A) > 60:
+            A, G = A[-60:], G[-60:]
+        if fnew > fref:
+            Cref, fref, tau = Cnew, fnew, min(tau * 1.4, 50.0)
+        else:
+            tau = max(tau * 0.6, 1e-3)
+        if fref > best[0]:
+            best = (fref, Cref.copy())
+    return best[1]
+
+
+def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
+                    correction_iters: int = 60) -> Certified:
     """Certified two-sided bracket on the ground energy of the n-atom
-    hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell."""
+    hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell.
+    correction_iters=0 disables the shared-multiplier bundle ascent."""
     T, V, eri, _ = _h_chain_basis(n, d)
     h_full = T + V.sum(0)
 
@@ -2269,9 +2342,21 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3) -> Certified:
                     linW[w][site - w] += linc / m
                     quadW[w][site - w] += g / 2 / m
     lower = lower_const - penalty
-    for w in range(nw):
-        c = eigen_bracket(_window_operator(hW[w], eriW[w], linW[w],
-                                           quadW[w], constW[w]))
+    mats = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w])
+            for w in range(nw)]
+    if correction_iters and nw > 1:
+        D = 4 ** (ell - 1)
+        C = _window_multipliers(mats, D, correction_iters)
+        IE = np.eye(4 ** ell // D)
+        for w in range(nw):
+            M = mats[w]
+            if w > 0:
+                M = M + np.kron(C, IE)
+            if w < nw - 1:
+                M = M - np.kron(IE, C)
+            mats[w] = M
+    for M in mats:
+        c = eigen_bracket(M)
         lower += c.value - c.err
 
     # upper: product of exactly solved blocks, cross energy by exact
@@ -2350,4 +2435,4 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3) -> Certified:
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
-                      "block-product-upper",))
+                      f"iters={correction_iters} block-product-upper",))
