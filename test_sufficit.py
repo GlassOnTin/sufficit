@@ -80,6 +80,51 @@ def test_multipole_rejects_invalid_geometry():
         )
 
 
+def test_fail_p_composes_by_union_bound():
+    a = sf.Certified(1.0, 0.1, sf.Tier.RIGOROUS, (), fail_p=1e-3)
+    b = sf.Certified(2.0, 0.1, sf.Tier.RIGOROUS, (), fail_p=1e-4)
+    assert (a + b).fail_p == pytest.approx(1.1e-3)
+    assert (a * b).fail_p == pytest.approx(1.1e-3)
+    assert sf.lipschitz(math.sin, 1.0, a, "sin").fail_p == 1e-3
+    big = sf.Certified(0.0, 0.0, sf.Tier.RIGOROUS, (), fail_p=0.7)
+    assert (big + big).fail_p == 1.0  # capped
+
+
+def test_randomized_probe_bound_holds_over_trials():
+    """Per-trial fail_p is 1e-10, so 300 trials must show zero violations."""
+    rng = np.random.default_rng(4)
+    overshoots = []
+    for _ in range(300):
+        x, y = rng.uniform(0, 1, 50), rng.uniform(2, 3, 40)
+        K = 1.0 / np.abs(x[:, None] - y[None, :])
+        q = rng.standard_normal(40)
+        c = sf.randomized_lowrank_matvec(K, q, 5, n_probes=10, rng=rng)
+        actual = np.linalg.norm(c.value - K @ q)
+        assert actual <= c.err * (1 + 1e-9) + 1e-12
+        assert c.fail_p == pytest.approx(1e-10)
+        overshoots.append(c.err / max(actual, 1e-300))
+    # non-vacuous: the estimator overshoots by a bounded factor, not orders
+    # of magnitude beyond its ~10 sqrt(2/pi) sqrt(m) worst case
+    assert np.median(overshoots) < 1e4
+
+
+def test_end_to_end_chain_with_randomized_probe():
+    """Chain a probabilistic certificate through the algebra: the composed
+    bound must hold and the stated failure probability must survive."""
+    rng = np.random.default_rng(5)
+    tx = rng.uniform(0, 1, 80)
+    near_y = rng.uniform(2, 3, 60)
+    qn = rng.uniform(-1, 1, 60)
+    K = np.log(np.abs(tx[:, None] - near_y[None, :]))
+
+    near = sf.randomized_lowrank_matvec(K, qn, 8, n_probes=10, rng=rng)
+    obs = sf.lipschitz(np.mean, 1.0 / math.sqrt(len(tx)), near, "mean")
+    truth = float(np.mean(K @ qn))
+    assert abs(obs.value - truth) <= obs.err * (1 + 1e-9) + 1e-12
+    assert obs.tier == sf.Tier.RIGOROUS
+    assert obs.fail_p == pytest.approx(1e-10)
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
