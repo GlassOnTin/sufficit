@@ -561,33 +561,38 @@ class BlackboxHMatrix:
 # expansion maps Z onto a polymer gas of connected even subgraphs with
 # weight t^|edges|, t = tanh(betaJ), compatibility = vertex-disjointness.
 # The Kotecky-Preiss condition (per-vertex form via a ghost polymer, cf.
-# Friedli-Velenik Thm 5.4) with the rigorous walk-encoding count
-# (# connected n-edge subgraphs through a vertex <= Delta^2n, Delta = 4)
-# gives: for x_s = t e^(1+s) * 16 with x_s^4/(1-x_s) <= 1, the cluster
-# terms of size >= L sum below e^(-s L) per site. This is the first
-# rewrite with a VALIDITY REGION: outside it, refuse.
+# Friedli-Velenik Thm 5.4) with the Eulerian-circuit count (even connected
+# subgraphs are Eulerian: each of the n edges traversed once, never
+# departing along a used edge, so <= 4*3^(n-1) through a vertex) gives:
+# the cluster terms of size >= L sum below e^(-s L) per site, s from
+# _kp_rate. This is the first rewrite with a VALIDITY REGION: outside
+# it, refuse.
 # Order cap L = 8: below 8 edges the only clusters are single polymers
 # that are simple cycles (pairs enter at 4+4, non-cycle polymers at 8),
 # so no Ursell machinery is needed yet. Raising the cap requires union
-# polymers and pair clusters. The Delta^2n count is ~26x conservative in
-# beta (certified radius betaJ < ~0.0167 vs true ~0.44); tightening the
-# subgraph count is the named improvement path.
+# polymers and pair clusters. The certified radius is betaJ < ~0.085 vs
+# the true critical ~0.4407 (~5x conservative; the remaining gap is the
+# 3^n walk constant vs the true even-subgraph growth ~2.64^n plus the
+# factor e that KP itself pays).
 
 
 def _kp_rate(t):
     """Tilt rate s of the KP tail e^(-s L) at activity t; raises outside
-    the certified region. y* solves y^4 + y = 1 (per-vertex KP condition
-    x^4/(1-x) <= 1 with x = |t| e^(1+s) Delta^2, Delta = 4)."""
+    the certified region. Counting: connected even subgraphs are Eulerian,
+    so a circuit from v traverses each of its n edges exactly once and
+    never departs along a used edge — at most Delta*(Delta-1)^(n-1)
+    = 4*3^(n-1) walks. Per-vertex KP condition: (4/3) u^4/(1-u) <= 1 with
+    u = 3|t| e^(1+s); u* is the root of 4u^4 + 3u = 3."""
     lo, hi = 0.0, 1.0
     for _ in range(60):
         mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if mid**4 + mid < 1 else (lo, mid)
-    t_max = lo / (math.e * 16)
+        lo, hi = (mid, hi) if 4 * mid**4 + 3 * mid < 3 else (lo, mid)
+    t_max = lo / (3 * math.e)
     if abs(t) >= t_max:
         raise ValueError(
             f"|tanh(beta J)|={abs(t):.4g} >= {t_max:.4g}: outside the "
-            "certified high-temperature region (KP with Delta^2n counting)")
-    return math.log(lo / (abs(t) * math.e * 16))
+            "certified high-temperature region (KP, Eulerian counting)")
+    return math.log(lo / (3 * abs(t) * math.e))
 
 
 def _ising2d_anchored_cycles(max_edges):
@@ -686,17 +691,18 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
     Ising model, via pinned clusters: every subgraph with odd set {a,b}
     is one connected pinned polymer w0 times an even gas off its vertices,
     so <s_a s_b> = sum_w0 t^|w0| exp(-Psi(V(w0))) with Psi the cluster sum
-    touching V(w0). Errors: pinned tail (walk count 16^n, dressing bounded
-    by e^((n+1)B)), Psi truncation at size 8 (tilted KP, per vertex),
-    propagated through exp. Same validity region and torus/limit scope
-    (m >= 8) as ising2d_logZ_density."""
+    touching V(w0). Errors: pinned tail (pinned polymers have exactly two
+    odd vertices, hence an Eulerian path a->b: count <= 4*3^(n-1);
+    dressing bounded by e^((n+1)B)), Psi truncation at size 8 (tilted KP,
+    per vertex), propagated through exp. Same validity region and
+    torus/limit scope (m >= 8) as ising2d_logZ_density."""
     t = math.tanh(beta * J)
     if t == 0.0:
         return Certified(0.0, 0.0, Tier.RIGOROUS, ("ising2d-pinned t=0",))
     L = 8
     s = _kp_rate(t)
-    x = 16 * math.e * abs(t)
-    B = x**4 / (1 - x)                  # per-vertex cluster-sum bound
+    u0 = 3 * math.e * abs(t)
+    B = (4 / 3) * u0**4 / (1 - u0)      # per-vertex cluster-sum bound
     total, e2 = 0.0, 0.0
     for C in _connected_pinned_subgraphs((0, 0), (1, 0), L - 1):
         S = {v for e in C for v in e}
@@ -704,8 +710,8 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
         total += t ** len(C) * math.exp(-psi)
         delta = len(S) * math.exp(-L * s)
         e2 += abs(t) ** len(C) * math.exp(-psi) * (math.exp(delta) - 1)
-    y = 16 * abs(t) * math.exp(B)       # < y* < 1 inside the region
-    e1 = math.exp(B) * y**L / (1 - y)
+    y = 3 * abs(t) * math.exp(B)        # < u* < 1 inside the region
+    e1 = (4 / 3) * math.exp(B) * y**L / (1 - y)
     err = e1 + e2
     if tol is not None and err > tol:
         raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "

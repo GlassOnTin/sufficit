@@ -497,6 +497,18 @@ def test_ising_bond_correlation_refuses():
         sf.ising2d_bond_correlation(0.1)
 
 
+def test_eulerian_counting_extends_region():
+    """Eulerian encoding (4*3^(n-1) walks vs 16^n): the certified radius
+    grows from tanh(betaJ) < 0.0167 to < ~0.085, and certificates in the
+    newly covered territory still contain the exact answer."""
+    c = sf.ising2d_logZ_density(0.05)              # refused before
+    assert abs(c.value - _ising_torus_logZ_density_tm(10, 0.05)) <= c.err
+    cb = sf.ising2d_bond_correlation(0.05)
+    assert abs(cb.value - _ising_torus_bond_corr_tm(10, 0.05)) <= cb.err
+    with pytest.raises(ValueError):
+        sf.ising2d_logZ_density(0.086)             # new boundary enforced
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
