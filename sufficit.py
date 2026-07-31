@@ -13,6 +13,7 @@ too, via the directed-rounding Interval type ("+fp" in provenance).
 """
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass, replace
 from enum import IntEnum
@@ -664,10 +665,10 @@ class BlackboxHMatrix:
 # the cluster terms of size >= L sum below e^(-s L) per site, s from
 # _kp_rate. This is the first rewrite with a VALIDITY REGION: outside
 # it, refuse.
-# Order cap L = 8: below 8 edges the only clusters are single polymers
-# that are simple cycles (pairs enter at 4+4, non-cycle polymers at 8),
-# so no Ursell machinery is needed yet. Raising the cap requires union
-# polymers and pair clusters. The certified radius is betaJ < ~0.085 vs
+# Order cap L = 12: single polymers (cycles and two-cycle unions) and
+# Ursell pair clusters cover every cluster below 12 edges; triples of
+# polymers enter at 4+4+4 = 12, so raising further needs phi^T for
+# n >= 3. The certified radius is betaJ < ~0.085 vs
 # the true critical ~0.4407 (~5x conservative; the remaining gap is the
 # 3^n walk constant vs the true even-subgraph growth ~2.64^n plus the
 # factor e that KP itself pays).
@@ -702,9 +703,10 @@ def _kp_rate(t_abs: Interval) -> Interval:
     return (Interval(lo) / (3 * _E_IV * t_abs)).log()
 
 
-def _ising2d_anchored_cycles(max_edges):
-    """Edge counts of simple cycles on Z^2 whose lexicographically minimal
-    vertex is the origin, each counted once, up to max_edges edges."""
+def _ising2d_cycles(max_edges):
+    """Simple cycles on Z^2 with lexicographically minimal vertex at the
+    origin (canonical translation-class representatives), as
+    (edge-frozenset, vertex-frozenset) pairs, up to max_edges edges."""
     found = []
 
     def extend(path, seen):
@@ -712,7 +714,9 @@ def _ising2d_anchored_cycles(max_edges):
         for nxt in ((x + 1, y), (x, y + 1), (x - 1, y), (x, y - 1)):
             if nxt == (0, 0) and len(path) >= 3:
                 if path[1] < path[-1]:      # one orientation per cycle
-                    found.append(len(path))
+                    edges = frozenset(tuple(sorted(p)) for p in
+                                      zip(path, path[1:] + [(0, 0)]))
+                    found.append((edges, frozenset(path)))
                 continue
             if nxt in seen or nxt < (0, 0) or len(path) >= max_edges:
                 continue
@@ -722,11 +726,99 @@ def _ising2d_anchored_cycles(max_edges):
     return found
 
 
+def _ising2d_anchored_cycles(max_edges):
+    """Edge counts of the canonical cycles (kept for tests/inspection)."""
+    return [len(e) for e, _ in _ising2d_cycles(max_edges)]
+
+
+def _shift(pts, d):
+    return frozenset((p[0] + d[0], p[1] + d[1]) for p in pts)
+
+
+def _diffs(V1, V2):
+    """Offsets d with (V2 + d) meeting V1."""
+    return {(a[0] - b[0], a[1] - b[1]) for a in V1 for b in V2}
+
+
+@functools.lru_cache(maxsize=None)
+def _ising2d_polymer_shapes(max_edges=10):
+    """Connected even subgraphs of Z^2 up to max_edges edges, canonical
+    (min vertex at origin): simple cycles plus edge-disjoint,
+    vertex-sharing unions of two cycles. Triples of cycles enter at 12
+    edges, above the cap."""
+    cycles = _ising2d_cycles(max_edges)
+    shapes = dict(cycles)
+    for e1, v1 in cycles:
+        for e2, v2 in cycles:
+            if len(e1) + len(e2) > max_edges:
+                continue
+            for d in _diffs(v1, v2):
+                e2t = frozenset((( a[0] + d[0], a[1] + d[1]),
+                                 (b[0] + d[0], b[1] + d[1]))
+                                for a, b in e2)
+                if e1 & e2t:
+                    continue            # shares an edge: not a valid union
+                verts = v1 | _shift(v2, d)
+                mv = min(verts)
+                off = (-mv[0], -mv[1])
+                E = frozenset(((a[0] + off[0], a[1] + off[1]),
+                               (b[0] + off[0], b[1] + off[1]))
+                              for a, b in (e1 | e2t))
+                shapes[E] = _shift(verts, off)
+    return tuple(shapes.items())
+
+
+@functools.lru_cache(maxsize=None)
+def _ising2d_logz_coeffs():
+    """Per-site coefficients of the high-temperature series in
+    t = tanh(beta J), exact through t^10: anchored single polymers plus
+    Ursell pair clusters, -(1/2) over ordered incompatible pairs
+    (phi^T = -1). Reproduces the known series
+    log Z/N = log 2 + 2 log cosh + t^4 + 2 t^6 + (9/2) t^8 + 12 t^10."""
+    shapes = _ising2d_polymer_shapes(10)
+    coef = {}
+    for E, V in shapes:
+        coef[len(E)] = coef.get(len(E), 0.0) + 1.0
+    small = [(E, V) for E, V in shapes if len(E) <= 6]
+    for E1, V1 in small:
+        for E2, V2 in small:
+            n = len(E1) + len(E2)
+            if n < 12:
+                coef[n] = coef.get(n, 0.0) - 0.5 * len(_diffs(V1, V2))
+    return coef
+
+
+def _ising2d_psi_coeffs(S):
+    """Coefficients of Psi(S) — the cluster sum touching the vertex set S
+    — exact through total size 10: singles, plus Ursell pairs whose
+    union touches S via 2*(touching x incompatible-anywhere) minus
+    (both touching), all reduced to integer offset counting."""
+    shapes = _ising2d_polymer_shapes(10)
+    Sf = frozenset(S)
+    coef = {}
+    for E, V in shapes:
+        c = len(_diffs(Sf, V))
+        if c:
+            coef[len(E)] = coef.get(len(E), 0.0) + c
+    small = [(E, V) for E, V in shapes if len(E) <= 6]
+    touch = [[_shift(V, d) for d in _diffs(Sf, V)] for _, V in small]
+    for i, (E1, V1) in enumerate(small):
+        for j, (E2, V2) in enumerate(small):
+            n = len(E1) + len(E2)
+            if n < 12:
+                k = len(_diffs(V1, V2))
+                both = sum(1 for a in touch[i] for b in touch[j] if a & b)
+                coef[n] = coef.get(n, 0.0) - len(touch[i]) * k + 0.5 * both
+    return coef
+
+
 def ising2d_logZ_density(beta: float, J: float = 1.0,
                          tol: float = None) -> Certified:
     """Phase 2 rewrite: log Z per site for the 2D Ising model at inverse
     temperature beta, certified by the cluster-expansion tail. Valid for
-    every m x m torus with m >= 8 and for the thermodynamic limit.
+    every m x m torus with m >= 12 (wrapping clusters below 12
+    edges would otherwise escape both truncation and tail) and for the
+    thermodynamic limit.
     Raises outside the certified high-temperature region, or when the
     requested tol is unreachable at the order cap."""
     bJ = Interval(beta) * J
@@ -735,12 +827,12 @@ def ising2d_logZ_density(beta: float, J: float = 1.0,
         return Certified(v.mid, v.rad, Tier.RIGOROUS,
                          ("ising2d-cluster t=0 +fp",))
     t = bJ.tanh()
-    L = 8
+    L = 12
     s = _kp_rate(t.abs())
     tail = (Interval(-float(L)) * s).exp()
     f = Interval(2.0).log() + 2 * bJ.cosh().log()
-    for n in _ising2d_anchored_cycles(L - 1):
-        f = f + t**n
+    for n, cf in sorted(_ising2d_logz_coeffs().items()):
+        f = f + cf * t**n
     err = _up(tail.hi + f.rad)
     if tol is not None and err > tol:
         raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "
@@ -780,22 +872,6 @@ def _connected_pinned_subgraphs(a, b, max_edges):
     return results
 
 
-def _cycles_touching(S):
-    """Edge counts of the polymers below 8 edges (unit squares and dominoes)
-    whose vertex set meets S, each counted once."""
-    xs, ys = [v[0] for v in S], [v[1] for v in S]
-    out = []
-    for i in range(min(xs) - 2, max(xs) + 1):
-        for j in range(min(ys) - 2, max(ys) + 1):
-            for w, h, n in ((1, 1, 4), (2, 1, 6), (1, 2, 6)):
-                verts = {(x, y) for x in range(i, i + w + 1)
-                         for y in range(j, j + h + 1)
-                         if x in (i, i + w) or y in (j, j + h)}
-                if verts & S:
-                    out.append(n)
-    return out
-
-
 def ising2d_bond_correlation(beta: float, J: float = 1.0,
                              tol: float = None) -> Certified:
     """Phase 2 rewrite: <s_a s_b> for a nearest-neighbor pair of the 2D
@@ -806,12 +882,12 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
     odd vertices, hence an Eulerian path a->b: count <= 4*3^(n-1);
     dressing bounded by e^((n+1)B)), Psi truncation at size 8 (tilted KP,
     per vertex), propagated through exp. Same validity region and
-    torus/limit scope (m >= 8) as ising2d_logZ_density."""
+    torus/limit scope (m >= 12) as ising2d_logZ_density."""
     if beta * J == 0.0:                 # no computation: exactly 0
         return Certified(0.0, 0.0, Tier.RIGOROUS, ("ising2d-pinned t=0",))
     t = (Interval(beta) * J).tanh()
     ta = t.abs()
-    L = 8
+    L1, L2 = 8, 12          # pinned-sum order; cluster-dressing order
     s = _kp_rate(ta)
     u0 = 3 * _E_IV * ta
     B = (Interval(4.0) / 3) * u0**4 / (1 - u0)   # per-vertex cluster bound
@@ -820,22 +896,22 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
     if y.hi >= 1.0:
         raise ValueError("too close to the region boundary to certify")
     total, e2 = Interval(0.0), Interval(0.0)
-    dfac = (Interval(-float(L)) * s).exp()
-    for C in _connected_pinned_subgraphs((0, 0), (1, 0), L - 1):
+    dfac = (Interval(-float(L2)) * s).exp()
+    for C in _connected_pinned_subgraphs((0, 0), (1, 0), L1 - 1):
         S = {v for e in C for v in e}
         psi = Interval(0.0)
-        for n in _cycles_touching(S):
-            psi = psi + t**n
+        for n, cf in sorted(_ising2d_psi_coeffs(frozenset(S)).items()):
+            psi = psi + cf * t**n
         damp = (-psi).exp()
         total = total + t ** len(C) * damp
         e2 = e2 + ta ** len(C) * damp * ((len(S) * dfac).exp() - 1)
-    e1 = (Interval(4.0) / 3) * eB * y**L / (1 - y)
+    e1 = (Interval(4.0) / 3) * eB * y**L1 / (1 - y)
     err = _up(e1.hi + e2.hi + total.rad)
     if tol is not None and err > tol:
         raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "
                          "at this temperature (order cap L=8)")
     return Certified(total.mid, err, Tier.RIGOROUS,
-                     (f"ising2d-pinned L={L} s={s.lo:.3g} t={t.mid:.4g} "
+                     (f"ising2d-pinned L={L1}/{L2} s={s.lo:.3g} t={t.mid:.4g} "
                       "+fp [Kotecky-Preiss]",))
 
 

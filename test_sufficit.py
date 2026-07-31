@@ -359,7 +359,10 @@ def test_blackbox_agrees_with_analytic_fmm():
 
 def _ising_torus_logZ_density_tm(m, betaJ):
     """Exact log Z / N for the m x m periodic Ising lattice, weight
-    exp(betaJ * sum s_i s_j), via row transfer matrix."""
+    exp(betaJ * sum s_i s_j), via row transfer matrix. Certificates are
+    scoped to m >= 12; m=10 truth differs from that by wrap terms
+    ~2 t^10/m per site — orders below every bound asserted against it,
+    and 2^12-state matrices would slow the suite 10x."""
     s = np.arange(2 ** m, dtype=np.uint64)
     rot = (s >> np.uint64(1)) | ((s & np.uint64(1)) << np.uint64(m - 1))
     intra = m - 2 * np.bitwise_count(s ^ rot).astype(float)
@@ -386,9 +389,32 @@ def test_ising_transfer_matrix_matches_exhaustive():
 
 def test_ising_cycle_enumeration():
     """Anchored simple cycles on Z^2: one square and two dominoes below 8
-    edges; longer cycles appear once the cap is raised."""
+    edges; 7 octagons (perimeter-8 polyomino boundaries) at 8; 28 at 10."""
     assert sorted(sf._ising2d_anchored_cycles(7)) == [4, 6, 6]
-    assert len(sf._ising2d_anchored_cycles(11)) > 3
+    from collections import Counter
+    counts = Counter(sf._ising2d_anchored_cycles(10))
+    assert counts == {4: 1, 6: 2, 8: 7, 10: 28}
+
+
+def test_ising_polymer_shapes_and_series_coefficients():
+    """Union polymers and Ursell pairs: the per-site coefficients must
+    reproduce the known 2D Ising high-temperature series
+    log Z/N = log 2 + 2 log cosh + t^4 + 2 t^6 + (9/2) t^8 + 12 t^10."""
+    sizes = sorted(len(E) for E, _ in sf._ising2d_polymer_shapes(10))
+    # 38 cycles plus 2 figure-eights (4+4) and 8 square-domino unions (4+6)
+    assert sizes.count(8) == 7 + 2 and sizes.count(10) == 28 + 8
+    assert sf._ising2d_logz_coeffs() == {4: 1.0, 6: 2.0, 8: 4.5, 10: 12.0}
+
+
+def test_ising_series_matches_transfer_matrix_tightly():
+    """With coefficients exact through t^10, the truncated series must
+    agree with the exact torus to ~t^12 + wrap level — far below the KP
+    certificate, so this catches coefficient bugs containment cannot.
+    (m=10 wrap contamination is ~2 t^10/m per site, below thresholds.)"""
+    for bJ, thresh in ((0.05, 5e-12), (0.08, 2e-11)):
+        diff = abs(sf.ising2d_logZ_density(bJ).value
+                   - _ising_torus_logZ_density_tm(10, bJ))
+        assert diff < thresh, (bJ, diff)
 
 
 def test_ising_cluster_expansion_certified():
