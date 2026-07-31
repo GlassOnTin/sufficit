@@ -1006,14 +1006,16 @@ def _gauss_laplace(tau, omega, sigma):
     return 0.5 * float(erfcx(y)) * math.exp(-omega * omega / (2 * sigma**2))
 
 
+@functools.lru_cache(maxsize=None)
 def _hlt_solve(N, omega, sigma, ridge=None):
     """Solve for g_t (t = 2..N) minimizing the e^(2w)-weighted L2 kernel
     deviation, then certify c = sup_w |deviation| e^w rigorously. With no
-    ridge given, scans a ladder and keeps the best-certifying g — the
-    bound is a posteriori, so the scan cannot compromise validity."""
+    ridge given, scans the two ridges that win in practice and keeps the
+    best-certifying g — the bound is a posteriori, so the scan cannot
+    compromise validity. Cached: callers treat g as read-only."""
     if ridge is None:
         best = min((_hlt_solve(N, omega, sigma, r)
-                    for r in (1e-6, 1e-8, 1e-10, 1e-12)), key=lambda gc: gc[1])
+                    for r in (1e-8, 1e-10)), key=lambda gc: gc[1])
         return best
     ts = np.arange(2, N + 1)
     A = 1.0 / (ts[:, None] + ts[None, :] - 2.0)

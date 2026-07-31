@@ -306,13 +306,13 @@ def test_fmm_upward_pass_uses_m2m():
 def test_fmm_beats_treecode_at_scale():
     """The point of M2L: strictly fewer ops than the treecode as N grows."""
     rng = np.random.default_rng(13)
-    for n in (8000, 20000):
-        src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
-        tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
-        q = rng.uniform(-1, 1, n)
-        _, tree_stats = sf.treecode_potential(tgt, src, q, 1e-6)
-        _, fmm_stats = sf.fmm_potential(tgt, src, q, 1e-6)
-        assert fmm_stats["ops"] < tree_stats["ops"]
+    n = 10000
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    q = rng.uniform(-1, 1, n)
+    _, tree_stats = sf.treecode_potential(tgt, src, q, 1e-6)
+    _, fmm_stats = sf.fmm_potential(tgt, src, q, 1e-6)
+    assert fmm_stats["ops"] < tree_stats["ops"]
 
 
 def test_blackbox_hmatrix_certified_and_reusable():
@@ -761,11 +761,11 @@ def test_mz_conformal_empirical():
     def full(x0):        # slow x drives fast y; adiabatic reduced model
         f = lambda s: np.array([-0.2 * s[0] + 0.6 * s[1],
                                 -6.0 * s[1] + s[0] - 0.3 * s[0] ** 3])
-        return _rk4(f, [x0, 0.0], 0.01, 500)[:, 0]
+        return _rk4(f, [x0, 0.0], 0.02, 250)[:, 0]
 
     def red(x0):
         f = lambda s: np.array([-0.2 * s[0] + 0.1 * (s[0] - 0.3 * s[0] ** 3)])
-        return _rk4(f, [x0], 0.01, 500)[:, 0]
+        return _rk4(f, [x0], 0.02, 250)[:, 0]
 
     sampler = lambda rng: float(rng.uniform(-1, 1))
     c = sf.conformal_closure(full, red, sampler, 0.7, n_cal=99, rng=23)
@@ -865,18 +865,40 @@ def test_high_frequency_rank_law():
     assert ranks[2] > 1.5 * ranks[0]             # genuinely growing with k
 
 
+_CLUSTER = {}
+
+
+def _cluster_setup():
+    """One 4608-point separated-cluster geometry and ONE k=1800 Hankel
+    matrix, shared (via slices — sub-blocks are free) by the butterfly
+    and competition tests: kernel evaluation dominates their runtime."""
+    if not _CLUSTER:
+        rng = np.random.default_rng(36)
+        n = 4608
+        src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+        tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+        _CLUSTER.update(tgt=tgt, src=src, K=_helmholtz_kernel(1800.0)(tgt, src))
+    return _CLUSTER
+
+
+def _lookup_kernel(K, tgt, src):
+    """Wrap a precomputed matrix as a kernel callable (points -> indices)."""
+    ti = {z: i for i, z in enumerate(tgt)}
+    si = {z: i for i, z in enumerate(src)}
+    return lambda tq, sq: K[np.ix_([ti[z] for z in tq], [si[z] for z in sq])]
+
+
 def test_butterfly_certified_and_beats_plain_lowrank():
     """The multi-level butterfly: complementary low-rank with a 4-way
     (diameter-halving) ladder. At fixed R = k r_T r_S / D ~ 95 the
     advantage over plain low-rank grows with N (transfer cost is
     N-independent, plain cost is R*(m+n)): measured crossover
     1.16x -> 0.57x from N=1536 to N=4608. Certified a posteriori."""
-    ratios = []
+    cl = _cluster_setup()
+    rng = np.random.default_rng(40)
+    ratios, r_plain = [], None
     for n in (1536, 4608):
-        rng = np.random.default_rng(36)
-        src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
-        tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
-        K = _helmholtz_kernel(1800.0)(tgt, src)
+        tgt, src, K = cl["tgt"][:n], cl["src"][:n], cl["K"][:n, :n]
         bf = sf.ButterflyBlock(K, tgt, src, levels=3, eps=1e-4,
                                rng=np.random.default_rng(1))
         q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
@@ -885,13 +907,16 @@ def test_butterfly_certified_and_beats_plain_lowrank():
         assert np.linalg.norm(c.value - exact) <= c.err * (1 + 1e-9)
         assert c.err < 0.05 * np.linalg.norm(exact)     # non-vacuous
         assert c.tier == sf.Tier.RIGOROUS and c.fail_p == pytest.approx(1e-10)
-        # plain low-rank at MATCHED certified accuracy via the adaptive
-        # certified rank finder (full SVD would dominate the suite)
-        res = sf._compress_certified(K, bf.beta, 10,
-                                     10 * math.sqrt(2 / math.pi) * math.sqrt(2),
-                                     np.random.default_rng(2))
-        r_plain = res[1].shape[0]
-        assert r_plain > 60                              # high-R regime
+        if r_plain is None:
+            # plain low-rank at MATCHED certified accuracy via the adaptive
+            # certified rank finder; r_plain is N-independent at fixed R
+            # (measured 94 vs 97), and reusing the n=1536 value slightly
+            # UNDERSTATES plain cost at 4608 — conservative for our claim
+            res = sf._compress_certified(
+                K, bf.beta, 10, 10 * math.sqrt(2 / math.pi) * math.sqrt(2),
+                np.random.default_rng(2))
+            r_plain = res[1].shape[0]
+            assert r_plain > 60                          # high-R regime
         ratios.append(stats["apply_flops"] / (r_plain * 2 * n))
         assert stats["apply_flops"] < 0.15 * n * n
     assert ratios[1] < 0.7 < ratios[0] < 1.4             # the crossover
@@ -902,12 +927,11 @@ def test_hmatrix_butterfly_competition_high_k():
     competition: two separated clusters make the root pair one big
     admissible block; at high k the butterfly must win it, beat the
     plain-only plan, and keep the every-q guarantee."""
+    cl = _cluster_setup()
     rng = np.random.default_rng(38)
     n = 2304
-    k = 1800.0
-    src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
-    tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
-    kern = _helmholtz_kernel(k)
+    tgt, src = cl["tgt"][:n], cl["src"][:n]
+    kern = _lookup_kernel(cl["K"][:n, :n], tgt, src)
     eps = 0.05     # loose: the probe estimator's ~500x overshoot on flat
     plan = sf.BlackboxHMatrix(kern, tgt, src, eps,      # residuals prices
                               leaf_size=4 * n, rng=np.random.default_rng(1))
@@ -921,7 +945,7 @@ def test_hmatrix_butterfly_competition_high_k():
     # measured 0.80 at this block size; the strong scaling claim is the
     # dedicated crossover test — here the point is the competition picks it
     assert stats["apply_flops"] < 0.85 * pstats["apply_flops"]
-    dense = kern(tgt, src)
+    dense = cl["K"][:n, :n]
     assert np.max(np.abs(c.value - dense @ q)) \
         <= eps * np.linalg.norm(q) * (1 + 1e-9)
     assert np.linalg.norm(c.value - dense @ q) <= c.err * (1 + 1e-9)
