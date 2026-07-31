@@ -270,6 +270,39 @@ def test_fmm_certified_pointwise():
         assert stats["m2l_pairs"] > 0  # M2L path actually exercised
 
 
+def test_m2m_translation_is_exact():
+    """2D M2M is lower-triangular: coefficients built by recursive child
+    translation must equal direct P2M coefficients to FP precision, so M2M
+    adds no error term to the certificate."""
+    rng = np.random.default_rng(14)
+    src = rng.uniform(0, 1, 500) + 1j * rng.uniform(0, 1, 500)
+    q = rng.uniform(-1, 1, 500)
+    p = 25   # Pascal rows stay exact in float64 well beyond this
+    ops = {"p2m": 0, "m2m": 0}
+    root = sf._root(src, 10)
+    sf._ensure_coeffs(root, src, q, p, ops, via_m2m=True)
+    assert ops["m2m"] > 0 and root.children      # M2M path actually taken
+    direct = sf._root(src, 10)
+    sf._ensure_coeffs(direct, src, q, p, {"p2m": 0}, via_m2m=False)
+    A, r = float(np.abs(q).sum()), root.half * math.sqrt(2)
+    scale = A * r ** np.arange(1, p + 1)
+    assert np.all(np.abs(root.coeffs - direct.coeffs) <= 1e-12 * scale)
+
+
+def test_fmm_upward_pass_uses_m2m():
+    """P2M must now touch sources only at leaves; internal cells translate."""
+    rng = np.random.default_rng(15)
+    n = 20000
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    q = rng.uniform(-1, 1, n)
+    _, stats = sf.fmm_potential(tgt, src, q, 1e-6)
+    assert stats["m2m"] > 0
+    # leaf-only P2M is O(N * max order); the old per-cell scheme cost
+    # 2,836,416 ops on this exact input
+    assert stats["p2m"] + stats["m2m"] < 2_836_416
+
+
 def test_fmm_beats_treecode_at_scale():
     """The point of M2L: strictly fewer ops than the treecode as N grows."""
     rng = np.random.default_rng(13)

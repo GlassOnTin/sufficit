@@ -223,13 +223,33 @@ def _root(pts, leaf_size):
     return _build(pts, np.arange(len(pts)), (lo + hi) / 2, half, leaf_size)
 
 
-def _ensure_coeffs(S, src, q, p, ops):
+def _ensure_coeffs(S, src, q, p, ops, via_m2m=False):
+    if S.A is None:
+        S.Q, S.A = float(np.sum(q[S.idx])), float(np.sum(np.abs(q[S.idx])))
     have = len(S.coeffs)
-    if have < p:
+    if have >= p:
+        return
+    if not via_m2m or not S.children:      # P2M: directly from sources
         dz, qs = src[S.idx] - S.center, q[S.idx]
         new = [-np.sum(qs * dz**k) / k for k in range(have + 1, p + 1)]
-        S.coeffs = np.concatenate([S.coeffs, np.array(new, complex)])
         ops["p2m"] += len(S.idx) * (p - have)
+    else:                                  # M2M: lower-triangular, exact
+        for c in S.children:
+            _ensure_coeffs(c, src, q, p, ops, True)
+        deltas = [c.center - S.center for c in S.children]
+        new = np.zeros(p - have, complex)
+        row = np.ones(1)                   # C(l-1, k-1) for k = 1..l
+        for l in range(1, p + 1):
+            if l > 1:
+                row = np.concatenate([[1.0], row[:-1] + row[1:], [1.0]])
+            if l <= have:
+                continue
+            ks = np.arange(1, l + 1)
+            for c, d in zip(S.children, deltas):
+                new[l - have - 1] += -c.Q * d**l / l \
+                    + np.sum(c.coeffs[:l] * row * d ** (l - ks))
+                ops["m2m"] += l
+    S.coeffs = np.concatenate([S.coeffs, np.asarray(new, complex)])
 
 
 def _plan(T0, S0, symmetric):
@@ -375,7 +395,8 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
         cnt[T.idx] += 1
 
     out, bound = np.zeros(len(tgt)), np.zeros(len(tgt))
-    ops = {"p2m": 0, "m2l": 0, "l2l": 0, "l2p": 0, "far_eval": 0, "direct": 0}
+    ops = {"p2m": 0, "m2m": 0, "m2l": 0, "l2l": 0, "l2p": 0,
+           "far_eval": 0, "direct": 0}
     n_m2l = 0
     for T, S, rho in far:
         if S.A is None:
@@ -384,7 +405,7 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
         z0 = S.center - T.center
         D, beta = abs(z0), T.radius / abs(z0)
         p = _min_order(S.A, rho, eps_pair / 2)
-        _ensure_coeffs(S, src, q, p, ops)
+        _ensure_coeffs(S, src, q, p, ops, via_m2m=True)
         absb = np.abs(S.coeffs[:p])
         qloc = _min_order(S.A + abs(S.Q), beta, eps_pair / 2)
         while qloc <= _P_CAP and _m2l_tail(absb, S.Q, D, beta, qloc, p) \
@@ -404,7 +425,7 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
             p = _min_order(S.A, rho, eps_pair)
             if p > _P_CAP:
                 raise ValueError(f"eps={eps:g} needs order {p} at rho={rho:.3g}")
-            _ensure_coeffs(S, src, q, p, ops)
+            _ensure_coeffs(S, src, q, p, ops, via_m2m=True)
             w = tgt[T.idx] - S.center
             acc, wk = S.Q * np.log(np.abs(w)), np.ones_like(w)
             for k in range(p):
