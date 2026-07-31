@@ -574,6 +574,22 @@ class BlackboxHMatrix:
 # subgraph count is the named improvement path.
 
 
+def _kp_rate(t):
+    """Tilt rate s of the KP tail e^(-s L) at activity t; raises outside
+    the certified region. y* solves y^4 + y = 1 (per-vertex KP condition
+    x^4/(1-x) <= 1 with x = |t| e^(1+s) Delta^2, Delta = 4)."""
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if mid**4 + mid < 1 else (lo, mid)
+    t_max = lo / (math.e * 16)
+    if abs(t) >= t_max:
+        raise ValueError(
+            f"|tanh(beta J)|={abs(t):.4g} >= {t_max:.4g}: outside the "
+            "certified high-temperature region (KP with Delta^2n counting)")
+    return math.log(lo / (abs(t) * math.e * 16))
+
+
 def _ising2d_anchored_cycles(max_edges):
     """Edge counts of simple cycles on Z^2 whose lexicographically minimal
     vertex is the origin, each counted once, up to max_edges edges."""
@@ -605,17 +621,8 @@ def ising2d_logZ_density(beta: float, J: float = 1.0,
     if t == 0.0:
         return Certified(math.log(2.0), 0.0, Tier.RIGOROUS,
                          ("ising2d-cluster t=0 exact",))
-    lo, hi = 0.0, 1.0                       # y* solves y^4 + y = 1
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if mid**4 + mid < 1 else (lo, mid)
-    t_max = lo / (math.e * 16)
-    if abs(t) >= t_max:
-        raise ValueError(
-            f"|tanh(beta J)|={abs(t):.4g} >= {t_max:.4g}: outside the "
-            "certified high-temperature region (KP with Delta^2n counting)")
     L = 8
-    s = math.log(lo / (abs(t) * math.e * 16))
+    s = _kp_rate(t)
     err = math.exp(-L * s)
     if tol is not None and err > tol:
         raise ValueError(f"certified tail {err:.3g} exceeds tol={tol:.3g} "
@@ -624,4 +631,85 @@ def ising2d_logZ_density(beta: float, J: float = 1.0,
         + sum(t**n for n in _ising2d_anchored_cycles(L - 1))
     return Certified(f, err, Tier.RIGOROUS,
                      (f"ising2d-cluster L={L} s={s:.3g} t={t:.4g} "
+                      "[Kotecky-Preiss]",))
+
+
+def _connected_pinned_subgraphs(a, b, max_edges):
+    """Connected edge-subgraphs of Z^2 containing vertex a, <= max_edges
+    edges, with odd-degree set exactly {a, b}. Ban-list recursion generates
+    each subgraph once (cross-validated against brute force in the tests)."""
+    def about(v):
+        x, y = v
+        return [tuple(sorted([v, u])) for u in
+                ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))]
+
+    results = []
+
+    def rec(C, V, deg, banned):
+        if C and {v for v, d in deg.items() if d % 2} == {a, b}:
+            results.append(frozenset(C))
+        if len(C) == max_edges:
+            return
+        cand = sorted({e for v in (V or [a]) for e in about(v)
+                       if e not in C and e not in banned})
+        banned = set(banned)
+        for e in cand:
+            deg2 = dict(deg)
+            for v in e:
+                deg2[v] = deg2.get(v, 0) + 1
+            rec(C | {e}, V | set(e), deg2, banned)
+            banned.add(e)
+
+    rec(frozenset(), set(), {}, set())
+    return results
+
+
+def _cycles_touching(S):
+    """Edge counts of the polymers below 8 edges (unit squares and dominoes)
+    whose vertex set meets S, each counted once."""
+    xs, ys = [v[0] for v in S], [v[1] for v in S]
+    out = []
+    for i in range(min(xs) - 2, max(xs) + 1):
+        for j in range(min(ys) - 2, max(ys) + 1):
+            for w, h, n in ((1, 1, 4), (2, 1, 6), (1, 2, 6)):
+                verts = {(x, y) for x in range(i, i + w + 1)
+                         for y in range(j, j + h + 1)
+                         if x in (i, i + w) or y in (j, j + h)}
+                if verts & S:
+                    out.append(n)
+    return out
+
+
+def ising2d_bond_correlation(beta: float, J: float = 1.0,
+                             tol: float = None) -> Certified:
+    """Phase 2 rewrite: <s_a s_b> for a nearest-neighbor pair of the 2D
+    Ising model, via pinned clusters: every subgraph with odd set {a,b}
+    is one connected pinned polymer w0 times an even gas off its vertices,
+    so <s_a s_b> = sum_w0 t^|w0| exp(-Psi(V(w0))) with Psi the cluster sum
+    touching V(w0). Errors: pinned tail (walk count 16^n, dressing bounded
+    by e^((n+1)B)), Psi truncation at size 8 (tilted KP, per vertex),
+    propagated through exp. Same validity region and torus/limit scope
+    (m >= 8) as ising2d_logZ_density."""
+    t = math.tanh(beta * J)
+    if t == 0.0:
+        return Certified(0.0, 0.0, Tier.RIGOROUS, ("ising2d-pinned t=0",))
+    L = 8
+    s = _kp_rate(t)
+    x = 16 * math.e * abs(t)
+    B = x**4 / (1 - x)                  # per-vertex cluster-sum bound
+    total, e2 = 0.0, 0.0
+    for C in _connected_pinned_subgraphs((0, 0), (1, 0), L - 1):
+        S = {v for e in C for v in e}
+        psi = sum(t**n for n in _cycles_touching(S))
+        total += t ** len(C) * math.exp(-psi)
+        delta = len(S) * math.exp(-L * s)
+        e2 += abs(t) ** len(C) * math.exp(-psi) * (math.exp(delta) - 1)
+    y = 16 * abs(t) * math.exp(B)       # < y* < 1 inside the region
+    e1 = math.exp(B) * y**L / (1 - y)
+    err = e1 + e2
+    if tol is not None and err > tol:
+        raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "
+                         "at this temperature (order cap L=8)")
+    return Certified(total, err, Tier.RIGOROUS,
+                     (f"ising2d-pinned L={L} s={s:.3g} t={t:.4g} "
                       "[Kotecky-Preiss]",))

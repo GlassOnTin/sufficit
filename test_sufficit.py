@@ -417,6 +417,86 @@ def test_ising_refuses_outside_certified_region():
         sf.ising2d_logZ_density(0.012, tol=1e-12)   # tol unreachable at L=8
 
 
+def _ising_torus_bond_corr_tm(m, betaJ):
+    """Exact <s_(0,0) s_(0,1)> (same-row adjacent pair) on the m x m torus:
+    spin-product insertion in the row transfer matrix."""
+    s = np.arange(2 ** m, dtype=np.uint64)
+    rot = (s >> np.uint64(1)) | ((s & np.uint64(1)) << np.uint64(m - 1))
+    intra = m - 2 * np.bitwise_count(s ^ rot).astype(float)
+    inter = m - 2 * np.bitwise_count(s[:, None] ^ s[None, :]).astype(float)
+    A = np.exp(betaJ * intra)[:, None] * np.exp(betaJ * inter)
+    Am = np.linalg.matrix_power(A, m)
+    ins = (1 - 2 * (s & np.uint64(1)).astype(float)) \
+        * (1 - 2 * ((s >> np.uint64(1)) & np.uint64(1)).astype(float))
+    return float(np.sum(ins * np.diag(Am)) / np.trace(Am))
+
+
+def test_ising_tm_correlation_matches_exhaustive():
+    m = 4
+    bits = (np.arange(2 ** 16)[:, None] >> np.arange(16)[None, :]) & 1
+    spins = 1 - 2 * bits.astype(float)          # site (x, y) -> bit 4*x + y
+    energy = np.zeros(2 ** 16)
+    for x in range(m):
+        for y in range(m):
+            energy += spins[:, 4 * x + y] * (spins[:, 4 * ((x + 1) % m) + y]
+                                             + spins[:, 4 * x + (y + 1) % m])
+    for bJ in (0.005, 0.3):
+        w = np.exp(bJ * energy)
+        exact = float(np.sum(spins[:, 0] * spins[:, 1] * w) / np.sum(w))
+        assert abs(_ising_torus_bond_corr_tm(m, bJ) - exact) < 1e-12
+
+
+def test_pinned_enumeration_vs_bruteforce():
+    """The pinned-subgraph enumerator against brute force over all small
+    edge sets: same subgraphs, no duplicates."""
+    import itertools
+    a, b = (0, 0), (1, 0)
+    got = sf._connected_pinned_subgraphs(a, b, 3)
+    assert len(got) == len(set(got))            # each exactly once
+    verts = [(x, y) for x in range(-3, 4) for y in range(-3, 4)]
+    edges = sorted({tuple(sorted([v, (v[0] + dx, v[1] + dy)]))
+                    for v in verts for dx, dy in ((1, 0), (0, 1))
+                    if (v[0] + dx, v[1] + dy) in verts})
+    expect = set()
+    for n in (1, 2, 3):
+        for combo in itertools.combinations(edges, n):
+            deg = {}
+            for u, v in combo:
+                deg[u] = deg.get(u, 0) + 1
+                deg[v] = deg.get(v, 0) + 1
+            if {v for v, d in deg.items() if d % 2} != {a, b}:
+                continue
+            comp, todo = {combo[0][0]}, [combo[0][0]]
+            while todo:
+                x = todo.pop()
+                for u, v in combo:
+                    for p, o in ((u, v), (v, u)):
+                        if p == x and o not in comp:
+                            comp.add(o)
+                            todo.append(o)
+            if a in comp and all(u in comp for u, _ in combo):
+                expect.add(frozenset(combo))
+    assert set(got) == expect
+
+
+def test_ising_bond_correlation_certified():
+    """Local observable via pinned clusters, verified against the exact
+    transfer matrix on the 10x10 torus."""
+    for bJ in (0.001, 0.005, 0.012):
+        truth = _ising_torus_bond_corr_tm(10, bJ)
+        c = sf.ising2d_bond_correlation(bJ)
+        assert abs(c.value - truth) <= c.err * (1 + 1e-9) + 1e-15
+        assert c.value > 0 and c.tier == sf.Tier.RIGOROUS
+    c = sf.ising2d_bond_correlation(0.005)
+    assert c.err < 1e-4                          # useful, not just valid
+    assert sf.ising2d_bond_correlation(0.0).value == 0.0
+
+
+def test_ising_bond_correlation_refuses():
+    with pytest.raises(ValueError):
+        sf.ising2d_bond_correlation(0.1)
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
