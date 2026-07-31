@@ -190,7 +190,7 @@ _P_CAP = 300        # order beyond this means the tolerance is absurd
 
 class _Cell:
     __slots__ = ("center", "half", "idx", "radius", "children",
-                 "coeffs", "Q", "A")
+                 "coeffs", "Q", "A", "local")
 
     def __init__(self, pts, idx, center, half):
         self.center, self.half, self.idx = center, half, idx
@@ -198,6 +198,7 @@ class _Cell:
         self.children = []
         self.coeffs = np.zeros(0, complex)   # multipole b_k, grown on demand
         self.Q = self.A = None
+        self.local = None                    # local (Taylor) coeffs, FMM only
 
 
 def _build(pts, idx, center, half, leaf_size, depth=0):
@@ -231,6 +232,29 @@ def _ensure_coeffs(S, src, q, p, ops):
         ops["p2m"] += len(S.idx) * (p - have)
 
 
+def _plan(T0, S0, symmetric):
+    """Dual traversal into far pairs (T, S, rho_wc) and direct pairs (T, S).
+    symmetric additionally requires the target cell to be small relative to
+    the pair distance, which local expansions (FMM) need to converge."""
+    far, direct, stack = [], [], [(T0, S0)]
+    while stack:
+        T, S = stack.pop()
+        d = abs(T.center - S.center)
+        dmin = d - T.radius
+        ok = dmin > 0 and S.radius / dmin <= _RHO_MAX
+        if ok and symmetric:
+            ok = d - S.radius > 0 and T.radius / (d - S.radius) <= _RHO_MAX
+        if ok:
+            far.append((T, S, S.radius / dmin))
+        elif not T.children and not S.children:
+            direct.append((T, S))
+        elif S.children and (not T.children or S.half >= T.half):
+            stack += [(T, c) for c in S.children]
+        else:
+            stack += [(c, S) for c in T.children]
+    return far, direct
+
+
 def treecode_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
                        eps: float, leaf_size: int = 48):
     """Phase 1 rewrite: sum_j q_j log|z_i - src_j| for every target, each
@@ -240,19 +264,7 @@ def treecode_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
     if eps <= 0:
         raise ValueError("eps must be positive")
     T0, S0 = _root(tgt, leaf_size), _root(src, leaf_size)
-
-    far, direct, stack = [], [], [(T0, S0)]
-    while stack:
-        T, S = stack.pop()
-        dmin = abs(T.center - S.center) - T.radius
-        if dmin > 0 and S.radius / dmin <= _RHO_MAX:
-            far.append((T, S, S.radius / dmin))
-        elif not T.children and not S.children:
-            direct.append((T, S))
-        elif S.children and (not T.children or S.half >= T.half):
-            stack += [(T, c) for c in S.children]
-        else:
-            stack += [(c, S) for c in T.children]
+    far, direct = _plan(T0, S0, symmetric=False)
 
     cnt = np.zeros(len(tgt), int)          # far interactions per target
     for T, _, _ in far:
@@ -287,4 +299,150 @@ def treecode_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
     cert = Certified(out, float(np.linalg.norm(bound)), Tier.RIGOROUS,
                      (f"treecode eps={eps:g} far={len(far)} "
                       f"direct={len(direct)}",))
+    return cert, stats
+
+
+# ------------------------------------------------------------- full FMM:
+# M2L translates a source cell's multipole into a local (Taylor) expansion
+# at the target cell; locals pass down the tree exactly (L2L is polynomial
+# recentering, L2P is evaluation), so the only new error is the M2L
+# truncation, bounded rigorously below. No M2M: multipoles still come from
+# sources directly, keeping an O(N log N) term in the upward pass.
+
+
+def _m2l_tail(absb, Q, D, beta, qloc, p):
+    """Bound on |M_p(z) - Local_qloc(z)| for |z - c_T| <= beta*D: Taylor
+    tails of the log term (geometric) and each 1/(z-c_S)^k term (binomial
+    series majorized geometrically once its term ratio drops below 1)."""
+    t = _tail(abs(Q), beta, qloc)
+    for k in range(1, p + 1):
+        denom = 1 - beta * (qloc + k + 1) / (qloc + 2)
+        if denom <= 0:
+            return math.inf
+        t += (absb[k - 1] / D**k) * math.comb(qloc + k, k - 1) \
+            * beta ** (qloc + 1) / denom
+    return t
+
+
+def _m2l_coeffs(S, z0, p, qloc):
+    """Translate S's p-term multipole about c_S into qloc-term local coeffs
+    about c_T, where z0 = c_S - c_T. Exact for the p-term expansion."""
+    b = S.coeffs[:p]
+    sgn = (-1.0) ** np.arange(1, p + 1)
+    zk = z0 ** -np.arange(1, p + 1)
+    out = np.zeros(qloc + 1, complex)
+    out[0] = S.Q * np.log(-z0) + np.sum(b * sgn * zk)
+    combs = np.ones(p)                      # C(l+k-1, k-1) built row by row
+    for l in range(1, qloc + 1):
+        combs *= (l + np.arange(1, p + 1) - 1) / l
+        out[l] = -S.Q / (l * z0**l) + np.sum(b * sgn * combs * zk) / z0**l
+    return out
+
+
+def _shift_poly(c, delta):
+    """Recenter sum_l c_l s^l with s = t + delta: exact, same degree."""
+    out = np.zeros(len(c), complex)
+    for m in range(len(c)):
+        comb, dp, acc = 1.0, 1.0 + 0j, 0j
+        for l in range(m, len(c)):
+            acc += comb * dp * c[l]
+            comb *= (l + 1) / (l + 1 - m)
+            dp *= delta
+        out[m] = acc
+    return out
+
+
+def _pad_add(a, b):
+    if len(a) < len(b):
+        a, b = b, a
+    out = a.copy()
+    out[:len(b)] += b
+    return out
+
+
+def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
+                  eps: float, leaf_size: int = 48):
+    """Full-FMM rewrite (minus M2M): per-target certified potential as in
+    treecode_potential, but far pairs feed local expansions via M2L when
+    that is cheaper than evaluating the multipole at every target."""
+    if eps <= 0:
+        raise ValueError("eps must be positive")
+    T0, S0 = _root(tgt, leaf_size), _root(src, leaf_size)
+    far, direct = _plan(T0, S0, symmetric=True)
+
+    cnt = np.zeros(len(tgt), int)
+    for T, _, _ in far:
+        cnt[T.idx] += 1
+
+    out, bound = np.zeros(len(tgt)), np.zeros(len(tgt))
+    ops = {"p2m": 0, "m2l": 0, "l2l": 0, "l2p": 0, "far_eval": 0, "direct": 0}
+    n_m2l = 0
+    for T, S, rho in far:
+        if S.A is None:
+            S.Q, S.A = float(np.sum(q[S.idx])), float(np.sum(np.abs(q[S.idx])))
+        eps_pair = eps / cnt[T.idx].max()
+        z0 = S.center - T.center
+        D, beta = abs(z0), T.radius / abs(z0)
+        p = _min_order(S.A, rho, eps_pair / 2)
+        _ensure_coeffs(S, src, q, p, ops)
+        absb = np.abs(S.coeffs[:p])
+        qloc = _min_order(S.A + abs(S.Q), beta, eps_pair / 2)
+        while qloc <= _P_CAP and _m2l_tail(absb, S.Q, D, beta, qloc, p) \
+                > eps_pair / 2:
+            qloc += 1
+        while qloc > 0 and _m2l_tail(absb, S.Q, D, beta, qloc - 1, p) \
+                <= eps_pair / 2:
+            qloc -= 1
+        if qloc <= _P_CAP and (qloc + 1) * (p + 1) < len(T.idx) * (p + 1):
+            T.local = _m2l_coeffs(S, z0, p, qloc) if T.local is None \
+                else _pad_add(T.local, _m2l_coeffs(S, z0, p, qloc))
+            bound[T.idx] += _tail(S.A, rho, p) \
+                + _m2l_tail(absb, S.Q, D, beta, qloc, p)
+            ops["m2l"] += (qloc + 1) * (p + 1)
+            n_m2l += 1
+        else:                               # multipole eval is cheaper here
+            p = _min_order(S.A, rho, eps_pair)
+            if p > _P_CAP:
+                raise ValueError(f"eps={eps:g} needs order {p} at rho={rho:.3g}")
+            _ensure_coeffs(S, src, q, p, ops)
+            w = tgt[T.idx] - S.center
+            acc, wk = S.Q * np.log(np.abs(w)), np.ones_like(w)
+            for k in range(p):
+                wk = wk / w
+                acc = acc + (S.coeffs[k] * wk).real
+            out[T.idx] += acc
+            bound[T.idx] += _tail(S.A, rho, p)
+            ops["far_eval"] += len(T.idx) * (p + 1)
+
+    def down(T, inherited):
+        total = inherited if T.local is None else _pad_add(T.local, inherited)
+        if T.children:
+            for c in T.children:
+                if len(total):
+                    ops["l2l"] += len(total) ** 2
+                    down(c, _shift_poly(total, c.center - T.center))
+                else:
+                    down(c, total)   # locals may exist deeper down
+        elif len(total):
+            w = tgt[T.idx] - T.center
+            acc = np.zeros_like(w)
+            for coef in total[::-1]:
+                acc = acc * w + coef
+            out[T.idx] += acc.real
+            ops["l2p"] += len(T.idx) * len(total)
+    down(T0, np.zeros(0, complex))
+
+    for T, S in direct:
+        out[T.idx] += np.log(np.abs(tgt[T.idx, None] - src[None, S.idx])) @ q[S.idx]
+        ops["direct"] += len(T.idx) * len(S.idx)
+
+    total = sum(ops.values())
+    stats = {"ops": total, "dense_ops": len(tgt) * len(src),
+             "speedup": len(tgt) * len(src) / total,
+             "max_bound": float(bound.max()),
+             "m2l_pairs": n_m2l, "eval_pairs": len(far) - n_m2l,
+             "direct_pairs": len(direct), **ops}
+    cert = Certified(out, float(np.linalg.norm(bound)), Tier.RIGOROUS,
+                     (f"fmm eps={eps:g} m2l={n_m2l} "
+                      f"eval={len(far) - n_m2l} direct={len(direct)}",))
     return cert, stats

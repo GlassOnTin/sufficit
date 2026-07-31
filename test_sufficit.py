@@ -253,6 +253,35 @@ def test_treecode_speedup_grows_with_n():
     assert speedups == sorted(speedups) and speedups[-1] > speedups[0]
 
 
+def test_fmm_certified_pointwise():
+    """M2L + local expansions must keep the pointwise certificate."""
+    rng = np.random.default_rng(12)
+    src = rng.uniform(0, 1, 2000) + 1j * rng.uniform(0, 1, 2000)
+    tgt = rng.uniform(0, 1, 2000) + 1j * rng.uniform(0, 1, 2000)
+    q = rng.uniform(-1, 1, 2000)
+    dense = np.log(np.abs(tgt[:, None] - src[None, :])) @ q
+    for eps in (1e-3, 1e-6, 1e-9):
+        c, stats = sf.fmm_potential(tgt, src, q, eps)
+        assert np.max(np.abs(c.value - dense)) <= eps * (1 + 1e-9) + 1e-12
+        assert stats["max_bound"] <= eps * (1 + 1e-9)
+        assert np.linalg.norm(c.value - dense) <= c.err * (1 + 1e-9) + 1e-12
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+        assert stats["ops"] < stats["dense_ops"]
+        assert stats["m2l_pairs"] > 0  # M2L path actually exercised
+
+
+def test_fmm_beats_treecode_at_scale():
+    """The point of M2L: strictly fewer ops than the treecode as N grows."""
+    rng = np.random.default_rng(13)
+    for n in (8000, 20000):
+        src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+        tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+        q = rng.uniform(-1, 1, n)
+        _, tree_stats = sf.treecode_potential(tgt, src, q, 1e-6)
+        _, fmm_stats = sf.fmm_potential(tgt, src, q, 1e-6)
+        assert fmm_stats["ops"] < tree_stats["ops"]
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
