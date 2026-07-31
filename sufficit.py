@@ -467,3 +467,89 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
                      (f"fmm eps={eps:g} m2l={n_m2l} "
                       f"eval={len(far) - n_m2l} direct={len(direct)}",))
     return cert, stats
+
+
+# ------------------------------------------------- black-box kernels:
+# a certified H-matrix. Only kernel(tgt_pts, src_pts) -> block is assumed —
+# no expansions, no smoothness proofs. Each admissible block is compressed
+# by the randomized range finder and certified a posteriori by Gaussian
+# probes (operator-norm bound, so it holds for EVERY later charge vector);
+# fail_p union-bounds over all blocks and rounds. Build cost is ~N^2
+# kernel evals — certification requires touching every block once — so
+# the value is amortization: each apply is cheap and certified.
+
+
+class BlackboxHMatrix:
+    """Guarantee per apply(q): pointwise error <= eps * ||q||_2, with the
+    plan's stated fail_p. Tier RIGOROUS (exact arithmetic)."""
+
+    def __init__(self, kernel, tgt, src, eps, leaf_size=48, n_probes=10,
+                 rng=None):
+        if eps <= 0:
+            raise ValueError("eps must be positive")
+        rng = np.random.default_rng(rng)
+        far, direct = _plan(_root(tgt, leaf_size), _root(src, leaf_size),
+                            symmetric=False)
+        cnt = np.zeros(len(tgt), int)
+        for T, _, _ in far:
+            cnt[T.idx] += 1
+
+        self.n_tgt, self.n_src = len(tgt), len(src)
+        self.far, self.near = [], []
+        self.fail_p, evals, flops = 0.0, 0, 0
+        scale = 10.0 * math.sqrt(2.0 / math.pi)
+        for T, S, _ in far:
+            K = kernel(tgt[T.idx], src[S.idx])
+            evals += K.size
+            tol = eps / cnt[T.idx].max()
+            rank, full = 4, min(K.shape)
+            while True:
+                Q, _ = np.linalg.qr(K @ rng.standard_normal((K.shape[1], rank)))
+                R = K @ rng.standard_normal((K.shape[1], n_probes))
+                R -= Q @ (Q.T @ R)
+                beta = scale * float(np.max(np.linalg.norm(R, axis=0)))
+                self.fail_p += 10.0 ** (-n_probes)
+                flops += K.size * (rank + n_probes)
+                if beta <= tol or rank >= full:
+                    break
+                rank = min(2 * rank, full)
+            if beta > tol:
+                raise ValueError(f"block {K.shape} not compressible to "
+                                 f"{tol:.3g}: probe bound {beta:.3g}")
+            # doubling overshoots; trim rigorously: ||K - U'V'|| <= beta
+            # + sigma_{r'+1} of the certified factor, no new probes needed
+            U2, s2, Vt2 = np.linalg.svd(Q.T @ K, full_matrices=False)
+            keep = int(np.searchsorted(-(beta + s2), -tol)) if len(s2) else 0
+            keep = max(keep, 1)
+            flops += K.size * rank
+            if keep * (K.shape[0] + K.shape[1]) < K.size:
+                self.far.append((T.idx, S.idx, (Q @ U2[:, :keep]) * s2[:keep],
+                                 Vt2[:keep], beta + (s2[keep] if keep < len(s2)
+                                                     else 0.0)))
+            else:               # factors would cost more than the block does
+                self.near.append((T.idx, S.idx, K))
+        for T, S in direct:
+            K = kernel(tgt[T.idx], src[S.idx])
+            evals += K.size
+            self.near.append((T.idx, S.idx, K))
+        self.stats = {"kernel_evals": evals, "setup_flops": flops,
+                      "far_blocks": len(self.far),
+                      "near_blocks": len(self.near), "fail_p": self.fail_p}
+
+    def apply(self, q):
+        out, bound, flops = np.zeros(self.n_tgt), np.zeros(self.n_tgt), 0
+        for ti, si, U, V, beta in self.far:
+            out[ti] += U @ (V @ q[si])
+            bound[ti] += beta * float(np.linalg.norm(q[si]))
+            flops += V.shape[0] * (len(ti) + len(si))
+        for ti, si, K in self.near:
+            out[ti] += K @ q[si]
+            flops += len(ti) * len(si)
+        stats = {"apply_flops": flops,
+                 "dense_flops": self.n_tgt * self.n_src,
+                 "speedup": self.n_tgt * self.n_src / flops,
+                 "max_bound": float(bound.max())}
+        cert = Certified(out, float(np.linalg.norm(bound)), Tier.RIGOROUS,
+                         (f"blackbox-hmatrix far={len(self.far)} "
+                          f"near={len(self.near)}",), self.fail_p)
+        return cert, stats

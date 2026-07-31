@@ -315,6 +315,48 @@ def test_fmm_beats_treecode_at_scale():
         assert fmm_stats["ops"] < tree_stats["ops"]
 
 
+def test_blackbox_hmatrix_certified_and_reusable():
+    """Black-box kernel: build once at ~N^2 kernel evals, then every apply
+    is cheap and carries a certificate valid for any charge vector, with
+    pointwise error <= eps * ||q||_2."""
+    rng = np.random.default_rng(16)
+    n = 4000
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    kernel = lambda t, s: 1.0 / np.sqrt(np.abs(t[:, None] - s[None, :]) ** 2
+                                        + 0.01)          # Plummer, no analytic
+    eps = 1e-6                                           # structure exposed
+    plan = sf.BlackboxHMatrix(kernel, tgt, src, eps, leaf_size=96, rng=rng)
+    assert plan.fail_p > 0                # probabilistic certificate, stated
+    assert plan.stats["kernel_evals"] <= n * n
+    dense = kernel(tgt, src)
+    for _ in range(2):                    # one plan, many charge vectors
+        q = rng.standard_normal(n)
+        c, stats = plan.apply(q)
+        assert np.max(np.abs(c.value - dense @ q)) \
+            <= eps * np.linalg.norm(q) * (1 + 1e-9)
+        assert stats["max_bound"] <= eps * np.linalg.norm(q) * (1 + 1e-9)
+        assert np.linalg.norm(c.value - dense @ q) <= c.err * (1 + 1e-9) + 1e-12
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == plan.fail_p
+        assert stats["apply_flops"] < 0.5 * n * n
+
+
+def test_blackbox_agrees_with_analytic_fmm():
+    """Mutual certification: the black-box compression of the log kernel and
+    the analytic FMM must agree within the sum of their bounds."""
+    rng = np.random.default_rng(17)
+    n = 1500
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    q = rng.uniform(-1, 1, n)
+    eps = 1e-6
+    kernel = lambda t, s: np.log(np.abs(t[:, None] - s[None, :]))
+    bb, bb_stats = sf.BlackboxHMatrix(kernel, tgt, src, eps, rng=rng).apply(q)
+    an, _ = sf.fmm_potential(tgt, src, q, eps)
+    assert np.max(np.abs(bb.value - an.value)) \
+        <= bb_stats["max_bound"] + eps + 1e-12
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
