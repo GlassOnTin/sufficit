@@ -2011,15 +2011,9 @@ def _md_integrals(atoms, shells):
     return S, h, eri, enuc
 
 
-def _fock_hamiltonian(S, h, eri, enuc):
-    """Lowdin-orthogonalize, Jordan-Wigner, assemble the 4^nao Fock-space
-    Hamiltonian (sparse internally, dense out)."""
+def _jw_ann(nso):
+    """Sparse Jordan-Wigner annihilation operators on nso spin orbitals."""
     from scipy import sparse
-    w, U = np.linalg.eigh(S)
-    Xo = U @ np.diag(w ** -0.5) @ U.T
-    h = Xo @ h @ Xo
-    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
-    nso = 2 * len(h)
     I2 = sparse.identity(2, format="csr")
     Zm = sparse.diags([1.0, -1.0]).tocsr()
     low = sparse.csr_matrix(np.array([[0.0, 1.0], [0.0, 0.0]]))
@@ -2029,6 +2023,19 @@ def _fock_hamiltonian(S, h, eri, enuc):
         for mm in [Zm] * pp + [low] + [I2] * (nso - pp - 1):
             op = sparse.kron(op, mm, format="csr")
         ann.append(op)
+    return ann
+
+
+def _fock_hamiltonian(S, h, eri, enuc):
+    """Lowdin-orthogonalize, Jordan-Wigner, assemble the 4^nao Fock-space
+    Hamiltonian (sparse internally, dense out)."""
+    from scipy import sparse
+    w, U = np.linalg.eigh(S)
+    Xo = U @ np.diag(w ** -0.5) @ U.T
+    h = Xo @ h @ Xo
+    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
+    nso = 2 * len(h)
+    ann = _jw_ann(nso)
     dim = 2 ** nso
     H = sparse.identity(dim, format="csr") * enuc
     n_sp = len(h)
@@ -2066,3 +2073,281 @@ def h2_polarized_bracket(R: float) -> Certified:
     c = eigen_bracket(_fock_hamiltonian(*_md_integrals(atoms, shells)))
     return replace(c, provenance=(f"h2-s+pz-bracket R={R:g} "
                                   + c.provenance[0],))
+
+
+# ---------------------------------------------------------- the marriage:
+# molecular integrals x marginal-SDP bracket, on hydrogen chains — a
+# certified two-sided bracket for molecular Fock spaces too big to form.
+# Terms are classified by orbital spread (JW strings stay inside
+# contiguous windows, so window lambda_min bounds are valid for
+# fermions). The genuinely molecular difficulty — long-range Coulomb —
+# is handled exactly per far atom pair: F_ij = g(n_i-1)(n_j-1)
+# + (v+g)n_i + (v+g)n_j + (1/R-g), with the quadratic part bounded by
+# operator AM-GM, g(n_i-1)(n_j-1) >= -(g/2)[(n_i-1)^2 + (n_j-1)^2] —
+# local charge-fluctuation penalties absorbed into windows; linear parts
+# and constants exact; exponentially small far exchange terms take norm
+# bounds. Upper: product of exactly solved atom blocks, cross energies
+# by exact factorization of block-diagonal 1-RDMs (fermionic signs are
+# benign — cross operators move in even pairs). No correction
+# multipliers yet (the Heisenberg bundle machinery is the named
+# tightening path).
+
+
+@functools.lru_cache(maxsize=None)
+def _h_chain_basis(n, d):
+    """Lowdin-orthogonalized (T, V[c], eri, enuc) for the n-atom hydrogen
+    chain at spacing d bohr, STO-3G. V[c] is the attraction to nucleus c
+    separately — the far-pair decomposition needs it."""
+    centers = [np.array([0.0, 0.0, i * d]) for i in range(n)]
+    prims = _sto3g_h()
+    S = np.zeros((n, n))
+    T = np.zeros((n, n))
+    V = np.zeros((n, n, n))
+    for i in range(n):
+        for j in range(i, n):
+            A, B = centers[i], centers[j]
+            ab2 = float(np.dot(A - B, A - B))
+            for a, ca in prims:
+                for b, cb in prims:
+                    p = a + b
+                    mu = a * b / p
+                    K = math.exp(-mu * ab2)
+                    P = (a * A + b * B) / p
+                    S[i, j] += ca * cb * (math.pi / p) ** 1.5 * K
+                    T[i, j] += ca * cb * mu * (3 - 2 * mu * ab2) \
+                        * (math.pi / p) ** 1.5 * K
+                    for c in range(n):
+                        pc2 = float(np.dot(P - centers[c], P - centers[c]))
+                        V[c, i, j] -= ca * cb * (2 * math.pi / p) * K \
+                            * _boys0(p * pc2)
+            S[j, i] = S[i, j]
+            T[j, i] = T[i, j]
+            V[:, j, i] = V[:, i, j]
+    eri = np.zeros((n, n, n, n))
+    pairs = [(i, j) for i in range(n) for j in range(i, n)]
+    for pi, (i, j) in enumerate(pairs):
+        for k, l in pairs[pi:]:
+            A, B, C, D = centers[i], centers[j], centers[k], centers[l]
+            ab2 = float(np.dot(A - B, A - B))
+            cd2 = float(np.dot(C - D, C - D))
+            val = 0.0
+            for a, ca in prims:
+                for b, cb in prims:
+                    p = a + b
+                    Kab = math.exp(-a * b / p * ab2)
+                    P = (a * A + b * B) / p
+                    for c, cc in prims:
+                        for dd, cd_ in prims:
+                            q = c + dd
+                            Kcd = math.exp(-c * dd / q * cd2)
+                            Q = (c * C + dd * D) / q
+                            pq2 = float(np.dot(P - Q, P - Q))
+                            val += ca * cb * cc * cd_ \
+                                * 2 * math.pi ** 2.5 \
+                                / (p * q * math.sqrt(p + q)) * Kab * Kcd \
+                                * _boys0(p * q / (p + q) * pq2)
+            for a_, b_ in ((i, j), (j, i)):
+                for c_, d_ in ((k, l), (l, k)):
+                    eri[a_, b_, c_, d_] = eri[c_, d_, a_, b_] = val
+    w, U = np.linalg.eigh(S)
+    Xo = U @ np.diag(w ** -0.5) @ U.T
+    T = Xo @ T @ Xo
+    V = np.einsum("cpq,pi,qj->cij", V, Xo, Xo)
+    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
+    enuc = sum(1.0 / (d * (j - i)) for i in range(n) for j in range(i + 1, n))
+    return T, V, eri, enuc
+
+
+def h_chain_fock_hamiltonian(n, d):
+    """Dense 4^n Fock Hamiltonian for the hydrogen chain (formable n)."""
+    T, V, eri, enuc = _h_chain_basis(n, d)
+    return _fock_hamiltonian(np.eye(n), T + V.sum(0), eri, enuc)
+
+
+def _window_operator(hw, eriw, lin, quad, const):
+    """Sparse-assembled window operator on 2*len(hw) spin orbitals:
+    one- and two-electron parts plus per-site linear n and -(quad)(n-1)^2
+    charge-penalty terms and a constant."""
+    from scipy import sparse
+    nsp = len(hw)
+    ann = _jw_ann(2 * nsp)
+    dim = 4 ** nsp
+    H = sparse.identity(dim, format="csr") * const
+    for p in range(nsp):
+        for q in range(nsp):
+            if hw[p, q] != 0.0:
+                for sp in range(2):
+                    H = H + hw[p, q] * (ann[2 * p + sp].T @ ann[2 * q + sp])
+    for p in range(nsp):
+        for q in range(nsp):
+            for r in range(nsp):
+                for s2 in range(nsp):
+                    g = eriw[p, r, q, s2]
+                    if abs(g) < 1e-14:
+                        continue
+                    for sa in range(2):
+                        for sb in range(2):
+                            H = H + 0.5 * g * (
+                                ann[2 * p + sa].T @ ann[2 * q + sb].T
+                                @ ann[2 * s2 + sb] @ ann[2 * r + sa])
+    eye = sparse.identity(dim, format="csr")
+    for i in range(nsp):
+        num = ann[2 * i].T @ ann[2 * i] + ann[2 * i + 1].T @ ann[2 * i + 1]
+        if lin[i] != 0.0:
+            H = H + lin[i] * num
+        if quad[i] != 0.0:
+            dev = num - eye
+            H = H - quad[i] * (dev @ dev)
+    return np.asarray(H.todense())
+
+
+def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3) -> Certified:
+    """Certified two-sided bracket on the ground energy of the n-atom
+    hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell."""
+    T, V, eri, _ = _h_chain_basis(n, d)
+    h_full = T + V.sum(0)
+
+    def mcount(lo, hi):
+        return min(lo, n - ell) - max(0, hi - ell + 1) + 1
+
+    nw = n - ell + 1
+    hW = [np.zeros((ell, ell)) for _ in range(nw)]
+    eriW = [np.zeros((ell, ell, ell, ell)) for _ in range(nw)]
+    linW = [np.zeros(ell) for _ in range(nw)]
+    quadW = [np.zeros(ell) for _ in range(nw)]
+    constW = [0.0] * nw
+    lower_const, penalty = 0.0, 0.0
+
+    def windows_of(lo, hi):
+        return range(max(0, hi - ell + 1), min(lo, n - ell) + 1)
+
+    # one-electron terms
+    for i in range(n):
+        for j in range(n):
+            lo, hi = min(i, j), max(i, j)
+            if hi - lo < ell:
+                hij = h_full[i, j]
+                if i == j:      # far attractions leave for the F pairs
+                    hij -= sum(V[c, i, i] for c in range(n)
+                               if abs(c - i) >= ell)
+                m = mcount(lo, hi)
+                for w in windows_of(lo, hi):
+                    hW[w][i - w, j - w] += hij / m
+            else:
+                penalty += 2 * abs(h_full[i, j])
+    # two-electron terms, enumerated exactly as the assembly does
+    for p in range(n):
+        for q in range(n):
+            for r in range(n):
+                for s2 in range(n):
+                    g = eri[p, r, q, s2]
+                    if abs(g) < 1e-14:
+                        continue
+                    lo, hi = min(p, q, r, s2), max(p, q, r, s2)
+                    if hi - lo < ell:
+                        m = mcount(lo, hi)
+                        for w in windows_of(lo, hi):
+                            eriW[w][p - w, r - w, q - w, s2 - w] += g / m
+                    elif p == r and q == s2 and abs(p - q) >= ell:
+                        pass    # the direct far pair, handled below
+                    else:
+                        penalty += 2 * abs(g)
+    # far pairs: exact neutral decomposition + operator AM-GM
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j - i < ell:     # near enuc goes to windows
+                m = mcount(i, j)
+                for w in windows_of(i, j):
+                    constW[w] += 1.0 / (d * (j - i)) / m
+                continue
+            g = eri[i, i, j, j]
+            vi, vj = V[j, i, i], V[i, j, j]
+            lower_const += 1.0 / (d * (j - i)) - g
+            for site, linc in ((i, vi + g), (j, vj + g)):
+                m = mcount(site, site)
+                for w in windows_of(site, site):
+                    linW[w][site - w] += linc / m
+                    quadW[w][site - w] += g / 2 / m
+    lower = lower_const - penalty
+    for w in range(nw):
+        c = eigen_bracket(_window_operator(hW[w], eriW[w], linW[w],
+                                           quadW[w], constW[w]))
+        lower += c.value - c.err
+
+    # upper: product of exactly solved blocks, cross energy by exact
+    # factorization of block-diagonal spin-orbital 1-RDMs
+    from scipy.sparse.linalg import eigsh
+    sizes = [ell] * (n // ell)
+    if n % ell:
+        sizes.append(n % ell)
+    blocks, start = [], 0
+    for size in sizes:
+        blocks.append(list(range(start, start + size)))
+        start += size
+    blk = {i: bi for bi, b in enumerate(blocks) for i in b}
+    upper = 0.0
+    gammas = {}
+    for bi, b in enumerate(blocks):
+        idx = np.ix_(b, b)
+        h_own = T[idx] + sum(V[c][idx] for c in b)
+        eri_b = eri[np.ix_(b, b, b, b)]
+        enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj > ii)
+        Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b)
+        _, Vec = eigsh(Hb, k=1, which="SA")
+        v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
+        e = float(v @ (Hb @ v))
+        upper += e + 8 * (len(Hb) + 2) * np.finfo(float).eps \
+            * (float(np.linalg.norm(Hb, 1)) + abs(e))
+        ann = _jw_ann(2 * len(b))
+        gam = np.zeros((2 * len(b), 2 * len(b)))
+        for P in range(2 * len(b)):
+            for R in range(2 * len(b)):
+                gam[P, R] = float(v @ (ann[P].T @ (ann[R] @ v)))
+        gammas[bi] = gam
+    # cross one-electron: block density in the field of other nuclei,
+    # plus kinetic/attraction cross matrix elements vanish (<a'a> = 0)
+    for bi, b in enumerate(blocks):
+        gam = gammas[bi]
+        for c in range(n):
+            if blk[c] == bi:
+                continue
+            for ii, p in enumerate(b):
+                for jj, r in enumerate(b):
+                    upper += V[c, p, r] * (gam[2 * ii, 2 * jj]
+                                           + gam[2 * ii + 1, 2 * jj + 1])
+        for other in range(bi + 1, len(blocks)):
+            upper += sum(1.0 / (d * abs(jj - ii))
+                         for ii in b for jj in blocks[other])
+    # cross two-electron by exact product-state factorization
+    for p in range(n):
+        for q in range(n):
+            if blk[p] == blk[q]:
+                continue
+            for r in range(n):
+                for s2 in range(n):
+                    g = eri[p, r, q, s2]
+                    if abs(g) < 1e-14:
+                        continue
+                    if blk[r] == blk[p] and blk[s2] == blk[q]:
+                        gA, gB = gammas[blk[p]], gammas[blk[q]]
+                        ip, ir = blocks[blk[p]].index(p), \
+                            blocks[blk[p]].index(r)
+                        iq, is2 = blocks[blk[q]].index(q), \
+                            blocks[blk[q]].index(s2)
+                        dA = gA[2 * ip, 2 * ir] + gA[2 * ip + 1, 2 * ir + 1]
+                        dB = gB[2 * iq, 2 * is2] + gB[2 * iq + 1, 2 * is2 + 1]
+                        upper += 0.5 * g * dA * dB
+                    if blk[s2] == blk[p] and blk[r] == blk[q]:
+                        gA, gB = gammas[blk[p]], gammas[blk[q]]
+                        ip, is2 = blocks[blk[p]].index(p), \
+                            blocks[blk[p]].index(s2)
+                        iq, ir = blocks[blk[q]].index(q), \
+                            blocks[blk[q]].index(r)
+                        for sp in range(2):
+                            upper -= 0.5 * g \
+                                * gA[2 * ip + sp, 2 * is2 + sp] \
+                                * gB[2 * iq + sp, 2 * ir + sp]
+    return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
+                     Tier.RIGOROUS,
+                     (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
+                      "block-product-upper",))

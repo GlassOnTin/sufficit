@@ -1314,6 +1314,36 @@ def test_h2_polarized_bracket_strictly_below_s_only():
     assert c_sp.tier == sf.Tier.RIGOROUS
 
 
+def test_h_chain_bracket_vs_exact_when_formable():
+    """The marriage, gated by exact FCI: for H4 the full 256-dim Fock
+    Hamiltonian is formable, and the window-decomposed bracket must
+    contain its exact ground energy."""
+    truth = float(np.linalg.eigvalsh(sf.h_chain_fock_hamiltonian(4, 1.8))[0])
+    c = sf.h_chain_bracket(4, 1.8, ell=3)
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    assert 2 * c.err < 0.5 * abs(truth)      # calibrated after measurement
+
+
+def test_h_chain_bracket_past_formable():
+    """H10: a 2^20-dimensional molecular Fock space, bracketed at window
+    cost. No dense truth exists; the checks are internal consistency and
+    physical sanity of the certified per-atom energy."""
+    c = sf.h_chain_bracket(10, 1.8, ell=3)
+    assert c.err > 0 and c.value == c.value  # well-formed
+    per_atom_lo = (c.value - c.err) / 10
+    per_atom_hi = (c.value + c.err) / 10
+    assert per_atom_lo < -0.45 and per_atom_hi > -0.65
+    assert per_atom_hi < -0.30               # upper genuinely binds
+    assert "marginal" in c.provenance[0]
+
+
+def test_h_chain_bracket_tightens_with_ell():
+    wide = sf.h_chain_bracket(8, 1.8, ell=2)
+    tight = sf.h_chain_bracket(8, 1.8, ell=3)
+    assert tight.err < wide.err
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
