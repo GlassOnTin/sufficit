@@ -12,7 +12,7 @@ Bounds are exact-arithmetic: floating-point rounding is not yet carried.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from typing import Any, Callable, Tuple
 
@@ -70,6 +70,38 @@ def lowrank_matvec(K: np.ndarray, q: np.ndarray, rank: int) -> Certified:
                      (f"lowrank r={rank} sigma={err:.3g}",))
 
 
+def lowrank_matvec_to_tol(K: np.ndarray, q: np.ndarray, tol: float) -> Certified:
+    """Inverse rewrite: smallest SVD rank whose certified error meets tol."""
+    # ponytail: SVD computed twice (here and in lowrank_matvec); fine at toy scale
+    s = np.linalg.svd(K, compute_uv=False)
+    tail = s * float(np.linalg.norm(q))
+    hits = np.nonzero(tail <= tol)[0]
+    rank = int(hits[0]) if len(hits) else len(s)
+    return lowrank_matvec(K, q, rank)
+
+
+def randomized_lowrank_matvec_to_tol(K: np.ndarray, q: np.ndarray, tol: float,
+                                     n_probes: int = 10, rng=None) -> Certified:
+    """Inverse rewrite: grow the sketch by rank doubling until the probe
+    certifies err <= tol (adaptive range finder). fail_p union-bounds over
+    every probe round the search consumed, not just the last one."""
+    rng = np.random.default_rng(rng)
+    max_rank = min(K.shape)
+    rank, rounds = 1, 0
+    while True:
+        rounds += 1
+        c = randomized_lowrank_matvec(K, q, rank, n_probes, rng)
+        if c.err <= tol:
+            break
+        if rank >= max_rank:
+            raise ValueError(f"cannot certify tol={tol:.3g}: full-rank probe "
+                             f"residual is {c.err:.3g} (floating-point floor)")
+        rank = min(2 * rank, max_rank)
+    return replace(c, provenance=(f"rand-probe-adaptive r={rank} "
+                                  f"rounds={rounds} k={n_probes}",),
+                   fail_p=min(1.0, rounds * 10.0 ** (-n_probes)))
+
+
 def randomized_lowrank_matvec(K: np.ndarray, q: np.ndarray, rank: int,
                               n_probes: int = 10, rng=None) -> Certified:
     """Rewrite: compress K@q via the randomized range finder, certified a
@@ -94,24 +126,47 @@ def randomized_lowrank_matvec(K: np.ndarray, q: np.ndarray, rank: int,
                      fail_p=10.0 ** (-n_probes))
 
 
+def _far_geometry(q, src, center, z):
+    """(A, rho) for the multipole tail bound; rejects targets inside the
+    source radius, where the bound is invalid."""
+    r = float(np.max(np.abs(src - center)))
+    d = abs(z - center)
+    if d <= r:
+        raise ValueError(f"target distance {d:.3g} <= source radius {r:.3g}: "
+                         "multipole tail bound invalid")
+    return float(np.sum(np.abs(q))), r / d
+
+
 def multipole_far_potential(q: np.ndarray, src: np.ndarray, center: complex,
                             z: complex, p: int) -> Certified:
     """Rewrite: truncate the 2D multipole expansion of sum_j q_j log|z - src_j|
     at order p (Greengard-Rokhlin tail bound). Requires |z - center| strictly
     outside the source radius."""
+    A, rho = _far_geometry(q, src, center, z)
     dz = src - center
-    r = float(np.max(np.abs(dz)))
     w = z - center
-    d = abs(w)
-    if d <= r:
-        raise ValueError(f"target distance {d:.3g} <= source radius {r:.3g}: "
-                         "multipole tail bound invalid")
-    Q = float(np.sum(q))
-    total = Q * np.log(w)
+    total = float(np.sum(q)) * np.log(w)
     for k in range(1, p + 1):
         total += (-np.sum(q * dz**k) / k) / w**k
-    A = float(np.sum(np.abs(q)))
-    rho = r / d
     err = A / (p + 1) * rho ** (p + 1) / (1 - rho)
     return Certified(float(total.real), err, Tier.RIGOROUS,
                      (f"multipole p={p} rho={rho:.3g}",))
+
+
+def multipole_to_tol(q: np.ndarray, src: np.ndarray, center: complex,
+                     z: complex, tol: float) -> Certified:
+    """Inverse rewrite: minimal truncation order whose tail bound meets tol.
+    Closed-form sufficient order from the geometric part, then walked down."""
+    if tol <= 0:
+        raise ValueError("tol must be positive")
+    A, rho = _far_geometry(q, src, center, z)
+    p = 0
+    if A > 0 and rho > 0:
+        t = tol * (1 - rho) / A
+        if t < 1:
+            p = max(0, math.ceil(math.log(t) / math.log(rho)) - 1)
+        def tail(p):
+            return A / (p + 1) * rho ** (p + 1) / (1 - rho)
+        while p > 0 and tail(p - 1) <= tol:
+            p -= 1
+    return multipole_far_potential(q, src, center, z, p)

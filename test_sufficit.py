@@ -3,11 +3,17 @@ measured against brute force. Bounds are exact-arithmetic; tests allow 1e-9
 relative slack for floating point, which the IR does not yet carry."""
 import math
 import random
+import re
 
 import numpy as np
 import pytest
 
 import sufficit as sf
+
+
+def _knob(c, key):
+    """Read a chosen parameter (rank, order, rounds) back out of provenance."""
+    return int(re.search(rf"{key}=(\d+)", c.provenance[0]).group(1))
 
 
 def test_tier_degrades_to_weakest():
@@ -123,6 +129,92 @@ def test_end_to_end_chain_with_randomized_probe():
     assert abs(obs.value - truth) <= obs.err * (1 + 1e-9) + 1e-12
     assert obs.tier == sf.Tier.RIGOROUS
     assert obs.fail_p == pytest.approx(1e-10)
+
+
+def test_svd_to_tol_meets_and_scales():
+    rng = np.random.default_rng(6)
+    x, y = rng.uniform(0, 1, 60), rng.uniform(2, 3, 50)
+    K = 1.0 / np.abs(x[:, None] - y[None, :])
+    q = rng.standard_normal(50)
+    exact = K @ q
+    ranks = []
+    for tol in (1e-2, 1e-4, 1e-6, 1e-8):
+        c = sf.lowrank_matvec_to_tol(K, q, tol)
+        assert c.err <= tol
+        assert np.linalg.norm(c.value - exact) <= tol * (1 + 1e-9) + 1e-12
+        ranks.append(_knob(c, "r"))
+    assert ranks == sorted(ranks) and ranks[-1] > ranks[0]
+
+
+def test_randomized_to_tol_meets_and_accounts_failure():
+    rng = np.random.default_rng(7)
+    x, y = rng.uniform(0, 1, 60), rng.uniform(2, 3, 50)
+    K = 1.0 / np.abs(x[:, None] - y[None, :])
+    q = rng.standard_normal(50)
+    ranks = []
+    for tol in (1e-1, 1e-4, 1e-7):
+        c = sf.randomized_lowrank_matvec_to_tol(K, q, tol, rng=rng)
+        assert c.err <= tol
+        assert np.linalg.norm(c.value - K @ q) <= tol * (1 + 1e-9) + 1e-12
+        # fail_p must account for every probe round the search consumed
+        assert c.fail_p == pytest.approx(_knob(c, "rounds") * 1e-10)
+        ranks.append(_knob(c, "r"))
+    assert ranks == sorted(ranks) and ranks[-1] > ranks[0]
+
+
+def test_randomized_to_tol_refuses_impossible_tolerance():
+    rng = np.random.default_rng(8)
+    K = rng.standard_normal((20, 15))
+    q = rng.standard_normal(15)
+    with pytest.raises(ValueError):
+        sf.randomized_lowrank_matvec_to_tol(K, q, 1e-300, rng=rng)
+
+
+def test_multipole_to_tol_minimal_order():
+    rng = np.random.default_rng(2)
+    src = rng.uniform(-0.5, 0.5, 40) + 1j * rng.uniform(-0.5, 0.5, 40)
+    q = rng.uniform(-1, 1, 40)
+    z = 3.0 + 2.0j
+    exact = float(np.sum(q * np.log(np.abs(z - src))))
+    orders = []
+    for tol in (1e-1, 1e-4, 1e-8, 1e-12):
+        c = sf.multipole_to_tol(q, src, 0j, z, tol)
+        assert c.err <= tol
+        assert abs(c.value - exact) <= tol * (1 + 1e-9) + 1e-12
+        p = _knob(c, "p")
+        orders.append(p)
+        if p > 0:  # minimality: one order less must miss the tolerance
+            assert sf.multipole_far_potential(q, src, 0j, z, p - 1).err > tol
+    assert orders == sorted(orders) and orders[-1] > orders[0]
+    with pytest.raises(ValueError):
+        sf.multipole_to_tol(q, src, 0j, z, 0.0)
+
+
+def test_tolerance_driven_end_to_end():
+    """The query-first interface: state eps, the system picks every knob.
+    Certified and actual error meet eps; cost grows only as eps shrinks."""
+    rng = np.random.default_rng(9)
+    tx = rng.uniform(0, 1, 80)
+    near_y = rng.uniform(2, 3, 60)
+    far_src = 10.0 + rng.uniform(-0.5, 0.5, 50) + 1j * rng.uniform(-0.5, 0.5, 50)
+    qn, qf = rng.uniform(-1, 1, 60), rng.uniform(-1, 1, 50)
+    K = np.log(np.abs(tx[:, None] - near_y[None, :]))
+    probe = 0.5 + 0.0j
+    truth = float(np.mean(K @ qn)) + float(np.sum(qf * np.log(np.abs(probe - far_src))))
+
+    costs = []
+    for eps in (1e-3, 1e-6, 1e-9):
+        # equal split; the near stage's budget is pre-scaled by the mean's
+        # inverse Lipschitz constant sqrt(n)
+        near = sf.lowrank_matvec_to_tol(K, qn, eps / 2 * math.sqrt(len(tx)))
+        obs = sf.lipschitz(np.mean, 1.0 / math.sqrt(len(tx)), near, "mean")
+        far = sf.multipole_to_tol(qf, far_src, 10.0 + 0.0j, probe, eps / 2)
+        ans = obs + far
+        assert ans.err <= eps
+        assert abs(ans.value - truth) <= eps * (1 + 1e-9) + 1e-12
+        assert ans.tier == sf.Tier.RIGOROUS
+        costs.append((_knob(near, "r"), _knob(far, "p")))
+    assert costs == sorted(costs) and costs[-1] > costs[0]
 
 
 def test_end_to_end_chain():
