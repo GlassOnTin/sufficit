@@ -547,6 +547,83 @@ def test_eulerian_counting_extends_region():
         sf.ising2d_logZ_density(0.086)             # new boundary enforced
 
 
+def _gauss(x, sigma):
+    return math.exp(-x * x / (2 * sigma * sigma)) / (sigma * math.sqrt(2 * math.pi))
+
+
+def test_gaussian_laplace_formula():
+    """The erfcx-based Laplace transform of the smearing kernel against
+    direct numerical integration."""
+    w = np.linspace(0, 60, 4_000_001)
+    for omega, sigma, tau in ((1.0, 0.4, 3.0), (2.0, 0.2, 0.0), (0.6, 0.5, 14.0)):
+        num = np.trapezoid(np.exp(-tau * w)
+                           * np.exp(-(w - omega) ** 2 / (2 * sigma ** 2))
+                           / (sigma * math.sqrt(2 * math.pi)), w)
+        # rel limited by the trapezoid reference itself, not the formula
+        assert sf._gauss_laplace(tau, omega, sigma) == pytest.approx(num, rel=1e-6)
+
+
+def test_smeared_spectral_certified():
+    """Phase 3: two-peak spectral density, exact correlator data in,
+    certified smeared values out; the sup-bound c is checked against
+    dense sampling of the actual kernel deviation."""
+    E, a = (0.9, 1.9), (1.0, 0.7)
+    ts = np.arange(1, 17)
+    C = a[0] * np.exp(-E[0] * ts) + a[1] * np.exp(-E[1] * ts)
+    for omega in (0.8, 1.2):
+        for sigma in (0.5, 0.35, 0.25):
+            truth = sum(ai * _gauss(omega - Ei, sigma) for ai, Ei in zip(a, E))
+            c = sf.smeared_spectral(C, omega, sigma)
+            assert abs(c.value - truth) <= c.err
+            # non-vacuous everywhere; genuinely tight only at coarser
+            # resolution — 15 exponentials against a sigma=0.25 Gaussian
+            # in the e^w-weighted sup norm is a real resolution wall
+            assert c.err < truth
+            if sigma >= 0.35:
+                assert c.err < 0.55 * truth
+            assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+            assert "rho>=0" in c.provenance[0]
+
+
+def test_smeared_resolution_costs_error():
+    """The Phase 3 signature: sharper resolution (smaller sigma) is a more
+    expensive question — the certified error must grow."""
+    ts = np.arange(1, 17)
+    C = np.exp(-0.9 * ts) + 0.7 * np.exp(-1.9 * ts)
+    errs = [sf.smeared_spectral(C, 1.0, s).err for s in (0.6, 0.4, 0.25)]
+    assert errs[0] < errs[1] < errs[2]
+
+
+def test_smeared_sup_bound_is_a_sup_bound():
+    """c must dominate the actual weighted kernel deviation everywhere."""
+    ts = np.arange(1, 17)
+    C = np.exp(-0.9 * ts) + 0.7 * np.exp(-1.9 * ts)
+    g, cbound = sf._hlt_solve(len(C), 1.0, 0.35)
+    w = np.linspace(0, 40, 800_001)
+    krec = sum(gt * np.exp(-w * t) for gt, t in zip(g, range(2, len(C) + 1)))
+    dev = np.abs(krec - np.exp(-(w - 1.0) ** 2 / (2 * 0.35 ** 2))
+                 / (0.35 * math.sqrt(2 * math.pi))) * np.exp(w)
+    assert np.max(dev) <= cbound * (1 + 1e-9)
+
+
+def test_smeared_spectral_statistical():
+    """Noisy data: the certificate degrades honestly to EMPIRICAL with a
+    stated confidence, and still contains the truth."""
+    rng = np.random.default_rng(20)
+    E, a = (0.9, 1.9), (1.0, 0.7)
+    ts = np.arange(1, 17)
+    C = a[0] * np.exp(-E[0] * ts) + a[1] * np.exp(-E[1] * ts)
+    cov = np.diag((1e-5 * C) ** 2)
+    noisy = C + rng.standard_normal(len(C)) * 1e-5 * C
+    truth = sum(ai * _gauss(1.0 - Ei, 0.35) for ai, Ei in zip(a, E))
+    exact = sf.smeared_spectral(C, 1.0, 0.35)
+    c = sf.smeared_spectral(noisy, 1.0, 0.35, cov=cov)
+    assert abs(c.value - truth) <= c.err
+    assert c.err > exact.err                     # noise costs certificate
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert c.fail_p == pytest.approx(2 * math.erfc(5.0 / math.sqrt(2)))
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

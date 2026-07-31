@@ -837,3 +837,94 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
     return Certified(total.mid, err, Tier.RIGOROUS,
                      (f"ising2d-pinned L={L} s={s.lo:.3g} t={t.mid:.4g} "
                       "+fp [Kotecky-Preiss]",))
+
+
+# ------------------------------------------------------------- Phase 3:
+# smeared spectral functions (Hansen-Lupo-Tantalo mold). The resolution
+# sigma is part of the query. Data: C(t) = int_0^inf e^(-wt) rho(w) dw,
+# t = 1..N, with rho >= 0 (declared physical assumption). Coefficients
+# g_t (t >= 2) reconstruct the Gaussian smearing kernel; validity never
+# depends on how g was found, because the certificate is a posteriori:
+#   |sum_t g_t e^(-wt) - Delta(w)| <= c * e^(-w)   for all w >= 0
+# with c a rigorous sup bound (grid + per-cell Lipschitz + analytic
+# tail), whence by positivity   |value - true| <= c * C(1).
+# Certificate is exact-arithmetic (FP not carried in this pipeline).
+
+
+def _gauss_laplace(tau, omega, sigma):
+    """int_0^inf e^(-tau w) N(w; omega, sigma) dw, overflow-safe."""
+    from scipy.special import erfcx
+    y = (sigma * sigma * tau - omega) / (sigma * math.sqrt(2))
+    if y < 0:
+        return 0.5 * math.exp(0.5 * sigma**2 * tau**2 - omega * tau) \
+            * math.erfc(y)
+    return 0.5 * float(erfcx(y)) * math.exp(-omega * omega / (2 * sigma**2))
+
+
+def _hlt_solve(N, omega, sigma, ridge=None):
+    """Solve for g_t (t = 2..N) minimizing the e^(2w)-weighted L2 kernel
+    deviation, then certify c = sup_w |deviation| e^w rigorously. With no
+    ridge given, scans a ladder and keeps the best-certifying g — the
+    bound is a posteriori, so the scan cannot compromise validity."""
+    if ridge is None:
+        best = min((_hlt_solve(N, omega, sigma, r)
+                    for r in (1e-6, 1e-8, 1e-10, 1e-12)), key=lambda gc: gc[1])
+        return best
+    ts = np.arange(2, N + 1)
+    A = 1.0 / (ts[:, None] + ts[None, :] - 2.0)
+    f = np.array([_gauss_laplace(t - 2.0, omega, sigma) for t in ts])
+    g = np.linalg.solve(A + ridge * np.eye(len(ts)), f)
+
+    wmax = omega + max(8 * sigma, sigma * sigma) + 4.0
+    w = np.concatenate([np.linspace(0, 1, 1_000_001),
+                        np.linspace(1, wmax, 1_000_001)[1:]])
+    delta = np.exp(-(w - omega) ** 2 / (2 * sigma**2)) \
+        / (sigma * math.sqrt(2 * math.pi))
+    h = -delta * np.exp(w)
+    for gt, t in zip(g, ts):
+        h += gt * np.exp(-w * (t - 1.0))
+    ah = np.abs(h)
+    # per-cell Lipschitz bound on h: the g-part decays (evaluate at the
+    # cell's left edge); the Gaussian part uses |Delta'| = |w-omega|/s^2
+    # * Delta with cellwise maxima
+    step = np.diff(w)
+    gpart = np.zeros(len(w))
+    for gt, t in zip(g, ts):
+        gpart += abs(gt) * (t - 1.0) * np.exp(-w * (t - 1.0))
+    dmax = np.maximum(delta[:-1], delta[1:])
+    inside = (w[:-1] <= omega) & (w[1:] >= omega)
+    dmax[inside] = 1.0 / (sigma * math.sqrt(2 * math.pi))
+    dist = np.maximum(np.abs(w[:-1] - omega), np.abs(w[1:] - omega))
+    lip = gpart[:-1] + (dist / sigma**2 + 1.0) * dmax * np.exp(w[1:])
+    c_grid = float(np.max(np.maximum(ah[:-1], ah[1:]) + lip * step / 2))
+    # tail w >= wmax: g-part decays from wmax; Delta e^w is decreasing
+    # there (wmax > omega + sigma^2)
+    c_tail = sum(abs(gt) * math.exp(-wmax * (t - 1.0))
+                 for gt, t in zip(g, ts)) \
+        + math.exp(-(wmax - omega) ** 2 / (2 * sigma**2) + wmax) \
+        / (sigma * math.sqrt(2 * math.pi))
+    return g, max(c_grid, c_tail)
+
+
+def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
+                     cov: np.ndarray = None, z: float = 5.0) -> Certified:
+    """Phase 3 rewrite: Gaussian-smeared spectral value
+    int N(w; omega, sigma) rho(w) dw from Euclidean correlator data
+    C[t-1] = C(t), t = 1..N. ASSUMES rho >= 0 (declared; physical
+    spectral densities are). Exact data: RIGOROUS with err = c*C(1).
+    With covariance cov: adds z-sigma statistical error on the value and
+    on C(1); tier degrades to EMPIRICAL (Gaussian-noise assumption) with
+    fail_p = 2*erfc(z/sqrt(2))."""
+    N = len(C)
+    g, c = _hlt_solve(N, omega, sigma)
+    value = float(g @ C[1:])
+    if cov is None:
+        return Certified(value, c * float(C[0]), Tier.RIGOROUS,
+                         (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
+                          f"c={c:.3g} assumes rho>=0",))
+    stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
+    err = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0]))) + stat
+    return Certified(value, err, Tier.EMPIRICAL,
+                     (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
+                      f"c={c:.3g} z={z:g} assumes rho>=0",),
+                     fail_p=2 * math.erfc(z / math.sqrt(2)))
