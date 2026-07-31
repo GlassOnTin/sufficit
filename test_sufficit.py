@@ -403,9 +403,9 @@ def test_ising_cluster_expansion_certified():
     # deep inside the region the certificate is tight enough to be useful
     c = sf.ising2d_logZ_density(0.001, tol=1e-9)
     assert c.err <= 1e-9
-    # beta = 0 is exact
+    # beta = 0: exact in exact arithmetic, but computing log 2 rounds
     c0 = sf.ising2d_logZ_density(0.0)
-    assert c0.value == pytest.approx(math.log(2.0)) and c0.err == 0.0
+    assert c0.value == pytest.approx(math.log(2.0)) and c0.err <= 1e-15
 
 
 def test_ising_refuses_outside_certified_region():
@@ -495,6 +495,44 @@ def test_ising_bond_correlation_certified():
 def test_ising_bond_correlation_refuses():
     with pytest.raises(ValueError):
         sf.ising2d_bond_correlation(0.1)
+
+
+def test_interval_arithmetic_contains_truth():
+    """Field ops checked against exact rationals, transcendentals against
+    50-digit mpmath: the interval must always contain the true value."""
+    from fractions import Fraction
+    import mpmath
+    mpmath.mp.dps = 50
+    rng = random.Random(19)
+    for _ in range(500):
+        a, b = rng.uniform(-5, 5), rng.uniform(-5, 5)
+        ia, ib = sf.Interval(a), sf.Interval(b)
+        fa, fb = Fraction(a), Fraction(b)
+        for iv, true in ((ia + ib, fa + fb), (ia - ib, fa - fb),
+                         (ia * ib, fa * fb), (ia**3, fa**3)):
+            assert Fraction(iv.lo) <= true <= Fraction(iv.hi)
+        if b != 0:
+            iv = ia / ib
+            assert Fraction(iv.lo) <= fa / fb <= Fraction(iv.hi)
+        for iv, true in ((ia.exp(), mpmath.exp(a)), (ia.tanh(), mpmath.tanh(a)),
+                         (ia.cosh(), mpmath.cosh(a))):
+            assert iv.lo <= true <= iv.hi
+        if a > 0:
+            iv = ia.log()
+            assert iv.lo <= mpmath.log(a) <= iv.hi
+    # cosh spanning zero attains its minimum 1 inside the interval
+    iv = sf.Interval(-0.5, 0.3).cosh()
+    assert iv.lo <= 1.0 <= iv.hi and iv.hi >= math.cosh(0.5)
+
+
+def test_fp_error_now_carried():
+    """The certificate can no longer dip below what float64 evaluation can
+    support: the value interval's width enters the bound."""
+    c = sf.ising2d_logZ_density(0.001)
+    assert 1e-16 <= c.err <= 1e-12
+    assert "+fp" in c.provenance[0]
+    cb = sf.ising2d_bond_correlation(0.001)
+    assert cb.err >= 1e-18 and "+fp" in cb.provenance[0]
 
 
 def test_eulerian_counting_extends_region():

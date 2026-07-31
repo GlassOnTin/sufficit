@@ -7,7 +7,9 @@ to the weakest input; provenance records which rewrites produced the bound;
 fail_p is the probability the bound is wrong (0 for deterministic rewrites),
 accumulating through composition by union bound.
 
-Bounds are exact-arithmetic: floating-point rounding is not yet carried.
+The numpy-based rewrites carry exact-arithmetic bounds (declared in their
+docstrings); the scalar Phase 2 pipelines carry floating-point rounding
+too, via the directed-rounding Interval type ("+fp" in provenance).
 """
 from __future__ import annotations
 
@@ -51,6 +53,101 @@ class Certified:
         err = (abs(self.value) * other.err + abs(other.value) * self.err
                + self.err * other.err)
         return self._combine(other, self.value * other.value, err, "mul")
+
+
+def _dn(x):
+    return math.nextafter(x, -math.inf)
+
+
+def _up(x):
+    return math.nextafter(x, math.inf)
+
+
+class Interval:
+    """Directed-rounding interval via outward nextafter widening: field ops
+    widen 1 ulp (IEEE round-to-nearest is within 1/2 ulp), transcendentals
+    2 ulps under the ASSUMPTION of faithful (<= 1 ulp) libm — the one
+    unverified assumption in this class. Used to carry FP error through
+    the scalar Phase 2 pipelines; the numpy rewrites remain
+    exact-arithmetic as declared in their docstrings."""
+    __slots__ = ("lo", "hi")
+
+    def __init__(self, lo, hi=None):
+        if isinstance(lo, Interval):
+            self.lo, self.hi = lo.lo, lo.hi
+        else:
+            self.lo = float(lo)
+            self.hi = self.lo if hi is None else float(hi)
+
+    def __add__(self, o):
+        o = Interval(o)
+        return Interval(_dn(self.lo + o.lo), _up(self.hi + o.hi))
+    __radd__ = __add__
+
+    def __neg__(self):
+        return Interval(-self.hi, -self.lo)
+
+    def __sub__(self, o):
+        return self + (-Interval(o))
+
+    def __rsub__(self, o):
+        return Interval(o) + (-self)
+
+    def __mul__(self, o):
+        o = Interval(o)
+        p = (self.lo * o.lo, self.lo * o.hi, self.hi * o.lo, self.hi * o.hi)
+        return Interval(_dn(min(p)), _up(max(p)))
+    __rmul__ = __mul__
+
+    def __truediv__(self, o):
+        o = Interval(o)
+        if o.lo <= 0.0 <= o.hi:
+            raise ZeroDivisionError("interval denominator spans 0")
+        p = (self.lo / o.lo, self.lo / o.hi, self.hi / o.lo, self.hi / o.hi)
+        return Interval(_dn(min(p)), _up(max(p)))
+
+    def __rtruediv__(self, o):
+        return Interval(o) / self
+
+    def __pow__(self, n):                  # non-negative int; sign-safe
+        r = Interval(1.0)
+        for _ in range(n):
+            r = r * self
+        return r
+
+    def _mono(self, f):                    # monotone libm call, 2-ulp widen
+        return Interval(_dn(_dn(f(self.lo))), _up(_up(f(self.hi))))
+
+    def exp(self):
+        return self._mono(math.exp)
+
+    def tanh(self):
+        return self._mono(math.tanh)
+
+    def log(self):
+        if self.lo <= 0:
+            raise ValueError("log of interval touching 0")
+        return self._mono(math.log)
+
+    def cosh(self):                        # even, minimum 1 at 0
+        hi = _up(_up(math.cosh(max(abs(self.lo), abs(self.hi)))))
+        lo = 1.0 if self.lo <= 0.0 <= self.hi \
+            else _dn(_dn(math.cosh(min(abs(self.lo), abs(self.hi)))))
+        return Interval(lo, hi)
+
+    def abs(self):
+        if self.lo <= 0.0 <= self.hi:
+            return Interval(0.0, max(-self.lo, self.hi))
+        return Interval(self.lo, self.hi) if self.lo > 0 else -self
+
+    @property
+    def mid(self):
+        return (self.lo + self.hi) / 2
+
+    @property
+    def rad(self):                         # bound on |mid - true|
+        m = self.mid
+        return max(_up(m - self.lo), _up(self.hi - m))
 
 
 def lipschitz(f: Callable, L: float, c: Certified, note: str) -> Certified:
@@ -576,23 +673,33 @@ class BlackboxHMatrix:
 # factor e that KP itself pays).
 
 
-def _kp_rate(t):
-    """Tilt rate s of the KP tail e^(-s L) at activity t; raises outside
+_E_IV = Interval(_dn(math.e), _up(math.e))
+
+
+def _kp_rate(t_abs: Interval) -> Interval:
+    """Tilt rate s of the KP tail e^(-s L) at activity |t|; raises outside
     the certified region. Counting: connected even subgraphs are Eulerian,
     so a circuit from v traverses each of its n edges exactly once and
     never departs along a used edge — at most Delta*(Delta-1)^(n-1)
     = 4*3^(n-1) walks. Per-vertex KP condition: (4/3) u^4/(1-u) <= 1 with
-    u = 3|t| e^(1+s); u* is the root of 4u^4 + 3u = 3."""
+    u = 3|t| e^(1+s); u* is the root of 4u^4 + 3u = 3, lower-bounded
+    rigorously by interval bisection."""
     lo, hi = 0.0, 1.0
     for _ in range(60):
         mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if 4 * mid**4 + 3 * mid < 3 else (lo, mid)
-    t_max = lo / (3 * math.e)
-    if abs(t) >= t_max:
+        p = 4 * Interval(mid)**4 + 3 * Interval(mid) - 3
+        if p.hi < 0:
+            lo = mid
+        elif p.lo > 0:
+            hi = mid
+        else:
+            break                       # ambiguous at FP resolution; lo holds
+    t_max = Interval(lo) / (3 * _E_IV)
+    if t_abs.hi >= t_max.lo:
         raise ValueError(
-            f"|tanh(beta J)|={abs(t):.4g} >= {t_max:.4g}: outside the "
+            f"|tanh(beta J)|={t_abs.hi:.4g} >= {t_max.lo:.4g}: outside the "
             "certified high-temperature region (KP, Eulerian counting)")
-    return math.log(lo / (3 * abs(t) * math.e))
+    return (Interval(lo) / (3 * _E_IV * t_abs)).log()
 
 
 def _ising2d_anchored_cycles(max_edges):
@@ -622,21 +729,25 @@ def ising2d_logZ_density(beta: float, J: float = 1.0,
     every m x m torus with m >= 8 and for the thermodynamic limit.
     Raises outside the certified high-temperature region, or when the
     requested tol is unreachable at the order cap."""
-    t = math.tanh(beta * J)
-    if t == 0.0:
-        return Certified(math.log(2.0), 0.0, Tier.RIGOROUS,
-                         ("ising2d-cluster t=0 exact",))
+    bJ = Interval(beta) * J
+    if beta * J == 0.0:
+        v = Interval(2.0).log()
+        return Certified(v.mid, v.rad, Tier.RIGOROUS,
+                         ("ising2d-cluster t=0 +fp",))
+    t = bJ.tanh()
     L = 8
-    s = _kp_rate(t)
-    err = math.exp(-L * s)
+    s = _kp_rate(t.abs())
+    tail = (Interval(-float(L)) * s).exp()
+    f = Interval(2.0).log() + 2 * bJ.cosh().log()
+    for n in _ising2d_anchored_cycles(L - 1):
+        f = f + t**n
+    err = _up(tail.hi + f.rad)
     if tol is not None and err > tol:
-        raise ValueError(f"certified tail {err:.3g} exceeds tol={tol:.3g} "
+        raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "
                          "at this temperature (order cap L=8)")
-    f = math.log(2.0) + 2.0 * math.log(math.cosh(beta * J)) \
-        + sum(t**n for n in _ising2d_anchored_cycles(L - 1))
-    return Certified(f, err, Tier.RIGOROUS,
-                     (f"ising2d-cluster L={L} s={s:.3g} t={t:.4g} "
-                      "[Kotecky-Preiss]",))
+    return Certified(f.mid, err, Tier.RIGOROUS,
+                     (f"ising2d-cluster L={L} s={s.lo:.3g} t={t.mid:.4g} "
+                      "+fp [Kotecky-Preiss]",))
 
 
 def _connected_pinned_subgraphs(a, b, max_edges):
@@ -696,26 +807,33 @@ def ising2d_bond_correlation(beta: float, J: float = 1.0,
     dressing bounded by e^((n+1)B)), Psi truncation at size 8 (tilted KP,
     per vertex), propagated through exp. Same validity region and
     torus/limit scope (m >= 8) as ising2d_logZ_density."""
-    t = math.tanh(beta * J)
-    if t == 0.0:
+    if beta * J == 0.0:                 # no computation: exactly 0
         return Certified(0.0, 0.0, Tier.RIGOROUS, ("ising2d-pinned t=0",))
+    t = (Interval(beta) * J).tanh()
+    ta = t.abs()
     L = 8
-    s = _kp_rate(t)
-    u0 = 3 * math.e * abs(t)
-    B = (4 / 3) * u0**4 / (1 - u0)      # per-vertex cluster-sum bound
-    total, e2 = 0.0, 0.0
+    s = _kp_rate(ta)
+    u0 = 3 * _E_IV * ta
+    B = (Interval(4.0) / 3) * u0**4 / (1 - u0)   # per-vertex cluster bound
+    eB = B.exp()
+    y = 3 * ta * eB
+    if y.hi >= 1.0:
+        raise ValueError("too close to the region boundary to certify")
+    total, e2 = Interval(0.0), Interval(0.0)
+    dfac = (Interval(-float(L)) * s).exp()
     for C in _connected_pinned_subgraphs((0, 0), (1, 0), L - 1):
         S = {v for e in C for v in e}
-        psi = sum(t**n for n in _cycles_touching(S))
-        total += t ** len(C) * math.exp(-psi)
-        delta = len(S) * math.exp(-L * s)
-        e2 += abs(t) ** len(C) * math.exp(-psi) * (math.exp(delta) - 1)
-    y = 3 * abs(t) * math.exp(B)        # < u* < 1 inside the region
-    e1 = (4 / 3) * math.exp(B) * y**L / (1 - y)
-    err = e1 + e2
+        psi = Interval(0.0)
+        for n in _cycles_touching(S):
+            psi = psi + t**n
+        damp = (-psi).exp()
+        total = total + t ** len(C) * damp
+        e2 = e2 + ta ** len(C) * damp * ((len(S) * dfac).exp() - 1)
+    e1 = (Interval(4.0) / 3) * eB * y**L / (1 - y)
+    err = _up(e1.hi + e2.hi + total.rad)
     if tol is not None and err > tol:
         raise ValueError(f"certified error {err:.3g} exceeds tol={tol:.3g} "
                          "at this temperature (order cap L=8)")
-    return Certified(total, err, Tier.RIGOROUS,
-                     (f"ising2d-pinned L={L} s={s:.3g} t={t:.4g} "
-                      "[Kotecky-Preiss]",))
+    return Certified(total.mid, err, Tier.RIGOROUS,
+                     (f"ising2d-pinned L={L} s={s.lo:.3g} t={t.mid:.4g} "
+                      "+fp [Kotecky-Preiss]",))
