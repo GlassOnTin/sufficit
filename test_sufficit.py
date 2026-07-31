@@ -1087,6 +1087,19 @@ def test_chain_bracket_past_formable():
     assert "marginal" in c.provenance[0]
 
 
+def test_correction_multipliers_tighten_lower_bound():
+    """The SDP dual, ascended over the telescoping-correction family:
+    optimized multipliers must tighten the certified lower bound, and the
+    bracket must stay valid (Bethe density inside)."""
+    plain = sf.heisenberg_chain_bracket(200, ell=6, correction_iters=0)
+    corr = sf.heisenberg_chain_bracket(200, ell=6, correction_iters=300)
+    gain = (corr.value - corr.err) - (plain.value - plain.err)
+    assert gain > 4.0    # measured 6.1 at ell=6, N=200 (55% of gap closed)
+    bethe = 0.25 - math.log(2)
+    assert (corr.value - corr.err) / 199 <= bethe \
+        <= (corr.value + corr.err) / 199
+
+
 def test_chain_bracket_tightens_with_ell():
     """Cost scales with the precision of the question: a longer window
     (2^ell diagonalizations) buys a tighter certified bracket."""

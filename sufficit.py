@@ -1506,9 +1506,16 @@ def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
 # of the chain is bounded below independently, with per-bond weights
 # 1/m_b (m_b = number of windows containing bond b) so the weighted
 # windows sum EXACTLY to H; then E0 >= sum_w lambda_min(window), each
-# lambda_min certified from below by eigen_bracket's Cholesky half. This
-# is the zero-multiplier dual-feasible point of the marginal SDP;
-# optimizing correction multipliers is the named tightening path. The
+# lambda_min certified from below by eigen_bracket's Cholesky half.
+# Correction multipliers ascend the SDP dual over the telescoping family:
+# a Hermitian C on each window overlap, +C as the left part of one window
+# and -C as the right part of its neighbor, so the sum still telescopes
+# EXACTLY to H and any C yields a valid bound. lambda_min is concave in
+# C; supergradient ascent (gradient = left minus right reduced density of
+# the window ground state) climbs it, and every window is re-certified by
+# Cholesky afterwards — the optimizer is pure quality. Richer correction
+# structures than single-overlap operators remain (the fully general
+# dual); this family already closes much of the gap. The
 # upper half: a product of per-block Lanczos states — block energies and
 # cross-block bond energies are explicit Rayleigh quotients, so the
 # variational bound is rigorous whatever the vectors are. Cost 2^ell per
@@ -1544,20 +1551,49 @@ def _site_spin_expect(v, nsite, j):
     return out
 
 
-def heisenberg_chain_bracket(N: int, ell: int = 8) -> Certified:
+@functools.lru_cache(maxsize=None)
+def _chain_correction(ell, iters):
+    """Supergradient ascent of lambda_min(H_interior + C x I - I x C)
+    over Hermitian C on ell-1 spins (concave in C). Returns the best C
+    seen by heuristic lambda_min; certification happens downstream."""
+    Hw = _heis_window((1.0 / (ell - 1),) * (ell - 1))
+    d = 2 ** (ell - 1)
+    C, I2, best = np.zeros((d, d)), np.eye(2), (-math.inf, None)
+    for k in range(iters):
+        lam, V = np.linalg.eigh(Hw + np.kron(C, I2) - np.kron(I2, C))
+        if lam[0] > best[0]:
+            best = (lam[0], C.copy())
+        v = V[:, 0]
+        Vl, Vr = v.reshape(d, 2), v.reshape(2, d)
+        C = C + 0.5 / math.sqrt(k + 1) * (Vl @ Vl.T - Vr.T @ Vr)
+    return best[1]
+
+
+def heisenberg_chain_bracket(N: int, ell: int = 8,
+                             correction_iters: int = 200) -> Certified:
     """Certified two-sided bracket on the ground energy of the spin-1/2
-    Heisenberg open chain of N sites, at cost 2^ell independent of N."""
+    Heisenberg open chain of N sites, at cost 2^ell independent of N.
+    correction_iters=0 disables the SDP-dual multiplier ascent."""
     if N <= ell:
         c = eigen_bracket(_heis_window((1.0,) * (N - 1)))
         return replace(c, provenance=(f"chain-bracket exact N={N}",))
-    # lower: weighted sliding windows summing exactly to H
+    C = _chain_correction(ell, correction_iters) if correction_iters else None
+    # lower: weighted sliding windows summing exactly to H, plus exactly
+    # telescoping corrections (+C on a window's left overlap, -C on its
+    # neighbour's right overlap)
     m = [min(N - ell, i) - max(0, i - ell + 2) + 1 for i in range(N - 1)]
     cache = {}
     lower = 0.0
     for w in range(N - ell + 1):
-        key = tuple(1.0 / m[w + j] for j in range(ell - 1))
+        key = (tuple(1.0 / m[w + j] for j in range(ell - 1)),
+               w >= 1, w <= N - ell - 1)
         if key not in cache:
-            c = eigen_bracket(_heis_window(key))
+            Hw = _heis_window(key[0])
+            if C is not None and key[1]:
+                Hw = Hw + np.kron(C, np.eye(2))
+            if C is not None and key[2]:
+                Hw = Hw - np.kron(np.eye(2), C)
+            c = eigen_bracket(Hw)
             cache[key] = c.value - c.err
         lower += cache[key]
     # upper: product of per-block Lanczos states; all terms are explicit
@@ -1587,4 +1623,4 @@ def heisenberg_chain_bracket(N: int, ell: int = 8) -> Certified:
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"chain-bracket marginal-lower ell={ell} N={N} "
-                      "product-upper",))
+                      f"iters={correction_iters} product-upper",))
