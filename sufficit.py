@@ -603,6 +603,26 @@ def _compress_certified(K, tol, n_probes, scale, rng):
             beta + (s2[keep] if keep < len(s2) else 0.0), rounds, flops)
 
 
+def _butterfly_candidate(K, tpts, spts, tol, n_probes, scale, rng):
+    """Try the butterfly rewrite on one block: deepest feasible ladder
+    (capped at 3 levels), per-factor tolerance scaled from tol by a
+    one-probe norm estimate. Admissible only if its a posteriori beta
+    meets tol — a wrong guess just loses the competition."""
+    m, n = K.shape
+    L = min(3, int(math.log(max(min(m, n) // 8, 1), 4)))
+    if L < 2 or min(m, n) < 512:
+        return None
+    w = rng.standard_normal(n)
+    normest = float(np.linalg.norm(K @ w) / np.linalg.norm(w))
+    # the probe estimator overshoots flat residuals by ~ scale*sqrt(m)
+    # (it tracks the Frobenius norm); calibrate the per-factor tolerance
+    # for it so the a posteriori beta lands near tol
+    eps_rel = min(0.1, tol / (normest * scale * math.sqrt(m)))
+    bf = ButterflyBlock(K, tpts, spts, L, eps=eps_rel,
+                        n_probes=n_probes, rng=rng)
+    return bf if bf.beta <= tol else None
+
+
 class BlackboxHMatrix:
     """Guarantee per apply(q): pointwise error <= eps * ||q||_2, with the
     plan's stated fail_p. Tier RIGOROUS (exact arithmetic).
@@ -615,7 +635,7 @@ class BlackboxHMatrix:
     (row-split/column-merge with transfer operators), not implemented."""
 
     def __init__(self, kernel, tgt, src, eps, leaf_size=48, n_probes=10,
-                 rng=None):
+                 rng=None, try_butterfly=True):
         if eps <= 0:
             raise ValueError("eps must be positive")
         rng = np.random.default_rng(rng)
@@ -629,6 +649,7 @@ class BlackboxHMatrix:
         self.far, self.near = [], []
         self.fail_p, evals, flops = 0.0, 0, 0
         self.dtype, scale = np.float64, None
+        n_lr = n_bf = n_dense = 0
         for T, S, _ in far:
             K = kernel(tgt[T.idx], src[S.idx])
             evals += K.size
@@ -640,32 +661,54 @@ class BlackboxHMatrix:
                     * (math.sqrt(2.0) if np.issubdtype(
                         self.dtype, np.complexfloating) else 1.0)
             tol = eps / cnt[T.idx].max()
+            cands = []          # (stored_cost, op, beta)
             res = _compress_certified(K, tol, n_probes, scale, rng)
-            if res is None:
+            if res is not None:
+                U, V, beta, rounds, fl = res
+                self.fail_p += rounds * 10.0 ** (-n_probes)
+                flops += fl
+                cands.append((V.shape[0] * (K.shape[0] + K.shape[1]),
+                              (U, V), beta))
+            if try_butterfly \
+                    and np.issubdtype(self.dtype, np.complexfloating):
+                bf = _butterfly_candidate(K, tgt[T.idx], src[S.idx], tol,
+                                          n_probes, scale, rng)
+                if bf is not None:
+                    self.fail_p += 10.0 ** (-n_probes)
+                    cands.append((bf.apply_flops, bf, bf.beta))
+            if not cands:
                 raise ValueError(f"block {K.shape} not compressible to "
                                  f"{tol:.3g}: full-rank probe failed")
-            U, V, beta, rounds, fl = res
-            self.fail_p += rounds * 10.0 ** (-n_probes)
-            flops += fl
-            if V.shape[0] * (K.shape[0] + K.shape[1]) < K.size:
-                self.far.append((T.idx, S.idx, U, V, beta))
+            cost, op, beta = min(cands, key=lambda c: c[0])
+            if cost < K.size:
+                self.far.append((T.idx, S.idx, op, beta))
+                n_bf += isinstance(op, ButterflyBlock)
+                n_lr += not isinstance(op, ButterflyBlock)
             else:               # factors would cost more than the block does
                 self.near.append((T.idx, S.idx, K))
+                n_dense += 1
         for T, S in direct:
             K = kernel(tgt[T.idx], src[S.idx])
             evals += K.size
             self.near.append((T.idx, S.idx, K))
         self.stats = {"kernel_evals": evals, "setup_flops": flops,
                       "far_blocks": len(self.far),
-                      "near_blocks": len(self.near), "fail_p": self.fail_p}
+                      "near_blocks": len(self.near), "lr_blocks": n_lr,
+                      "butterfly_blocks": n_bf, "dense_blocks": n_dense,
+                      "fail_p": self.fail_p}
 
     def apply(self, q):
         out = np.zeros(self.n_tgt, self.dtype)
         bound, flops = np.zeros(self.n_tgt), 0
-        for ti, si, U, V, beta in self.far:
-            out[ti] += U @ (V @ q[si])
+        for ti, si, op, beta in self.far:
+            if isinstance(op, ButterflyBlock):
+                out[ti] += op._raw(q[si])
+                flops += op.apply_flops
+            else:
+                U, V = op
+                out[ti] += U @ (V @ q[si])
+                flops += V.shape[0] * (len(ti) + len(si))
             bound[ti] += beta * float(np.linalg.norm(q[si]))
-            flops += V.shape[0] * (len(ti) + len(si))
         for ti, si, K in self.near:
             out[ti] += K @ q[si]
             flops += len(ti) * len(si)

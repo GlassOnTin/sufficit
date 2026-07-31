@@ -897,6 +897,55 @@ def test_butterfly_certified_and_beats_plain_lowrank():
     assert ratios[1] < 0.7 < ratios[0] < 1.4             # the crossover
 
 
+def test_hmatrix_butterfly_competition_high_k():
+    """The butterfly as a candidate in the H-matrix's per-block
+    competition: two separated clusters make the root pair one big
+    admissible block; at high k the butterfly must win it, beat the
+    plain-only plan, and keep the every-q guarantee."""
+    rng = np.random.default_rng(38)
+    n = 2304
+    k = 1800.0
+    src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    kern = _helmholtz_kernel(k)
+    eps = 0.05     # loose: the probe estimator's ~500x overshoot on flat
+    plan = sf.BlackboxHMatrix(kern, tgt, src, eps,      # residuals prices
+                              leaf_size=4 * n, rng=np.random.default_rng(1))
+    assert plan.stats["butterfly_blocks"] == 1
+    plain = sf.BlackboxHMatrix(kern, tgt, src, eps, leaf_size=4 * n,
+                               rng=np.random.default_rng(1),
+                               try_butterfly=False)
+    q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    c, stats = plan.apply(q)
+    _, pstats = plain.apply(q)
+    # measured 0.80 at this block size; the strong scaling claim is the
+    # dedicated crossover test — here the point is the competition picks it
+    assert stats["apply_flops"] < 0.85 * pstats["apply_flops"]
+    dense = kern(tgt, src)
+    assert np.max(np.abs(c.value - dense @ q)) \
+        <= eps * np.linalg.norm(q) * (1 + 1e-9)
+    assert np.linalg.norm(c.value - dense @ q) <= c.err * (1 + 1e-9)
+
+
+def test_hmatrix_butterfly_competition_rejects_at_low_k():
+    """Same geometry, low k: the butterfly is tried and correctly loses
+    the competition to plain low-rank."""
+    rng = np.random.default_rng(39)
+    n = 1024
+    src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    kern = _helmholtz_kernel(30.0)
+    plan = sf.BlackboxHMatrix(kern, tgt, src, 0.05, leaf_size=4 * n,
+                              rng=np.random.default_rng(1))
+    assert plan.stats["butterfly_blocks"] == 0
+    assert plan.stats["lr_blocks"] == 1
+    dense = kern(tgt, src)
+    q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    c, _ = plan.apply(q)
+    assert np.max(np.abs(c.value - dense @ q)) \
+        <= 0.05 * np.linalg.norm(q) * (1 + 1e-9)
+
+
 def test_butterfly_low_R_is_no_worse_than_graceful():
     """Sanity at low R (Laplace-like regime): the butterfly still
     certifies; it just has no structural advantage to exploit."""
