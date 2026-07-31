@@ -595,16 +595,23 @@ class BlackboxHMatrix:
         self.n_tgt, self.n_src = len(tgt), len(src)
         self.far, self.near = [], []
         self.fail_p, evals, flops = 0.0, 0, 0
-        scale = 10.0 * math.sqrt(2.0 / math.pi)
+        self.dtype, scale = np.float64, None
         for T, S, _ in far:
             K = kernel(tgt[T.idx], src[S.idx])
             evals += K.size
+            if scale is None:
+                # complex kernels: real probes certify the real-restricted
+                # norm; ||B||_C <= sqrt(2) * that, so the estimator pays it
+                self.dtype = np.result_type(K)
+                scale = 10.0 * math.sqrt(2.0 / math.pi) \
+                    * (math.sqrt(2.0) if np.issubdtype(
+                        self.dtype, np.complexfloating) else 1.0)
             tol = eps / cnt[T.idx].max()
             rank, full = 4, min(K.shape)
             while True:
                 Q, _ = np.linalg.qr(K @ rng.standard_normal((K.shape[1], rank)))
                 R = K @ rng.standard_normal((K.shape[1], n_probes))
-                R -= Q @ (Q.T @ R)
+                R -= Q @ (Q.conj().T @ R)
                 beta = scale * float(np.max(np.linalg.norm(R, axis=0)))
                 self.fail_p += 10.0 ** (-n_probes)
                 flops += K.size * (rank + n_probes)
@@ -616,7 +623,7 @@ class BlackboxHMatrix:
                                  f"{tol:.3g}: probe bound {beta:.3g}")
             # doubling overshoots; trim rigorously: ||K - U'V'|| <= beta
             # + sigma_{r'+1} of the certified factor, no new probes needed
-            U2, s2, Vt2 = np.linalg.svd(Q.T @ K, full_matrices=False)
+            U2, s2, Vt2 = np.linalg.svd(Q.conj().T @ K, full_matrices=False)
             keep = int(np.searchsorted(-(beta + s2), -tol)) if len(s2) else 0
             keep = max(keep, 1)
             flops += K.size * rank
@@ -635,7 +642,8 @@ class BlackboxHMatrix:
                       "near_blocks": len(self.near), "fail_p": self.fail_p}
 
     def apply(self, q):
-        out, bound, flops = np.zeros(self.n_tgt), np.zeros(self.n_tgt), 0
+        out = np.zeros(self.n_tgt, self.dtype)
+        bound, flops = np.zeros(self.n_tgt), 0
         for ti, si, U, V, beta in self.far:
             out[ti] += U @ (V @ q[si])
             bound[ti] += beta * float(np.linalg.norm(q[si]))
@@ -1156,3 +1164,86 @@ def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
         raise ValueError("no split admits a certified closure "
                          "(no spectral gap for any candidate)")
     return best[1], best[2]
+
+
+# --------------------------------------------------------- CEM beachhead:
+# certified 2D Helmholtz scattering (Lippmann-Schwinger, penetrable
+# scatterer). The certified region is weak scattering: ||K|| < 1, with
+# ||K|| bounded deterministically by Schur's ||K||_2 <= sqrt(||K||_1
+# ||K||_inf) (the HMT probe tracks ||K||_F and is ~20x looser on this
+# flat-spectrum oscillatory operator) — the bound's physical provenance
+# is the scattering strength k^2 * contrast * area. The Neumann-series depth
+# comes from the FAR-FIELD tolerance (query-first); the far-field
+# functional propagates by Cauchy-Schwarz. Certificates are for the
+# STATED discrete system (midpoint Nystrom, equal-area-disk self term);
+# continuum discretization error is the named gap (asymptotic tier
+# territory). Strong scattering needs resolvent-based certification —
+# future work, refused today.
+
+
+def _helmholtz_K(k, contrast, n, L):
+    """Discrete Lippmann-Schwinger operator on an n x n midpoint grid over
+    [-L/2, L/2]^2: K[i,j] = k^2 G(x_i, y_j) m(y_j) h^2, diagonal via the
+    exact integral of G over the equal-area disk (a = h/sqrt(pi)):
+    int_{|y|<a} (i/4) H0(k|y|) dy = (i pi / (2 k^2)) (ka H1(ka) + 2i/pi)."""
+    from scipy.special import hankel1
+    h = L / n
+    c = (np.arange(n) + 0.5) * h - L / 2
+    X, Y = np.meshgrid(c, c, indexing="ij")
+    pts = (X + 1j * Y).ravel()
+    m = np.asarray(contrast(pts.real, pts.imag), complex)
+    r = np.abs(pts[:, None] - pts[None, :])
+    np.fill_diagonal(r, 1.0)
+    G = 0.25j * hankel1(0, k * r)
+    a = h / math.sqrt(math.pi)
+    ka = k * a
+    self_int = (1j * math.pi / (2 * k * k)) \
+        * (ka * hankel1(1, ka) + 2j / math.pi)
+    K = k * k * G * m[None, :] * h * h
+    np.fill_diagonal(K, k * k * m * self_int)
+    return pts, m, K
+
+
+def helmholtz_scatter_farfield(k: float, contrast, n: int, L: float,
+                               angles: np.ndarray, tol: float):
+    """CEM rewrite: far-field pattern of a penetrable 2D scatterer under
+    a unit plane wave along +x, each angle certified to |error| <= tol.
+    Refuses outside the certified weak-scattering region (probe bound on
+    ||K|| >= 1). Returns (Certified, stats); certificates are for the
+    stated discrete system, exact-arithmetic."""
+    if tol <= 0:
+        raise ValueError("tol must be positive")
+    pts, m, K = _helmholtz_K(k, contrast, n, L)
+    beta = math.sqrt(float(np.max(np.sum(np.abs(K), axis=0))
+                           * np.max(np.sum(np.abs(K), axis=1))))
+    if beta >= 1.0:
+        raise ValueError(f"||K|| probe bound {beta:.3g} >= 1: outside the "
+                         "certified weak-scattering (Born/Neumann) region")
+    ui = np.exp(1j * k * pts.real)
+    gamma = np.exp(1j * math.pi / 4) / math.sqrt(8 * math.pi * k)
+    h2 = (L / n) ** 2
+    W = gamma * k * k * m[None, :] * h2 * np.exp(
+        -1j * k * (np.cos(angles)[:, None] * pts.real[None, :]
+                   + np.sin(angles)[:, None] * pts.imag[None, :]))
+    wnorm = np.linalg.norm(W, axis=1)
+    # Neumann depth from the far-field tolerance: query-first
+    u_target = tol / float(np.max(wnorm))
+    ui_norm = float(np.linalg.norm(ui))
+    N = max(0, math.ceil(math.log(u_target * (1 - beta) / ui_norm)
+                         / math.log(beta) - 1))
+    if N > 10_000:
+        raise ValueError(f"tol={tol:.3g} needs {N} Neumann terms at "
+                         f"||K||<={beta:.3g}: too close to the boundary")
+    u, term = ui.copy(), ui.copy()
+    for _ in range(N):
+        term = K @ term
+        u += term
+    err_u = beta ** (N + 1) / (1 - beta) * ui_norm
+    ff = W @ u
+    angle_bound = wnorm * err_u
+    stats = {"beta": beta, "n_terms": N, "err_u": err_u,
+             "angle_bound": angle_bound}
+    cert = Certified(ff, float(np.linalg.norm(angle_bound)), Tier.RIGOROUS,
+                     (f"helmholtz-born k={k:g} beta={beta:.3g} N={N} "
+                      "schur discrete-system scope",))
+    return cert, stats

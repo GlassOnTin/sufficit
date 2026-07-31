@@ -778,6 +778,87 @@ def test_mz_conformal_empirical():
     assert viol <= 8            # expected <= 2 at fail_p 0.01 per draw
 
 
+def _helmholtz_kernel(k):
+    from scipy.special import hankel1
+    def kern(t, s):
+        r = np.abs(t[:, None] - s[None, :])
+        return 0.25j * hankel1(0, k * r)
+    return kern
+
+
+def test_blackbox_hmatrix_complex_helmholtz():
+    """The probe certificate extends to complex (oscillatory) kernels:
+    real probes certify the real-restricted norm, x sqrt(2) covers
+    complex inputs. Same every-q guarantee as the real case."""
+    rng = np.random.default_rng(27)
+    n = 1200
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    eps = 1e-4
+    plan = sf.BlackboxHMatrix(_helmholtz_kernel(12.0), tgt, src, eps,
+                              leaf_size=96, rng=rng)
+    dense = _helmholtz_kernel(12.0)(tgt, src)
+    for _ in range(2):
+        q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+        c, stats = plan.apply(q)
+        assert np.max(np.abs(c.value - dense @ q)) \
+            <= eps * np.linalg.norm(q) * (1 + 1e-9)
+        assert np.linalg.norm(c.value - dense @ q) <= c.err * (1 + 1e-9)
+    assert plan.fail_p > 0
+    assert stats["apply_flops"] < stats["dense_flops"]
+
+
+def test_helmholtz_compressibility_degrades_with_k():
+    """Island cartography: the certified compression must get measurably
+    worse as the kernel gets more oscillatory."""
+    rng = np.random.default_rng(28)
+    n = 2000
+    src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+    speedups = []
+    for k in (2.0, 40.0):
+        plan = sf.BlackboxHMatrix(_helmholtz_kernel(k), tgt, src, 1e-4,
+                                  leaf_size=96, rng=rng)
+        _, stats = plan.apply(np.ones(n, complex))
+        speedups.append(stats["speedup"])
+    assert speedups[0] > speedups[1] > 1.0
+
+
+def test_helmholtz_scatter_certified():
+    """CEM beachhead: certified far field of a weak penetrable scatterer.
+    Truth is the dense solve of the same discrete system (the declared
+    scope; continuum discretization error is the named gap)."""
+    contrast = lambda x, y: 0.12 * np.exp(-(x**2 + y**2) / 0.25)
+    angles = np.linspace(0, 2 * np.pi, 12, endpoint=False)
+    c, stats = sf.helmholtz_scatter_farfield(6.0, contrast, 24, 2.0,
+                                             angles, tol=1e-8)
+    pts, m, K = sf._helmholtz_K(6.0, contrast, 24, 2.0)
+    ui = np.exp(1j * 6.0 * pts.real)
+    u_true = np.linalg.solve(np.eye(len(pts)) - K, ui)
+    gamma = np.exp(1j * np.pi / 4) / math.sqrt(8 * math.pi * 6.0)
+    h2 = (2.0 / 24) ** 2
+    for i, th in enumerate(angles):
+        w = gamma * 36.0 * m * h2 * np.exp(-1j * 6.0 * (
+            math.cos(th) * pts.real + math.sin(th) * pts.imag))
+        assert abs(c.value[i] - w @ u_true) <= stats["angle_bound"][i]
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0  # Schur is deterministic
+    # the probe bound really dominates the operator norm
+    assert stats["beta"] >= np.linalg.norm(K, 2)
+    # solver depth scales with the question's precision
+    _, s1 = sf.helmholtz_scatter_farfield(6.0, contrast, 24, 2.0, angles,
+                                          tol=1e-4)
+    assert s1["n_terms"] < stats["n_terms"]
+
+
+def test_helmholtz_scatter_refuses_strong_contrast():
+    """Outside the certified weak-scattering region (||K|| >= 1): refuse,
+    do not extrapolate."""
+    contrast = lambda x, y: 3.0 * np.exp(-(x**2 + y**2) / 0.25)
+    with pytest.raises(ValueError):
+        sf.helmholtz_scatter_farfield(6.0, contrast, 24, 2.0,
+                                      np.array([0.0]), tol=1e-6)
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
