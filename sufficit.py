@@ -1686,11 +1686,13 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
 # (exact FCI for this system by parity).
 
 
+_STO3G_H_RAW = ((3.42525091, 0.15432897), (0.62391373, 0.53532814),
+                (0.16885540, 0.44463454))     # Hehre-Stewart-Pople
+
+
 def _sto3g_h():
     """(exponent, contraction * primitive norm) for STO-3G hydrogen."""
-    prims = ((3.42525091, 0.15432897), (0.62391373, 0.53532814),
-             (0.16885540, 0.44463454))
-    return tuple((a, c * (2 * a / math.pi) ** 0.75) for a, c in prims)
+    return tuple((a, c * (2 * a / math.pi) ** 0.75) for a, c in _STO3G_H_RAW)
 
 
 def _boys0(t):
@@ -1805,4 +1807,262 @@ def h2_energy_bracket(R: float) -> Certified:
     (hartree) at bond length R bohr — over all particle-number sectors."""
     c = eigen_bracket(sto3g_h2_hamiltonian(R))
     return replace(c, provenance=(f"h2-sto3g-bracket R={R:g} "
+                                  + c.provenance[0],))
+
+
+# --------------------------------------- McMurchie-Davidson recursions:
+# integrals for arbitrary Cartesian angular momentum, enabling p (and
+# higher) orbitals. Hermite expansion coefficients E by recursion,
+# Hermite Coulomb integrals R on a general Boys function (series +
+# stable downward recursion; asymptotic branch for large t). Verified
+# in tests three ways: l=0 reproduces the closed-form s-integrals to
+# machine precision (the previous pipeline is the oracle), genuine
+# p-integrals match 3D grid quadrature, and the p-polarized H2 bracket
+# lies strictly below the s-only bracket — a theorem about two
+# certified intervals.
+
+
+def _boys(nmax, t):
+    """F_0..F_nmax(t): series at nmax + stable downward recursion;
+    asymptotic upward branch for t > 35 (e^-t below double precision)."""
+    if t > 35.0:
+        F = [0.5 * math.sqrt(math.pi / t)]
+        for n in range(1, nmax + 1):
+            F.append(F[-1] * (2 * n - 1) / (2 * t))
+        return F
+    s, term, k = 0.0, 1.0 / (2 * nmax + 1), 0
+    while k < 250:
+        s += term
+        k += 1
+        term *= 2 * t / (2 * nmax + 2 * k + 1)
+        if term < 1e-17 * s:
+            break
+    F = [0.0] * (nmax + 1)
+    F[nmax] = s * math.exp(-t)
+    for n in range(nmax, 0, -1):
+        F[n - 1] = (2 * t * F[n] + math.exp(-t)) / (2 * n - 1)
+    return F
+
+
+def _md_E(i, j, t, Q, a, b, memo):
+    """Hermite expansion coefficient E_t^{ij} (1D), Helgaker recursion."""
+    if t < 0 or t > i + j:
+        return 0.0
+    key = (i, j, t)
+    if key in memo:
+        return memo[key]
+    p = a + b
+    if i == j == t == 0:
+        val = math.exp(-a * b / p * Q * Q)
+    elif i > 0:
+        val = _md_E(i - 1, j, t - 1, Q, a, b, memo) / (2 * p) \
+            + (-b * Q / p) * _md_E(i - 1, j, t, Q, a, b, memo) \
+            + (t + 1) * _md_E(i - 1, j, t + 1, Q, a, b, memo)
+    else:
+        val = _md_E(i, j - 1, t - 1, Q, a, b, memo) / (2 * p) \
+            + (a * Q / p) * _md_E(i, j - 1, t, Q, a, b, memo) \
+            + (t + 1) * _md_E(i, j - 1, t + 1, Q, a, b, memo)
+    memo[key] = val
+    return val
+
+
+def _md_R(t, u, v, n, p, PC, F, memo):
+    """Hermite Coulomb integral R^n_{tuv}, Helgaker recursion."""
+    if t < 0 or u < 0 or v < 0:
+        return 0.0
+    key = (t, u, v, n)
+    if key in memo:
+        return memo[key]
+    if t == u == v == 0:
+        val = (-2.0 * p) ** n * F[n]
+    elif t > 0:
+        val = (t - 1) * _md_R(t - 2, u, v, n + 1, p, PC, F, memo) \
+            + PC[0] * _md_R(t - 1, u, v, n + 1, p, PC, F, memo)
+    elif u > 0:
+        val = (u - 1) * _md_R(t, u - 2, v, n + 1, p, PC, F, memo) \
+            + PC[1] * _md_R(t, u - 1, v, n + 1, p, PC, F, memo)
+    else:
+        val = (v - 1) * _md_R(t, u, v - 2, n + 1, p, PC, F, memo) \
+            + PC[2] * _md_R(t, u, v - 1, n + 1, p, PC, F, memo)
+    memo[key] = val
+    return val
+
+
+def _cart_norm(a, l):
+    """Norm of the primitive x^i y^j z^k exp(-a r^2)."""
+    df = lambda n: math.prod(range(2 * n - 1, 0, -2)) if n else 1
+    return (2 * a / math.pi) ** 0.75 * (4 * a) ** (sum(l) / 2) \
+        / math.sqrt(df(l[0]) * df(l[1]) * df(l[2]))
+
+
+def _md_integrals(atoms, shells):
+    """(S, h, eri, enuc) for Cartesian-Gaussian AOs of arbitrary angular
+    momentum. atoms: [(Z, xyz)]; shells: one AO each, (xyz, (i,j,k),
+    [(exponent, contraction), ...]). Contractions are multiplied by
+    primitive norms here; overall AO normalization is NOT assumed
+    (Lowdin handles any overlap — the S11 != 1 lesson)."""
+    nao = len(shells)
+    aos = []
+    for center, l, prims in shells:
+        aos.append((np.asarray(center, float), l,
+                    [(a, c * _cart_norm(a, l)) for a, c in prims]))
+
+    def pair_terms(ao1, ao2):
+        A, la, pa = ao1
+        B, lb, pb = ao2
+        for a, ca in pa:
+            for b, cb in pb:
+                yield a, b, ca * cb, A, la, B, lb
+
+    def s1d(i, j, Q, a, b):
+        return _md_E(i, j, 0, Q, a, b, {}) * math.sqrt(math.pi / (a + b))
+
+    S = np.zeros((nao, nao))
+    h = np.zeros((nao, nao))
+    for m in range(nao):
+        for n_ in range(nao):
+            for a, b, cc, A, la, B, lb in pair_terms(aos[m], aos[n_]):
+                sx = [s1d(la[d], lb[d], A[d] - B[d], a, b) for d in range(3)]
+                S[m, n_] += cc * sx[0] * sx[1] * sx[2]
+                tx = []
+                for d in range(3):
+                    j = lb[d]
+                    t = -2 * b * b * s1d(la[d], j + 2, A[d] - B[d], a, b) \
+                        + b * (2 * j + 1) * sx[d]
+                    if j >= 2:
+                        t -= 0.5 * j * (j - 1) \
+                            * s1d(la[d], j - 2, A[d] - B[d], a, b)
+                    tx.append(t)
+                h[m, n_] += cc * (tx[0] * sx[1] * sx[2]
+                                  + sx[0] * tx[1] * sx[2]
+                                  + sx[0] * sx[1] * tx[2])
+                p = a + b
+                P = (a * A + b * B) / p
+                Ex = [[_md_E(la[d], lb[d], t, A[d] - B[d], a, b, {})
+                       for t in range(la[d] + lb[d] + 1)] for d in range(3)]
+                ntot = sum(la) + sum(lb)
+                for Z, C in atoms:
+                    PC = P - np.asarray(C, float)
+                    F = _boys(ntot, p * float(PC @ PC))
+                    memo = {}
+                    val = 0.0
+                    for t in range(la[0] + lb[0] + 1):
+                        for u in range(la[1] + lb[1] + 1):
+                            for v in range(la[2] + lb[2] + 1):
+                                val += Ex[0][t] * Ex[1][u] * Ex[2][v] \
+                                    * _md_R(t, u, v, 0, p, PC, F, memo)
+                    h[m, n_] -= cc * Z * 2 * math.pi / p * val
+
+    eri = np.zeros((nao, nao, nao, nao))
+    for m in range(nao):
+        for n_ in range(nao):
+            for k in range(nao):
+                for l_ in range(nao):
+                    val = 0.0
+                    for a, b, cab, A, la, B, lb in pair_terms(aos[m], aos[n_]):
+                        p = a + b
+                        P = (a * A + b * B) / p
+                        Eab = [[_md_E(la[d], lb[d], t, A[d] - B[d], a, b, {})
+                                for t in range(la[d] + lb[d] + 1)]
+                               for d in range(3)]
+                        for c, d_, ccd, Cc, lc, D, ld in pair_terms(
+                                aos[k], aos[l_]):
+                            q = c + d_
+                            Q = (c * Cc + d_ * D) / q
+                            alpha = p * q / (p + q)
+                            PQ = P - Q
+                            Ecd = [[_md_E(lc[d], ld[d], t, Cc[d] - D[d],
+                                          c, d_, {})
+                                    for t in range(lc[d] + ld[d] + 1)]
+                                   for d in range(3)]
+                            ntot = sum(la) + sum(lb) + sum(lc) + sum(ld)
+                            F = _boys(ntot, alpha * float(PQ @ PQ))
+                            memo = {}
+                            acc = 0.0
+                            for t in range(la[0] + lb[0] + 1):
+                                for u in range(la[1] + lb[1] + 1):
+                                    for v in range(la[2] + lb[2] + 1):
+                                        e1 = Eab[0][t] * Eab[1][u] * Eab[2][v]
+                                        if e1 == 0.0:
+                                            continue
+                                        for t2 in range(lc[0] + ld[0] + 1):
+                                            for u2 in range(lc[1] + ld[1] + 1):
+                                                for v2 in range(
+                                                        lc[2] + ld[2] + 1):
+                                                    e2 = Ecd[0][t2] \
+                                                        * Ecd[1][u2] \
+                                                        * Ecd[2][v2]
+                                                    if e2 == 0.0:
+                                                        continue
+                                                    acc += e1 * e2 * (-1) ** (
+                                                        t2 + u2 + v2) \
+                                                        * _md_R(t + t2,
+                                                                u + u2,
+                                                                v + v2, 0,
+                                                                alpha, PQ,
+                                                                F, memo)
+                            val += cab * ccd * 2 * math.pi ** 2.5 \
+                                / (p * q * math.sqrt(p + q)) * acc
+                    eri[m, n_, k, l_] = val
+    enuc = sum(atoms[i][0] * atoms[j][0]
+               / float(np.linalg.norm(np.asarray(atoms[i][1])
+                                      - np.asarray(atoms[j][1])))
+               for i in range(len(atoms)) for j in range(i + 1, len(atoms)))
+    return S, h, eri, enuc
+
+
+def _fock_hamiltonian(S, h, eri, enuc):
+    """Lowdin-orthogonalize, Jordan-Wigner, assemble the 4^nao Fock-space
+    Hamiltonian (sparse internally, dense out)."""
+    from scipy import sparse
+    w, U = np.linalg.eigh(S)
+    Xo = U @ np.diag(w ** -0.5) @ U.T
+    h = Xo @ h @ Xo
+    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
+    nso = 2 * len(h)
+    I2 = sparse.identity(2, format="csr")
+    Zm = sparse.diags([1.0, -1.0]).tocsr()
+    low = sparse.csr_matrix(np.array([[0.0, 1.0], [0.0, 0.0]]))
+    ann = []
+    for pp in range(nso):
+        op = sparse.identity(1, format="csr")
+        for mm in [Zm] * pp + [low] + [I2] * (nso - pp - 1):
+            op = sparse.kron(op, mm, format="csr")
+        ann.append(op)
+    dim = 2 ** nso
+    H = sparse.identity(dim, format="csr") * enuc
+    n_sp = len(h)
+    for p in range(n_sp):
+        for q in range(n_sp):
+            if h[p, q] == 0.0:
+                continue
+            for sp in range(2):
+                H = H + h[p, q] * (ann[2 * p + sp].T @ ann[2 * q + sp])
+    for p in range(n_sp):
+        for q in range(n_sp):
+            for r in range(n_sp):
+                for s2 in range(n_sp):
+                    g = eri[p, r, q, s2]
+                    if abs(g) < 1e-14:
+                        continue
+                    for sa in range(2):
+                        for sb in range(2):
+                            H = H + 0.5 * g * (
+                                ann[2 * p + sa].T @ ann[2 * q + sb].T
+                                @ ann[2 * s2 + sb] @ ann[2 * r + sa])
+    return np.asarray(H.todense())
+
+
+def h2_polarized_bracket(R: float) -> Certified:
+    """Certified bracket for H2 with an s + pz(alpha=1.1) basis on each
+    atom (sigma polarization; the MD engine handles all components,
+    tested by quadrature). 256-dim Fock space."""
+    atoms = [(1, (0.0, 0.0, 0.0)), (1, (0.0, 0.0, R))]
+    pz = ((1.1, 1.0),)
+    shells = [((0.0, 0.0, 0.0), (0, 0, 0), _STO3G_H_RAW),
+              ((0.0, 0.0, R), (0, 0, 0), _STO3G_H_RAW),
+              ((0.0, 0.0, 0.0), (0, 0, 1), pz),
+              ((0.0, 0.0, R), (0, 0, 1), pz)]
+    c = eigen_bracket(_fock_hamiltonian(*_md_integrals(atoms, shells)))
+    return replace(c, provenance=(f"h2-s+pz-bracket R={R:g} "
                                   + c.provenance[0],))

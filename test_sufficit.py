@@ -1228,6 +1228,92 @@ def test_h2_bracket_dissociation_and_equilibrium():
     assert -1.141 < c_eq.value < -1.133
 
 
+def test_md_reduces_to_s_closed_forms():
+    """At l=0 the McMurchie-Davidson engine must reproduce the closed-form
+    s-integrals to machine precision — last turn's code is the oracle."""
+    R = 1.4
+    S0, h0, eri0, _ = sf._h2_integrals(R)
+    prims = sf._STO3G_H_RAW           # raw: _md_integrals applies norms
+    shells = [((0.0, 0.0, 0.0), (0, 0, 0), prims),
+              ((0.0, 0.0, R), (0, 0, 0), prims)]
+    atoms = [(1, (0.0, 0.0, 0.0)), (1, (0.0, 0.0, R))]
+    S, h, eri, enuc = sf._md_integrals(atoms, shells)
+    assert np.max(np.abs(S - S0)) < 1e-12
+    assert np.max(np.abs(h - h0)) < 1e-12
+    assert np.max(np.abs(eri - eri0)) < 1e-12
+    assert enuc == pytest.approx(1.0 / R)
+
+
+def test_md_p_integrals_against_quadrature():
+    """Genuine p-orbital integrals against 3D grid quadrature."""
+    R = 1.4
+    a_p = 1.1                                # standard H polarization exp
+    pz = ((0.0, 0.0, 0.0), (0, 0, 1), ((a_p, 1.0),))
+    pzB = ((0.0, 0.0, R), (0, 0, 1), ((a_p, 1.0),))
+    s_ = ((0.0, 0.0, 0.0), (0, 0, 0), sf._STO3G_H_RAW)
+    atoms = [(1, (0.0, 0.0, 0.0)), (1, (0.0, 0.0, R))]
+    S, h, eri, _ = sf._md_integrals(atoms, [s_, pz, pzB])
+    g = np.arange(-7.03, 8.0, 0.14)
+    X, Y, Z = np.meshgrid(g, g, g, indexing="ij")
+    dv = 0.14 ** 3
+    norm_p = (2 * a_p / math.pi) ** 0.75 * 2 * math.sqrt(a_p)
+    pzA_g = norm_p * Z * np.exp(-a_p * (X**2 + Y**2 + Z**2))
+    pzB_g = norm_p * (Z - R) * np.exp(-a_p * (X**2 + Y**2 + (Z - R)**2))
+    sA_g = np.zeros_like(X)
+    for a, cn in sf._sto3g_h():
+        sA_g += cn * np.exp(-a * (X**2 + Y**2 + Z**2))
+    assert np.sum(pzA_g * pzA_g) * dv == pytest.approx(S[1, 1], abs=1e-5)
+    assert np.sum(pzA_g * pzB_g) * dv == pytest.approx(S[1, 2], abs=1e-5)
+    assert np.sum(sA_g * pzB_g) * dv == pytest.approx(S[0, 2], abs=1e-5)
+    # s-pz nuclear + kinetic jointly through the core Hamiltonian
+    gz_pzB = norm_p * (1 - 2 * a_p * (Z - R)**2) \
+        * np.exp(-a_p * (X**2 + Y**2 + (Z - R)**2))
+    gx_pzB = norm_p * (Z - R) * (-2 * a_p * X) \
+        * np.exp(-a_p * (X**2 + Y**2 + (Z - R)**2))
+    gy_pzB = norm_p * (Z - R) * (-2 * a_p * Y) \
+        * np.exp(-a_p * (X**2 + Y**2 + (Z - R)**2))
+    gx_s = gy_s = gz_s = None
+    gs = []
+    for a, cn in sf._sto3g_h():
+        gs.append((a, cn))
+    gx_s = sum(-2 * a * X * cn * np.exp(-a * (X**2 + Y**2 + Z**2))
+               for a, cn in gs)
+    gy_s = sum(-2 * a * Y * cn * np.exp(-a * (X**2 + Y**2 + Z**2))
+               for a, cn in gs)
+    gz_s = sum(-2 * a * Z * cn * np.exp(-a * (X**2 + Y**2 + Z**2))
+               for a, cn in gs)
+    Tnum = 0.5 * np.sum(gx_s * gx_pzB + gy_s * gy_pzB + gz_s * gz_pzB) * dv
+    rA = np.sqrt(X**2 + Y**2 + Z**2)
+    rB = np.sqrt(X**2 + Y**2 + (Z - R)**2)
+    Vnum = -np.sum(sA_g * pzB_g * (1 / rA + 1 / rB)) * dv
+    assert Tnum + Vnum == pytest.approx(h[0, 2], abs=3e-3)
+    # one p-involving ERI via the erf potential of the s-s pair density
+    from scipy.special import erf
+    VA = np.zeros_like(X)
+    s = np.sqrt(X**2 + Y**2 + Z**2)
+    for a, ca in sf._sto3g_h():
+        for b, cb in sf._sto3g_h():
+            q = a + b
+            VA += ca * cb * (np.pi / q) ** 1.5 * np.where(
+                s > 1e-8, erf(np.sqrt(q) * s) / np.maximum(s, 1e-30),
+                2 * math.sqrt(q / math.pi))
+    assert np.sum(pzA_g * pzB_g * VA) * dv \
+        == pytest.approx(eri[1, 2, 0, 0], abs=2e-4)
+
+
+def test_h2_polarized_bracket_strictly_below_s_only():
+    """The certificates prove the physics: adding pz polarization must
+    lower the FCI energy, and with 1e-13 bracket widths 'strictly below'
+    is a theorem about the two intervals."""
+    R = 1.4
+    c_s = sf.h2_energy_bracket(R)
+    c_sp = sf.h2_polarized_bracket(R)
+    assert c_sp.value + c_sp.err < c_s.value - c_s.err
+    lowering = c_s.value - c_sp.value
+    assert 1e-4 < lowering < 0.05          # mHa-scale, physically sane
+    assert c_sp.tier == sf.Tier.RIGOROUS
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
