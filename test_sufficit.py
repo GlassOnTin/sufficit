@@ -624,6 +624,91 @@ def test_smeared_spectral_statistical():
     assert c.fail_p == pytest.approx(2 * math.erfc(5.0 / math.sqrt(2)))
 
 
+def _mz_test_system(rng, fast_scale=1.0):
+    """Dissipative slow-fast linear system: 2 slow observables weakly
+    coupled to an 8-dimensional stiff fast sector."""
+    A = np.zeros((10, 10))
+    A[:2, :2] = [[-0.3, 0.2], [-0.2, -0.4]]
+    A[:2, 2:] = 0.15 * rng.standard_normal((2, 8))
+    A[2:, :2] = 0.15 * rng.standard_normal((8, 2))
+    A[2:, 2:] = fast_scale * (-6.0 * np.eye(8) + 0.3 * rng.standard_normal((8, 8)))
+    return A
+
+
+def test_mz_linear_closure_certified():
+    """Phase 4, rigorous tier: Markovian closure of a linear slow-fast
+    system, verified against the exact full propagator."""
+    from scipy.linalg import expm
+    rng = np.random.default_rng(21)
+    A = _mz_test_system(rng)
+    x10 = np.array([1.0, -0.5])
+    x0 = np.concatenate([x10, np.zeros(8)])
+    for T in (1.0, 5.0, 20.0):
+        exact = (expm(A * T) @ x0)[:2]
+        c = sf.mz_closure_linear(A, 2, x10, T)
+        assert np.linalg.norm(c.value - exact) <= c.err
+        assert c.err < 0.5 * np.linalg.norm(x10)     # non-vacuous
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+        assert "x2(0)=0" in c.provenance[0]
+
+
+def test_mz_bound_tightens_with_gap():
+    """Physical provenance: the certificate depends on the fast sector's
+    spectral gap, so a stiffer fast block must certify tighter."""
+    rng = np.random.default_rng(22)
+    base = sf.mz_closure_linear(_mz_test_system(rng, 1.0), 2,
+                                np.array([1.0, -0.5]), 5.0)
+    rng = np.random.default_rng(22)
+    stiff = sf.mz_closure_linear(_mz_test_system(rng, 2.0), 2,
+                                 np.array([1.0, -0.5]), 5.0)
+    assert stiff.err < base.err / 2
+
+
+def test_mz_refuses_without_gap():
+    """No spectral gap in the fast sector: no certified memory decay."""
+    A = np.zeros((4, 4))
+    A[:2, :2] = -np.eye(2)
+    A[2:, 2:] = np.array([[0.1, 0.0], [0.0, -1.0]])  # unstable fast mode
+    with pytest.raises(ValueError):
+        sf.mz_closure_linear(A, 2, np.array([1.0, 0.0]), 1.0)
+
+
+def _rk4(f, x0, dt, n):
+    x, xs = np.array(x0, float), [np.array(x0, float)]
+    for _ in range(n):
+        k1 = f(x)
+        k2 = f(x + dt / 2 * k1)
+        k3 = f(x + dt / 2 * k2)
+        k4 = f(x + dt * k3)
+        x = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        xs.append(x.copy())
+    return np.array(xs)
+
+
+def test_mz_conformal_empirical():
+    """Phase 4, empirical tier: nonlinear slow-fast system where no
+    rigorous constants exist; the conformal bound is distribution-free
+    with fail_p = 1/(n_cal+1), checked on 200 fresh draws."""
+    def full(x0):        # slow x drives fast y; adiabatic reduced model
+        f = lambda s: np.array([-0.2 * s[0] + 0.6 * s[1],
+                                -6.0 * s[1] + s[0] - 0.3 * s[0] ** 3])
+        return _rk4(f, [x0, 0.0], 0.01, 500)[:, 0]
+
+    def red(x0):
+        f = lambda s: np.array([-0.2 * s[0] + 0.1 * (s[0] - 0.3 * s[0] ** 3)])
+        return _rk4(f, [x0], 0.01, 500)[:, 0]
+
+    sampler = lambda rng: float(rng.uniform(-1, 1))
+    c = sf.conformal_closure(full, red, sampler, 0.7, n_cal=99, rng=23)
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert c.fail_p == pytest.approx(0.01)
+    assert np.max(np.abs(c.value - full(0.7))) <= c.err  # typical draw held
+    rng = np.random.default_rng(24)
+    viol = sum(np.max(np.abs(full(x) - red(x))) > c.err
+               for x in (sampler(rng) for _ in range(200)))
+    assert viol <= 8            # expected <= 2 at fail_p 0.01 per draw
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

@@ -928,3 +928,76 @@ def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
                      (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
                       f"c={c:.3g} z={z:g} assumes rho>=0",),
                      fail_p=2 * math.erfc(z / math.sqrt(2)))
+
+
+# ------------------------------------------------------------- Phase 4:
+# Mori-Zwanzig closures. Rigorous tier: linear slow-fast systems, where
+# the memory kernel K(s) = A12 e^(A22 s) A21 decays at the fast sector's
+# spectral gap and the Markovian closure carries a Gronwall bound with
+# computable constants (log-norms, block norms) — the bound's provenance
+# is the gap, and without one the rewrite refuses. Empirical tier:
+# distribution-free conformal calibration for closures of ANY system
+# (nonlinear included), with rigorous failure probability 1/(n_cal+1)
+# under exchangeability of initial conditions — the honest certificate
+# this phase exists to ship. Both exact-arithmetic.
+
+
+def _lognorm(M):
+    """2-norm logarithmic norm: ||e^(Mt)|| <= e^(lognorm(M) t)."""
+    return float(np.linalg.eigvalsh((M + M.T) / 2)[-1])
+
+
+def mz_closure_linear(A: np.ndarray, k: int, x10: np.ndarray,
+                      T: float) -> Certified:
+    """Phase 4 rewrite, rigorous tier: x_slow(T) for dx/dt = Ax with the
+    first k coordinates slow observables and x_fast(0) = 0 (declared),
+    via the Markovian closure Ar = A11 - A12 A22^{-1} A21. Error bound:
+    ||K(s)|| <= kappa e^(-mu s) with mu the fast-sector gap (-lognorm of
+    A22), Gronwall through the reduced propagator:
+    err = B kappa (L/mu^2 G1 + G2/mu). Refuses when mu <= 0. Choosing
+    WHICH variables are slow is the caller's; searching for them is
+    future work — the machine certifies or refuses the given split."""
+    from scipy.linalg import expm
+    A = np.asarray(A, float)
+    A11, A12 = A[:k, :k], A[:k, k:]
+    A21, A22 = A[k:, :k], A[k:, k:]
+    mu = -_lognorm(A22)
+    if mu <= 0:
+        raise ValueError(f"fast-sector log-norm {-mu:.3g} >= 0: no spectral "
+                         "gap, memory kernel not certifiably decaying")
+    kappa = float(np.linalg.norm(A12, 2) * np.linalg.norm(A21, 2))
+    Ar = A11 - A12 @ np.linalg.solve(A22, A21)
+    nur, nuA = _lognorm(Ar), _lognorm(A)
+    B = float(np.linalg.norm(x10)) * max(1.0, math.exp(nuA * T))
+    L = float(np.linalg.norm(A11, 2)) + kappa / mu
+    G1 = math.expm1(nur * T) / nur if nur != 0 else T
+    d = nur + mu
+    G2 = (math.exp(nur * T) - math.exp(-mu * T)) / d if abs(d) > 1e-12 \
+        else T * math.exp(nur * T)
+    err = B * kappa * (L / mu**2 * G1 + G2 / mu)
+    xr = expm(Ar * T) @ np.asarray(x10, float)
+    return Certified(xr, float(err), Tier.RIGOROUS,
+                     (f"mz-markov k={k} mu={mu:.3g} kappa={kappa:.3g} "
+                      f"nur={nur:.3g} assumes x2(0)=0",))
+
+
+def conformal_closure(traj_full, traj_red, sampler, x_new,
+                      n_cal: int = 99, rng=None) -> Certified:
+    """Phase 4 rewrite, empirical tier: predict with the reduced model,
+    certified by conformal calibration. Runs both models on n_cal i.i.d.
+    initial conditions from sampler; err is the worst observed uniform
+    (sup over time, 2-norm over state) deviation. For a fresh draw from
+    the SAME distribution, P(deviation > err) <= 1/(n_cal+1) by
+    exchangeability — a distribution-free guarantee, no model
+    assumptions. Tier EMPIRICAL: valid for the sampled distribution,
+    not for out-of-distribution initial conditions."""
+    rng = np.random.default_rng(rng)
+
+    def dev(x0):
+        diff = np.asarray(traj_full(x0), float) - np.asarray(traj_red(x0), float)
+        return float(np.max(np.linalg.norm(diff.reshape(len(diff), -1), axis=1)))
+
+    worst = max(dev(sampler(rng)) for _ in range(n_cal))
+    return Certified(traj_red(x_new), worst, Tier.EMPIRICAL,
+                     (f"mz-conformal n_cal={n_cal} sup-t norm",),
+                     fail_p=1.0 / (n_cal + 1))
