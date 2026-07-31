@@ -1359,6 +1359,21 @@ def test_molecular_multipliers_tighten():
     assert gain > 0.04
 
 
+def test_eps_loop_never_hurts():
+    """Outer eps loop for the CS weights, locked-in findings: the naive
+    balance update eps* = sqrt(<R>/<L>) DEGRADES the bound (measured
+    -5 mHa/atom at H6 — it optimizes against the current window
+    minimizers; lambda_min then re-minimizes elsewhere, so it is not an
+    ascent step), and with damped updates plus best-by-measured-total
+    tracking the loop is monotone-safe — the eps=1 start is in the
+    candidate set, so it can never end worse. Measured optimum on this
+    system IS eps=1: the per-term balancing family has nothing to give
+    here; the guarantee is the deliverable."""
+    base = sf.h_chain_bracket(6, 1.8, ell=3, cs_rounds=0)
+    bal = sf.h_chain_bracket(6, 1.8, ell=3, cs_rounds=4)
+    assert (bal.value - bal.err) >= (base.value - base.err) - 1e-9
+
+
 def test_h_chain_bracket_tightens_with_ell():
     wide = sf.h_chain_bracket(8, 1.8, ell=2)
     tight = sf.h_chain_bracket(8, 1.8, ell=3)

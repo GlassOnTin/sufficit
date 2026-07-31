@@ -2094,7 +2094,11 @@ def h2_polarized_bracket(R: float) -> Certified:
 # replacing the flat norms that used to dominate the gap (1.04 of
 # 1.79 Ha at H6/ell=3; the absorption recovered ~0.52). Repeated-mode
 # or window-overflowing sides fall back to flat bounds (rare, tiny).
-# Shared-C window multipliers below add a further modest tightening. Upper: product of exactly solved atom blocks, cross energies
+# Shared-C window multipliers below add a further modest tightening.
+# The balanced-eps outer loop (cs_rounds) is monotone-safe by
+# best-tracking; measured on H-chains its optimum is eps=1 — the
+# balancing family is exhausted at the start here, and the naive
+# greedy update would LOSE 5 mHa/atom (not an ascent step). Upper: product of exactly solved atom blocks, cross energies
 # by exact factorization of block-diagonal 1-RDMs (fermionic signs are
 # benign — cross operators move in even pairs). No correction
 # multipliers yet (the Heisenberg bundle machinery is the named
@@ -2286,7 +2290,8 @@ def _window_multipliers(mats, D, iters):
 
 
 def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
-                    correction_iters: int = 60) -> Certified:
+                    correction_iters: int = 60,
+                    cs_rounds: int = 2) -> Certified:
     """Certified two-sided bracket on the ground energy of the n-atom
     hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell.
     correction_iters=0 disables the shared-multiplier bundle ascent."""
@@ -2302,21 +2307,14 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
     linW = [np.zeros(ell) for _ in range(nw)]
     quadW = [np.zeros(ell) for _ in range(nw)]
     constW = [0.0] * nw
-    extraW = [[] for _ in range(nw)]
     lower_const, penalty = 0.0, 0.0
 
-    def absorb_pattern(coef, modes):
-        """Distribute a diagonal occupation product (Cauchy-Schwarz side)
-        into the windows covering its atom range; False if it fits none."""
+    cs_terms = []      # (coef, left pattern, right pattern): absorbed as
+                       # -coef*(eps*L + R/eps), eps tuned by the outer loop
+
+    def side_fits(modes):
         atoms = [m[0] // 2 for m in modes]
-        lo, hi = min(atoms), max(atoms)
-        if hi - lo >= ell:
-            return False
-        m = mcount(lo, hi)
-        for w in windows_of(lo, hi):
-            extraW[w].append((coef / m,
-                              tuple((so - 2 * w, occ) for so, occ in modes)))
-        return True
+        return max(atoms) - min(atoms) < ell
 
     def windows_of(lo, hi):
         return range(max(0, hi - ell + 1), min(lo, n - ell) + 1)
@@ -2334,13 +2332,12 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                 for w in windows_of(lo, hi):
                     hW[w][i - w, j - w] += hij / m
             elif i < j:
-                # far hopping, Cauchy-Schwarz with balanced weights:
-                # h(a'a + h.c.) >= -|h| (n_i + n_j), per spin — absorbed
-                # as linear number terms instead of a flat norm bound
-                for site in (i, j):
-                    m = mcount(site, site)
-                    for w in windows_of(site, site):
-                        linW[w][site - w] -= abs(h_full[i, j]) / m
+                # far hopping: h(a'a + h.c.) >= -|h|(eps n_i + n_j/eps)
+                # per spin, eps tuned by the outer loop
+                for sp in range(2):
+                    cs_terms.append((abs(h_full[i, j]),
+                                     ((2 * i + sp, True),),
+                                     ((2 * j + sp, True),)))
     # two-electron terms, enumerated exactly as the assembly does
     for p in range(n):
         for q in range(n):
@@ -2386,9 +2383,10 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                                 # Y'Y: the reverse
                                 lp = tuple((so, occ) for so, occ in left)
                                 rp = tuple((so, not occ) for so, occ in right)
-                                ok = absorb_pattern(-abs(g) / 2, lp)                                     and absorb_pattern(-abs(g) / 2, rp)
+                                ok = side_fits(lp) and side_fits(rp)
                                 if not ok:
                                     break
+                                cs_terms.append((abs(g) / 2, lp, rp))
                             if not ok:
                                 break
                         if not ok:
@@ -2410,9 +2408,68 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                     linW[w][site - w] += linc / m
                     quadW[w][site - w] += g / 2 / m
     lower = lower_const - penalty
-    mats = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w],
-                             extraW[w])
+    base = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w])
             for w in range(nw)]
+    # balanced-eps outer loop: every eps is a valid committed inequality,
+    # so the loop is pure quality. Absorptions are diagonal, so rebuilds
+    # are base + diagonal vector. Optimal eps* = sqrt(<R>/<L>) turns the
+    # cost into the true CS expectation bound 2 c sqrt(<L><R>).
+    dim, nq = 4 ** ell, 2 * ell
+    ndiag = [((np.arange(dim) >> (nq - 1 - q)) & 1).astype(float)
+             for q in range(nq)]
+
+    def side_data(modes):
+        atoms = [m // 2 for m, _ in modes]
+        lo, hi = min(atoms), max(atoms)
+        m = mcount(lo, hi)
+        out = []
+        for w in windows_of(lo, hi):
+            dv = np.ones(dim)
+            for so, occ in modes:
+                dv = dv * (ndiag[so - 2 * w] if occ
+                           else 1.0 - ndiag[so - 2 * w])
+            out.append((w, 1.0 / m, dv))
+        return out
+
+    sides = [(side_data(L), side_data(R)) for _, L, R in cs_terms]
+    eps = np.ones(len(cs_terms))
+
+    def assemble(eps_v):
+        acc = [np.zeros(dim) for _ in range(nw)]
+        for k, (c, _, _) in enumerate(cs_terms):
+            for w, wt, dv in sides[k][0]:
+                acc[w] -= c * eps_v[k] * wt * dv
+            for w, wt, dv in sides[k][1]:
+                acc[w] -= c / eps_v[k] * wt * dv
+        return [base[w] + np.diag(acc[w]) for w in range(nw)]
+
+    # the naive balance update eps* = sqrt(<R>/<L>) is NOT an ascent step
+    # (it optimizes against the current minimizers; lambda_min then
+    # re-minimizes and can drop — measured). Damped updates plus
+    # best-by-measured-total tracking make the loop monotone-safe: the
+    # eps=1 start is included, so it can never end worse than it began.
+    best_eps, best_tot = eps.copy(), -math.inf
+    for _ in range(cs_rounds):
+        mats = assemble(eps)
+        tot, p2 = 0.0, []
+        for M in mats:
+            lam, Vv = np.linalg.eigh(M)
+            tot += lam[0]
+            p2.append(Vv[:, 0] ** 2)
+        if tot > best_tot:
+            best_tot, best_eps = tot, eps.copy()
+        for k in range(len(cs_terms)):
+            eL = sum(wt * float(p2[w] @ dv) for w, wt, dv in sides[k][0])
+            eR = sum(wt * float(p2[w] @ dv) for w, wt, dv in sides[k][1])
+            bal = math.sqrt((eR + 1e-9) / (eL + 1e-9))
+            eps[k] = min(20.0, max(0.05, eps[k] ** 0.7 * bal ** 0.3))
+    if cs_rounds:
+        mats = assemble(eps)
+        tot = sum(np.linalg.eigvalsh(M)[0] for M in mats)
+        if tot < best_tot:
+            eps, mats = best_eps, assemble(best_eps)
+    else:
+        mats = assemble(eps)
     if correction_iters and nw > 1:
         D = 4 ** (ell - 1)
         C = _window_multipliers(mats, D, correction_iters)
