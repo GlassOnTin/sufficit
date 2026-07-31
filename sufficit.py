@@ -1431,3 +1431,71 @@ class ButterflyBlock:
                          Tier.RIGOROUS,
                          (f"butterfly L={self.L} beta={self.beta:.3g}",),
                          self.fail_p), stats
+
+
+# ----------------------------------------------- chemistry energy bracket
+# (TARGETS.md), matrix tier: a certified two-sided interval on the
+# ground-state energy of a formable Hermitian H. Upper bound: Rayleigh
+# quotient of a heuristic Lanczos vector — the variational theorem
+# certifies it no matter where the vector came from. Lower bound:
+# Cholesky feasibility proofs of H - cI >= 0 (the poor man's SDP dual
+# certificate), bisected from a rigorous Gershgorin seed; a spurious FP
+# Cholesky failure only loosens the bracket, never invalidates it.
+# Exact-arithmetic tier (Cholesky success is FP-trusted, declared).
+# The 2-RDM SDP lower bound — the version that scales past formable
+# Hamiltonians — is the named next rung; so is a molecular-integrals
+# pipeline. This demonstrates the bracket structure itself.
+
+
+def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
+    """Certified bracket on lambda_min(H), H Hermitian: value +- err
+    contains the true ground energy. Raises if tol is given and the
+    achieved width exceeds it."""
+    H = np.asarray(H)
+    n = len(H)
+    from scipy.sparse.linalg import eigsh
+    try:
+        _, V = eigsh(H, k=1, which="SA")
+        v = V[:, 0]
+    except Exception:                       # heuristic source; bracket
+        v = np.ones(n)                      # stays valid, just looser
+    v = v / np.linalg.norm(v)
+    up = float(np.real(v.conj() @ (H @ v)))     # variational theorem
+
+    def psd(c):
+        try:
+            np.linalg.cholesky(H - c * np.eye(n))
+            return True
+        except np.linalg.LinAlgError:
+            return False
+
+    d = np.real(np.diag(H))
+    gersh = float(np.min(d - (np.sum(np.abs(H), axis=1) - np.abs(d))))
+    r = float(np.linalg.norm(H @ v - up * v))
+    lo = up - 2 * r - 1e-12 * (1 + abs(up))     # near-optimal guess ...
+    if not psd(lo):
+        lo = gersh                              # ... else rigorous seed
+        if not psd(lo):
+            raise ValueError("Gershgorin seed not certifiable (FP)")
+    hi = up
+    for _ in range(60):
+        if hi - lo <= 1e-13 * (1 + abs(up)):
+            break
+        c = 0.5 * (lo + hi)
+        if psd(c):
+            lo = c
+        else:
+            hi = c
+    # carry the FP margins: the Rayleigh quotient's evaluation error and
+    # Cholesky's backward-stability slack (success proves PSD of
+    # H - cI + E, ||E|| <~ n eps ||H||, Higham) — conservative constant
+    pad = 8 * (n + 2) * np.finfo(float).eps \
+        * (float(np.linalg.norm(H, 1)) + abs(up))
+    up, lo = up + pad, lo - pad
+    value, err = 0.5 * (up + lo), 0.5 * (up - lo)
+    if tol is not None and err > tol:
+        raise ValueError(f"bracket width {err:.3g} exceeds tol={tol:.3g} "
+                         "(floating-point floor)")
+    return Certified(value, err, Tier.RIGOROUS,
+                     (f"eigen-bracket variational-upper cholesky-lower "
+                      f"width={2 * err:.3g} +fp",))

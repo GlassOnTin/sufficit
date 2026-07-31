@@ -1019,6 +1019,50 @@ def test_helmholtz_scatter_refuses_strong_contrast():
                                       np.array([0.0]), tol=1e-6)
 
 
+def _heisenberg_chain(N):
+    """Spin-1/2 Heisenberg open chain: H = sum_i S_i . S_{i+1}. Real
+    symmetric in the computational basis (the two i's in Sy x Sy cancel)."""
+    half = [np.array([[0, 1], [1, 0]]) / 2,
+            np.array([[0, -1j], [1j, 0]]) / 2,
+            np.array([[1, 0], [0, -1]]) / 2]
+    H = np.zeros((2 ** N, 2 ** N), complex)
+    for i in range(N - 1):
+        for s in half:
+            op = np.eye(1)
+            for j in range(N):
+                op = np.kron(op, s if j in (i, i + 1) else np.eye(2))
+            H += op
+    assert np.max(np.abs(H.imag)) < 1e-14
+    return H.real
+
+
+def test_eigen_bracket_heisenberg():
+    """The chemistry energy bracket, matrix tier: certified two-sided
+    interval on the ground energy of a real many-body Hamiltonian,
+    verified against full diagonalization."""
+    H = _heisenberg_chain(10)
+    c = sf.eigen_bracket(H)
+    truth = float(np.linalg.eigvalsh(H)[0])
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.err < 1e-6                       # far below chemical accuracy
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    assert "cholesky" in c.provenance[0]
+    # physics sanity: per-bond energy near the Bethe value 1/4 - ln 2
+    assert -0.50 < truth / 9 < -0.35
+
+
+def test_eigen_bracket_complex_and_tolerance():
+    rng = np.random.default_rng(41)
+    A = rng.standard_normal((300, 300)) + 1j * rng.standard_normal((300, 300))
+    H = (A + A.conj().T) / 2
+    c = sf.eigen_bracket(H)
+    truth = float(np.linalg.eigvalsh(H)[0])
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.err < 1e-6 * abs(truth)
+    with pytest.raises(ValueError):           # below the FP floor: refuse
+        sf.eigen_bracket(H, tol=1e-18)
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
