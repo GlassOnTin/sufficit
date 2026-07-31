@@ -865,6 +865,52 @@ def test_high_frequency_rank_law():
     assert ranks[2] > 1.5 * ranks[0]             # genuinely growing with k
 
 
+def test_butterfly_certified_and_beats_plain_lowrank():
+    """The multi-level butterfly: complementary low-rank with a 4-way
+    (diameter-halving) ladder. At fixed R = k r_T r_S / D ~ 95 the
+    advantage over plain low-rank grows with N (transfer cost is
+    N-independent, plain cost is R*(m+n)): measured crossover
+    1.16x -> 0.57x from N=1536 to N=4608. Certified a posteriori."""
+    ratios = []
+    for n in (1536, 4608):
+        rng = np.random.default_rng(36)
+        src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+        tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+        K = _helmholtz_kernel(1800.0)(tgt, src)
+        bf = sf.ButterflyBlock(K, tgt, src, levels=3, eps=1e-4,
+                               rng=np.random.default_rng(1))
+        q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+        c, stats = bf.apply(q)
+        exact = K @ q
+        assert np.linalg.norm(c.value - exact) <= c.err * (1 + 1e-9)
+        assert c.err < 0.05 * np.linalg.norm(exact)     # non-vacuous
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == pytest.approx(1e-10)
+        # plain low-rank at MATCHED certified accuracy via the adaptive
+        # certified rank finder (full SVD would dominate the suite)
+        res = sf._compress_certified(K, bf.beta, 10,
+                                     10 * math.sqrt(2 / math.pi) * math.sqrt(2),
+                                     np.random.default_rng(2))
+        r_plain = res[1].shape[0]
+        assert r_plain > 60                              # high-R regime
+        ratios.append(stats["apply_flops"] / (r_plain * 2 * n))
+        assert stats["apply_flops"] < 0.15 * n * n
+    assert ratios[1] < 0.7 < ratios[0] < 1.4             # the crossover
+
+
+def test_butterfly_low_R_is_no_worse_than_graceful():
+    """Sanity at low R (Laplace-like regime): the butterfly still
+    certifies; it just has no structural advantage to exploit."""
+    rng = np.random.default_rng(37)
+    n = 512
+    src = 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    tgt = 1.2 + 0.25 * (rng.uniform(-1, 1, n) + 1j * rng.uniform(-1, 1, n))
+    K = _helmholtz_kernel(30.0)(tgt, src)
+    bf = sf.ButterflyBlock(K, tgt, src, levels=2, eps=1e-4, rng=rng)
+    q = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    c, _ = bf.apply(q)
+    assert np.linalg.norm(c.value - K @ q) <= c.err * (1 + 1e-9)
+
+
 def test_helmholtz_scatter_certified():
     """CEM beachhead: certified far field of a weak penetrable scatterer.
     Truth is the dense solve of the same discrete system (the declared

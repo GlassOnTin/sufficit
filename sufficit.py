@@ -1265,3 +1265,124 @@ def helmholtz_scatter_farfield(k: float, contrast, n: int, L: float,
                      (f"helmholtz-born k={k:g} beta={beta:.3g} N={N} "
                       "schur discrete-system scope",))
     return cert, stats
+
+
+# ------------------------------------------------- multi-level butterfly:
+# the genuine high-frequency rewrite. Complementary low-rank: sub-blocks
+# K(t, s) with r_t * r_s ~ const have rank ~ k r_t r_s / D = O(1)
+# uniformly, so a ladder that REFINES the row tree while COARSENING the
+# column tree keeps every factor small: stage-0 factors touch the matrix
+# once per column leaf; each stage recompresses the restriction of the
+# previous bases to row children and records a small transfer matrix.
+# Construction is heuristic (relative-tol SVD truncations); the
+# certificate is A POSTERIORI on the assembled operator — probes of
+# K w - B w — so validity never depends on the construction.
+
+
+def _bisect_positions(pts, idx):
+    """Positions splitting a cluster in two along its wider axis."""
+    xs = pts[idx]
+    key = xs.real if np.ptp(xs.real) >= np.ptp(xs.imag) else xs.imag
+    order = np.argsort(key, kind="stable")
+    return order[:len(idx) // 2], order[len(idx) // 2:]
+
+
+def _quad_positions(pts, idx):
+    """Positions splitting a cluster in four (two bisections): in 2D the
+    DIAMETER must halve per butterfly level, which one binary split does
+    not do — with branching 2 the stage rank products only shrink like
+    2^(L/2) and every stage stays expensive (measured before this fix)."""
+    a, b = _bisect_positions(pts, idx)
+    a1, a2 = _bisect_positions(pts, idx[a])
+    b1, b2 = _bisect_positions(pts, idx[b])
+    return [a[a1], a[a2], b[b1], b[b2]]
+
+
+class ButterflyBlock:
+    """Butterfly factorization of one oscillatory kernel block. Guarantee
+    per apply(q): ||value - K q||_2 <= beta ||q||_2 with the stated
+    fail_p, beta certified a posteriori by probes on the assembled
+    factorization (setup touches the dense block, like the H-matrix:
+    the value is amortized applies). Tier RIGOROUS (exact arithmetic)."""
+
+    def __init__(self, K, tgt, src, levels, eps=1e-4, n_probes=10, rng=None):
+        rng = np.random.default_rng(rng)
+        L, (m, n) = levels, K.shape
+        if 4 ** L > min(m, n) // 8:
+            raise ValueError(f"levels={L} too deep for a {m}x{n} block")
+        tolc = eps      # per-factor; the a posteriori certificate absorbs
+                        # accumulation, so no per-level safety split needed
+
+        rowlvl, rowpos = [[np.arange(m)]], {}
+        collvl = [[np.arange(n)]]
+        for lv in range(L):
+            nxt = []
+            for i, t in enumerate(rowlvl[-1]):
+                for c, p in enumerate(_quad_positions(tgt, t)):
+                    rowpos[(lv + 1, 4 * i + c)] = p
+                    nxt.append(t[p])
+            rowlvl.append(nxt)
+            collvl.append([s[p] for s in collvl[-1]
+                           for p in _quad_positions(src, s)])
+
+        def trunc_svd(A):
+            U, sv, Vt = np.linalg.svd(A, full_matrices=False)
+            keep = max(1, int(np.sum(sv > tolc * sv[0])))
+            return U[:, :keep], sv[:keep, None] * Vt[:keep]
+
+        self.C0, Us = [], {}
+        for j, s in enumerate(collvl[L]):
+            U, C = trunc_svd(K[:, s])
+            Us[(0, j)] = U
+            self.C0.append(C)
+        self.E = {}
+        for lv in range(L):
+            new = {}
+            for i2 in range(4 ** (lv + 1)):
+                pos = rowpos[(lv + 1, i2)]
+                for j2 in range(4 ** (L - lv - 1)):
+                    G = np.hstack([Us[(i2 // 4, 4 * j2 + c)][pos]
+                                   for c in range(4)])
+                    Un, E = trunc_svd(G)
+                    new[(i2, j2)] = Un
+                    self.E[(lv + 1, i2, j2)] = E
+            Us = new
+        self.Ufin = [Us[(i, 0)] for i in range(4 ** L)]
+        self.rows, self.cols, self.L = rowlvl[L], collvl[L], L
+        self.m, self.dtype = m, np.result_type(K)
+        self.apply_flops = sum(C.size for C in self.C0) \
+            + sum(E.size for E in self.E.values()) \
+            + sum(U.size for U in self.Ufin)
+
+        # a posteriori certificate on the assembled operator
+        W = rng.standard_normal((n, n_probes))
+        resid = K @ W - np.stack([self._raw(W[:, i])
+                                  for i in range(n_probes)], axis=1)
+        scale = 10.0 * math.sqrt(2.0 / math.pi) \
+            * (math.sqrt(2.0) if np.issubdtype(self.dtype,
+                                               np.complexfloating) else 1.0)
+        self.beta = scale * float(np.max(np.linalg.norm(resid, axis=0)))
+        self.fail_p = 10.0 ** (-n_probes)
+
+    def _raw(self, q):
+        vec = {(0, j): C @ q[s] for j, (C, s)
+               in enumerate(zip(self.C0, self.cols))}
+        for lv in range(self.L):
+            vec = {(i2, j2): self.E[(lv + 1, i2, j2)]
+                   @ np.concatenate([vec[(i2 // 4, 4 * j2 + c)]
+                                     for c in range(4)])
+                   for i2 in range(4 ** (lv + 1))
+                   for j2 in range(4 ** (self.L - lv - 1))}
+        out = np.zeros(self.m, self.dtype)
+        for i, t in enumerate(self.rows):
+            out[t] = self.Ufin[i] @ vec[(i, 0)]
+        return out
+
+    def apply(self, q):
+        value = self._raw(np.asarray(q))
+        stats = {"apply_flops": self.apply_flops,
+                 "dense_flops": self.m * len(q), "beta": self.beta}
+        return Certified(value, self.beta * float(np.linalg.norm(q)),
+                         Tier.RIGOROUS,
+                         (f"butterfly L={self.L} beta={self.beta:.3g}",),
+                         self.fail_p), stats
