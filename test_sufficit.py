@@ -645,22 +645,21 @@ def test_mz_linear_closure_certified():
     x0 = np.concatenate([x10, np.zeros(8)])
     for T in (1.0, 5.0, 20.0):
         exact = (expm(A * T) @ x0)[:2]
-        c = sf.mz_closure_linear(A, 2, x10, T)
+        c = sf.mz_closure_linear(A, 2, x0, T)
         assert np.linalg.norm(c.value - exact) <= c.err
         assert c.err < 0.5 * np.linalg.norm(x10)     # non-vacuous
         assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
-        assert "x2(0)=0" in c.provenance[0]
+        assert "mu=" in c.provenance[0]
 
 
 def test_mz_bound_tightens_with_gap():
     """Physical provenance: the certificate depends on the fast sector's
     spectral gap, so a stiffer fast block must certify tighter."""
     rng = np.random.default_rng(22)
-    base = sf.mz_closure_linear(_mz_test_system(rng, 1.0), 2,
-                                np.array([1.0, -0.5]), 5.0)
+    x0 = np.concatenate([[1.0, -0.5], np.zeros(8)])
+    base = sf.mz_closure_linear(_mz_test_system(rng, 1.0), 2, x0, 5.0)
     rng = np.random.default_rng(22)
-    stiff = sf.mz_closure_linear(_mz_test_system(rng, 2.0), 2,
-                                 np.array([1.0, -0.5]), 5.0)
+    stiff = sf.mz_closure_linear(_mz_test_system(rng, 2.0), 2, x0, 5.0)
     assert stiff.err < base.err / 2
 
 
@@ -670,7 +669,51 @@ def test_mz_refuses_without_gap():
     A[:2, :2] = -np.eye(2)
     A[2:, 2:] = np.array([[0.1, 0.0], [0.0, -1.0]])  # unstable fast mode
     with pytest.raises(ValueError):
-        sf.mz_closure_linear(A, 2, np.array([1.0, 0.0]), 1.0)
+        sf.mz_closure_linear(A, 2, np.array([1.0, 0.0, 0.0, 0.0]), 1.0)
+
+
+def test_mz_nonzero_fast_initial_condition():
+    """The closure now covers arbitrary fast initial states: the decaying
+    transient enters the bound instead of being assumed away."""
+    from scipy.linalg import expm
+    rng = np.random.default_rng(25)
+    A = _mz_test_system(rng)
+    x0 = np.concatenate([[1.0, -0.5], 0.3 * rng.standard_normal(8)])
+    for T in (1.0, 5.0):
+        exact = (expm(A * T) @ x0)[:2]
+        c = sf.mz_closure_linear(A, 2, x0, T)
+        assert np.linalg.norm(c.value - exact) <= c.err
+        assert c.err < np.linalg.norm(x0)            # non-vacuous
+
+
+def test_mz_slow_variable_search():
+    """Automatic slow-variable identification: the designed slow pair is
+    hidden by a random coordinate permutation; the search must recover
+    it from the certificates alone."""
+    from scipy.linalg import expm
+    rng = np.random.default_rng(26)
+    A = _mz_test_system(rng)
+    x0 = np.concatenate([[1.0, -0.5], np.zeros(8)])
+    perm = rng.permutation(10)
+    Ap = A[np.ix_(perm, perm)]
+    x0p = x0[perm]
+    designed = {int(j) for j in range(10) if perm[j] < 2}
+
+    # seeded with one target coordinate the discovery is exact
+    tgt = min(designed)
+    c, slow = sf.mz_search_slow(Ap, x0p, 5.0, targets=[tgt], tol=0.05)
+    assert set(slow) == designed
+    exact = (expm(Ap * 5.0) @ x0p)[np.array(slow)]
+    assert np.linalg.norm(c.value - exact) <= c.err <= 0.05
+
+    # untargeted: whatever split is returned must certify and contain
+    c2, slow2 = sf.mz_search_slow(Ap, x0p, 5.0, tol=0.05)
+    assert designed <= set(slow2)
+    exact2 = (expm(Ap * 5.0) @ x0p)[np.array(slow2)]
+    assert np.linalg.norm(c2.value - exact2) <= c2.err <= 0.05
+
+    with pytest.raises(ValueError):                  # unreachable tolerance
+        sf.mz_search_slow(Ap, x0p, 5.0, tol=1e-12)
 
 
 def _rk4(f, x0, dt, n):

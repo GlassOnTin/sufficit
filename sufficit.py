@@ -947,16 +947,15 @@ def _lognorm(M):
     return float(np.linalg.eigvalsh((M + M.T) / 2)[-1])
 
 
-def mz_closure_linear(A: np.ndarray, k: int, x10: np.ndarray,
+def mz_closure_linear(A: np.ndarray, k: int, x0: np.ndarray,
                       T: float) -> Certified:
     """Phase 4 rewrite, rigorous tier: x_slow(T) for dx/dt = Ax with the
-    first k coordinates slow observables and x_fast(0) = 0 (declared),
+    first k coordinates slow observables (x0 is the FULL initial state),
     via the Markovian closure Ar = A11 - A12 A22^{-1} A21. Error bound:
     ||K(s)|| <= kappa e^(-mu s) with mu the fast-sector gap (-lognorm of
-    A22), Gronwall through the reduced propagator:
-    err = B kappa (L/mu^2 G1 + G2/mu). Refuses when mu <= 0. Choosing
-    WHICH variables are slow is the caller's; searching for them is
-    future work — the machine certifies or refuses the given split."""
+    A22), Gronwall through the reduced propagator; a nonzero fast
+    initial condition contributes its decaying transient
+    kappa12 ||x20|| G2. Refuses when mu <= 0."""
     from scipy.linalg import expm
     A = np.asarray(A, float)
     A11, A12 = A[:k, :k], A[:k, k:]
@@ -965,20 +964,24 @@ def mz_closure_linear(A: np.ndarray, k: int, x10: np.ndarray,
     if mu <= 0:
         raise ValueError(f"fast-sector log-norm {-mu:.3g} >= 0: no spectral "
                          "gap, memory kernel not certifiably decaying")
-    kappa = float(np.linalg.norm(A12, 2) * np.linalg.norm(A21, 2))
+    k12 = float(np.linalg.norm(A12, 2))
+    kappa = k12 * float(np.linalg.norm(A21, 2))
     Ar = A11 - A12 @ np.linalg.solve(A22, A21)
     nur, nuA = _lognorm(Ar), _lognorm(A)
-    B = float(np.linalg.norm(x10)) * max(1.0, math.exp(nuA * T))
+    x0 = np.asarray(x0, float)
+    x20n = float(np.linalg.norm(x0[k:]))
+    B = float(np.linalg.norm(x0)) * max(1.0, math.exp(nuA * T))
     L = float(np.linalg.norm(A11, 2)) + kappa / mu
     G1 = math.expm1(nur * T) / nur if nur != 0 else T
     d = nur + mu
     G2 = (math.exp(nur * T) - math.exp(-mu * T)) / d if abs(d) > 1e-12 \
         else T * math.exp(nur * T)
-    err = B * kappa * (L / mu**2 * G1 + G2 / mu)
-    xr = expm(Ar * T) @ np.asarray(x10, float)
+    err = kappa * ((L * B + k12 * x20n) / mu**2 * G1 + B / mu * G2) \
+        + k12 * x20n * G2
+    xr = expm(Ar * T) @ x0[:k]
     return Certified(xr, float(err), Tier.RIGOROUS,
                      (f"mz-markov k={k} mu={mu:.3g} kappa={kappa:.3g} "
-                      f"nur={nur:.3g} assumes x2(0)=0",))
+                      f"nur={nur:.3g} x20={x20n:.3g}",))
 
 
 def conformal_closure(traj_full, traj_red, sampler, x_new,
@@ -1001,3 +1004,79 @@ def conformal_closure(traj_full, traj_red, sampler, x_new,
     return Certified(traj_red(x_new), worst, Tier.EMPIRICAL,
                      (f"mz-conformal n_cal={n_cal} sup-t norm",),
                      fail_p=1.0 / (n_cal + 1))
+
+
+def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
+                   targets=(), tol: float = None):
+    """Phase 4 rewrite: automatic slow-variable identification. Greedy
+    search over which coordinates to resolve, scored by the certified
+    closure error itself — "slow variables" are the split the machine
+    certifies tightest. Starts from targets (coordinates the caller must
+    keep); with none, seeds from the best single-or-pair split (pure
+    greedy is myopic: a slow coordinate left in the fast sector kills the
+    gap, and the structure only shows at pair level — deeper hidden
+    structure than pairs would need a better search). Each step then adds
+    the coordinate that most improves the certificate. With tol: stops at
+    the smallest resolved set meeting
+    it (the cheapest certified reduced model), raising if none does.
+    Without: returns the best split found along the greedy path.
+    Returns (Certified, slow_indices); value is x_slow(T) ordered as
+    slow_indices. Splits without a fast-sector gap are skipped."""
+    A = np.asarray(A, float)
+    x0 = np.asarray(x0, float)
+    n = len(x0)
+
+    def evaluate(idx):
+        perm = idx + [i for i in range(n) if i not in idx]
+        try:
+            return mz_closure_linear(A[np.ix_(perm, perm)], len(idx),
+                                     x0[perm], T)
+        except ValueError:
+            return None
+
+    slow = list(targets)
+    best = (math.inf, None, None)
+    if slow:
+        c = evaluate(slow)
+        if c is not None:
+            if tol is not None and c.err <= tol:
+                return c, slow
+            best = (c.err, c, list(slow))
+    else:
+        # greedy from a single seed is myopic: one slow coordinate left in
+        # the fast sector kills the gap, so the structure only shows at
+        # pair level. Seed with the best single-or-pair split.
+        for i in range(n):
+            for j in range(-1, i):
+                idx = [i] if j < 0 else [j, i]
+                c = evaluate(idx)
+                if c is not None and c.err < best[0]:
+                    best = (c.err, c, idx)
+        if best[1] is None:
+            raise ValueError("no single or pair split admits a certified "
+                             "closure (no spectral gap for any candidate)")
+        slow = list(best[2])
+        if tol is not None and best[0] <= tol:
+            return best[1], slow
+    while len(slow) < n - 1:
+        step = None
+        for i in range(n):
+            if i in slow:
+                continue
+            c = evaluate(slow + [i])
+            if c is not None and (step is None or c.err < step[0]):
+                step = (c.err, c, slow + [i])
+        if step is None:
+            break                        # no candidate split has a gap
+        slow = step[2]
+        if step[0] < best[0]:
+            best = step
+        if tol is not None and step[0] <= tol:
+            return step[1], step[2]
+    if tol is not None:
+        raise ValueError(f"no split certifies tol={tol:.3g}; best "
+                         f"{best[0]:.3g} at coordinates {best[2]}")
+    if best[1] is None:
+        raise ValueError("no split admits a certified closure "
+                         "(no spectral gap for any candidate)")
+    return best[1], best[2]
