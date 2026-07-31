@@ -1322,7 +1322,7 @@ def test_h_chain_bracket_vs_exact_when_formable():
     c = sf.h_chain_bracket(4, 1.8, ell=3)
     assert c.value - c.err <= truth <= c.value + c.err
     assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
-    assert 2 * c.err < 0.5 * abs(truth)      # calibrated after measurement
+    assert 2 * c.err < 0.3 * abs(truth)      # 143 mHa/atom with CS absorption
 
 
 def test_h_chain_bracket_past_formable():
@@ -1335,6 +1335,7 @@ def test_h_chain_bracket_past_formable():
     per_atom_hi = (c.value + c.err) / 10
     assert per_atom_lo < -0.45 and per_atom_hi > -0.65
     assert per_atom_hi < -0.30               # upper genuinely binds
+    assert per_atom_hi - per_atom_lo < 0.55  # CS absorption: was 0.636
     assert "marginal" in c.provenance[0]
 
 

@@ -2085,15 +2085,16 @@ def h2_polarized_bracket(R: float) -> Certified:
 # + (v+g)n_i + (v+g)n_j + (1/R-g), with the quadratic part bounded by
 # operator AM-GM, g(n_i-1)(n_j-1) >= -(g/2)[(n_i-1)^2 + (n_j-1)^2] —
 # local charge-fluctuation penalties absorbed into windows; linear parts
-# and constants exact; remaining far terms take FLAT NORM BOUNDS — and
-# the autopsy (H6/ell=3) shows these dominate the gap: 1.04 of 1.79 Ha,
-# because pair-density ERIs like (01|45) decay only as Coulomb 1/R (the
-# distributions are compact; only their separation is large), plus
-# Lowdin hopping tails (0.31). Shared-C window multipliers (ported
-# below) recover just 0.066 Ha — they fix window-splitting looseness,
-# the minority term here. The real fix is Cauchy-Schwarz absorption,
-# g X'Y + h.c. >= -|g|(X'X + Y'Y) with X'X, Y'Y local window operators
-# — the named next step. Upper: product of exactly solved atom blocks, cross energies
+# and constants exact. Remaining far terms use CAUCHY-SCHWARZ ABSORPTION
+# (g XY + h.c. >= -|g|(XX' + Y'Y)): the JW Z-strings are unitary and
+# vanish inside XX', which for distinct modes is a pure occupation
+# product (creation -> n, annihilation -> 1-n; reversed for Y'Y) — so
+# every far term absorbs into diagonal occupation products on its two
+# compact sides, local to windows, with small ground-state expectations
+# replacing the flat norms that used to dominate the gap (1.04 of
+# 1.79 Ha at H6/ell=3; the absorption recovered ~0.52). Repeated-mode
+# or window-overflowing sides fall back to flat bounds (rare, tiny).
+# Shared-C window multipliers below add a further modest tightening. Upper: product of exactly solved atom blocks, cross energies
 # by exact factorization of block-diagonal 1-RDMs (fermionic signs are
 # benign — cross operators move in even pairs). No correction
 # multipliers yet (the Heisenberg bundle machinery is the named
@@ -2171,10 +2172,12 @@ def h_chain_fock_hamiltonian(n, d):
     return _fock_hamiltonian(np.eye(n), T + V.sum(0), eri, enuc)
 
 
-def _window_operator(hw, eriw, lin, quad, const):
+def _window_operator(hw, eriw, lin, quad, const, extras=()):
     """Sparse-assembled window operator on 2*len(hw) spin orbitals:
-    one- and two-electron parts plus per-site linear n and -(quad)(n-1)^2
-    charge-penalty terms and a constant."""
+    one- and two-electron parts, per-site linear n and -(quad)(n-1)^2
+    charge penalties, a constant, and diagonal occupation-product extras
+    [(coef, ((local_spin_orbital, occupied_bool), ...)), ...] from the
+    Cauchy-Schwarz far-term absorption."""
     from scipy import sparse
     nsp = len(hw)
     ann = _jw_ann(2 * nsp)
@@ -2205,6 +2208,16 @@ def _window_operator(hw, eriw, lin, quad, const):
         if quad[i] != 0.0:
             dev = num - eye
             H = H - quad[i] * (dev @ dev)
+    if extras:
+        ndiag = [np.asarray((ann[q].T @ ann[q]).todense()).diagonal()
+                 for q in range(2 * nsp)]
+        acc = np.zeros(dim)
+        for coef, pattern in extras:
+            dv = np.full(dim, coef)
+            for so, occ in pattern:
+                dv = dv * (ndiag[so] if occ else 1.0 - ndiag[so])
+            acc += dv
+        H = H + sparse.diags(acc)
     return np.asarray(H.todense())
 
 
@@ -2289,7 +2302,21 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
     linW = [np.zeros(ell) for _ in range(nw)]
     quadW = [np.zeros(ell) for _ in range(nw)]
     constW = [0.0] * nw
+    extraW = [[] for _ in range(nw)]
     lower_const, penalty = 0.0, 0.0
+
+    def absorb_pattern(coef, modes):
+        """Distribute a diagonal occupation product (Cauchy-Schwarz side)
+        into the windows covering its atom range; False if it fits none."""
+        atoms = [m[0] // 2 for m in modes]
+        lo, hi = min(atoms), max(atoms)
+        if hi - lo >= ell:
+            return False
+        m = mcount(lo, hi)
+        for w in windows_of(lo, hi):
+            extraW[w].append((coef / m,
+                              tuple((so - 2 * w, occ) for so, occ in modes)))
+        return True
 
     def windows_of(lo, hi):
         return range(max(0, hi - ell + 1), min(lo, n - ell) + 1)
@@ -2306,8 +2333,14 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                 m = mcount(lo, hi)
                 for w in windows_of(lo, hi):
                     hW[w][i - w, j - w] += hij / m
-            else:
-                penalty += 2 * abs(h_full[i, j])
+            elif i < j:
+                # far hopping, Cauchy-Schwarz with balanced weights:
+                # h(a'a + h.c.) >= -|h| (n_i + n_j), per spin — absorbed
+                # as linear number terms instead of a flat norm bound
+                for site in (i, j):
+                    m = mcount(site, site)
+                    for w in windows_of(site, site):
+                        linW[w][site - w] -= abs(h_full[i, j]) / m
     # two-electron terms, enumerated exactly as the assembly does
     for p in range(n):
         for q in range(n):
@@ -2323,8 +2356,43 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                             eriW[w][p - w, r - w, q - w, s2 - w] += g / m
                     elif p == r and q == s2 and abs(p - q) >= ell:
                         pass    # the direct far pair, handled below
+                    elif (r, s2, p, q) < (p, q, r, s2):
+                        pass    # h.c. partner: processed once, below
                     else:
-                        penalty += 2 * abs(g)
+                        # Cauchy-Schwarz absorption: split the term's modes
+                        # at its largest atom gap; Z-strings vanish in XX',
+                        # which for distinct modes is a pure occupation
+                        # product (creation -> n, annihilation -> 1-n; the
+                        # reverse for Y'Y). |g| only — no sign bookkeeping.
+                        atoms = sorted({p, q, r, s2})
+                        gaps = [atoms[k + 1] - atoms[k]
+                                for k in range(len(atoms) - 1)]
+                        cut = atoms[int(np.argmax(gaps))]
+                        ok = True
+                        for sa in range(2):
+                            for sb in range(2):
+                                modes = [(2 * p + sa, True),
+                                         (2 * q + sb, True),
+                                         (2 * s2 + sb, False),
+                                         (2 * r + sa, False)]
+                                if len({m_[0] for m_ in modes}) < 4:
+                                    ok = False
+                                    break
+                                left = [m_ for m_ in modes
+                                        if m_[0] // 2 <= cut]
+                                right = [m_ for m_ in modes
+                                         if m_[0] // 2 > cut]
+                                # XX': keep creation as n, annih as 1-n;
+                                # Y'Y: the reverse
+                                lp = tuple((so, occ) for so, occ in left)
+                                rp = tuple((so, not occ) for so, occ in right)
+                                ok = absorb_pattern(-abs(g) / 2, lp)                                     and absorb_pattern(-abs(g) / 2, rp)
+                                if not ok:
+                                    break
+                            if not ok:
+                                break
+                        if not ok:
+                            penalty += 2 * abs(g)
     # far pairs: exact neutral decomposition + operator AM-GM
     for i in range(n):
         for j in range(i + 1, n):
@@ -2342,7 +2410,8 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                     linW[w][site - w] += linc / m
                     quadW[w][site - w] += g / 2 / m
     lower = lower_const - penalty
-    mats = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w])
+    mats = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w],
+                             extraW[w])
             for w in range(nw)]
     if correction_iters and nw > 1:
         D = 4 ** (ell - 1)
