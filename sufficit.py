@@ -1499,3 +1499,92 @@ def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
     return Certified(value, err, Tier.RIGOROUS,
                      (f"eigen-bracket variational-upper cholesky-lower "
                       f"width={2 * err:.3g} +fp",))
+
+
+# --------------------------------------- 2-RDM / marginal SDP lower bound,
+# base rung: the block-marginal (Anderson) bound. Every length-ell window
+# of the chain is bounded below independently, with per-bond weights
+# 1/m_b (m_b = number of windows containing bond b) so the weighted
+# windows sum EXACTLY to H; then E0 >= sum_w lambda_min(window), each
+# lambda_min certified from below by eigen_bracket's Cholesky half. This
+# is the zero-multiplier dual-feasible point of the marginal SDP;
+# optimizing correction multipliers is the named tightening path. The
+# upper half: a product of per-block Lanczos states — block energies and
+# cross-block bond energies are explicit Rayleigh quotients, so the
+# variational bound is rigorous whatever the vectors are. Cost 2^ell per
+# distinct window, INDEPENDENT of N: the bracket scales past formable
+# Hamiltonians.
+
+_SPIN = (np.array([[0, 1], [1, 0]]) / 2,
+         np.array([[0, -1j], [1j, 0]]) / 2,
+         np.array([[1, 0], [0, -1]]) / 2)
+
+
+def _heis_window(weights):
+    """sum_j weights[j] * S_j . S_{j+1} on len(weights)+1 spins (dense)."""
+    nsite = len(weights) + 1
+    H = np.zeros((2 ** nsite, 2 ** nsite), complex)
+    for pos, wgt in enumerate(weights):
+        for s in _SPIN:
+            op = np.eye(1)
+            for j in range(nsite):
+                op = np.kron(op, s if j in (pos, pos + 1) else np.eye(2))
+            H += wgt * op
+    return H.real
+
+
+def _site_spin_expect(v, nsite, j):
+    """(<Sx>, <Sz>) at site j for a real state v (<Sy> is exactly 0)."""
+    out = []
+    for s in (_SPIN[0], _SPIN[2]):
+        op = np.eye(1)
+        for i in range(nsite):
+            op = np.kron(op, s if i == j else np.eye(2))
+        out.append(float(v @ (op.real @ v)))
+    return out
+
+
+def heisenberg_chain_bracket(N: int, ell: int = 8) -> Certified:
+    """Certified two-sided bracket on the ground energy of the spin-1/2
+    Heisenberg open chain of N sites, at cost 2^ell independent of N."""
+    if N <= ell:
+        c = eigen_bracket(_heis_window((1.0,) * (N - 1)))
+        return replace(c, provenance=(f"chain-bracket exact N={N}",))
+    # lower: weighted sliding windows summing exactly to H
+    m = [min(N - ell, i) - max(0, i - ell + 2) + 1 for i in range(N - 1)]
+    cache = {}
+    lower = 0.0
+    for w in range(N - ell + 1):
+        key = tuple(1.0 / m[w + j] for j in range(ell - 1))
+        if key not in cache:
+            c = eigen_bracket(_heis_window(key))
+            cache[key] = c.value - c.err
+        lower += cache[key]
+    # upper: product of per-block Lanczos states; all terms are explicit
+    # Rayleigh quotients of the product state
+    from scipy.sparse.linalg import eigsh
+    sizes = [ell] * (N // ell)
+    if N % ell == 1:
+        sizes[-1] += 1
+    elif N % ell:
+        sizes.append(N % ell)
+    upper, prev_edge, block = 0.0, None, {}
+    for size in sizes:
+        if size not in block:
+            Hb = _heis_window((1.0,) * (size - 1))
+            _, V = eigsh(Hb, k=1, which="SA")
+            v = V[:, 0] / np.linalg.norm(V[:, 0])
+            e = float(v @ (Hb @ v))
+            pad = 8 * (2 ** size + 2) * np.finfo(float).eps \
+                * (float(np.linalg.norm(Hb, 1)) + abs(e))
+            block[size] = (e + pad, _site_spin_expect(v, size, 0),
+                           _site_spin_expect(v, size, size - 1))
+        e, left, right = block[size]
+        upper += e
+        if prev_edge is not None:     # cross-block bond <S>.<S>
+            upper += prev_edge[0] * left[0] + prev_edge[1] * left[1]
+        prev_edge = right
+    return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
+                     Tier.RIGOROUS,
+                     (f"chain-bracket marginal-lower ell={ell} N={N} "
+                      "product-upper",))

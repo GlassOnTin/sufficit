@@ -1063,6 +1063,38 @@ def test_eigen_bracket_complex_and_tolerance():
         sf.eigen_bracket(H, tol=1e-18)
 
 
+def test_chain_bracket_matches_exact_when_formable():
+    """The block-marginal bracket cross-validated against exact
+    diagonalization where the chain is still formable."""
+    truth = float(np.linalg.eigvalsh(_heisenberg_chain(10))[0])
+    c = sf.heisenberg_chain_bracket(10, ell=8)
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    assert 2 * c.err < 0.12 * abs(truth)     # a real bracket, not vacuous
+
+
+def test_chain_bracket_past_formable():
+    """The point of the marginal relaxation: a certified two-sided bracket
+    on the ground energy of a 2^200-dimensional Hamiltonian, at cost
+    2^ell independent of N. The thermodynamic Bethe value must fall
+    inside the per-bond bracket."""
+    c = sf.heisenberg_chain_bracket(200, ell=8)
+    per_bond_lo = (c.value - c.err) / 199
+    per_bond_hi = (c.value + c.err) / 199
+    bethe = 0.25 - math.log(2)               # -0.443147...
+    assert per_bond_lo <= bethe <= per_bond_hi
+    assert per_bond_hi - per_bond_lo < 0.08  # ~13% relaxation gap at ell=8
+    assert "marginal" in c.provenance[0]
+
+
+def test_chain_bracket_tightens_with_ell():
+    """Cost scales with the precision of the question: a longer window
+    (2^ell diagonalizations) buys a tighter certified bracket."""
+    wide = sf.heisenberg_chain_bracket(200, ell=4)
+    tight = sf.heisenberg_chain_bracket(200, ell=8)
+    assert tight.err < 0.75 * wide.err
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""
