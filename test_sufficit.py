@@ -217,6 +217,42 @@ def test_tolerance_driven_end_to_end():
     assert costs == sorted(costs) and costs[-1] > costs[0]
 
 
+def test_treecode_certified_pointwise_and_cheaper():
+    """Phase 1: hierarchical evaluation must certify every target to eps and
+    cost fewer kernel-equivalent ops than the dense sum."""
+    rng = np.random.default_rng(10)
+    src = rng.uniform(0, 1, 2000) + 1j * rng.uniform(0, 1, 2000)
+    tgt = rng.uniform(0, 1, 2000) + 1j * rng.uniform(0, 1, 2000)
+    q = rng.uniform(-1, 1, 2000)
+    dense = np.log(np.abs(tgt[:, None] - src[None, :])) @ q
+    prev_ops = 0
+    for eps in (1e-3, 1e-6, 1e-9):
+        c, stats = sf.treecode_potential(tgt, src, q, eps)
+        # the pointwise guarantee, against brute force
+        assert np.max(np.abs(c.value - dense)) <= eps * (1 + 1e-9) + 1e-12
+        assert stats["max_bound"] <= eps * (1 + 1e-9)
+        # the vector certificate composes with the rest of the algebra
+        assert np.linalg.norm(c.value - dense) <= c.err * (1 + 1e-9) + 1e-12
+        assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+        # cost scales with precision, and beats dense at every tolerance
+        assert stats["ops"] > prev_ops
+        assert stats["ops"] < stats["dense_ops"]
+        prev_ops = stats["ops"]
+
+
+def test_treecode_speedup_grows_with_n():
+    """O(N log N) vs O(N^2): the op-count advantage must widen with N."""
+    rng = np.random.default_rng(11)
+    speedups = []
+    for n in (500, 2000, 8000):
+        src = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+        tgt = rng.uniform(0, 1, n) + 1j * rng.uniform(0, 1, n)
+        q = rng.uniform(-1, 1, n)
+        _, stats = sf.treecode_potential(tgt, src, q, 1e-6)
+        speedups.append(stats["dense_ops"] / stats["ops"])
+    assert speedups == sorted(speedups) and speedups[-1] > speedups[0]
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

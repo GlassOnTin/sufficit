@@ -148,25 +148,143 @@ def multipole_far_potential(q: np.ndarray, src: np.ndarray, center: complex,
     total = float(np.sum(q)) * np.log(w)
     for k in range(1, p + 1):
         total += (-np.sum(q * dz**k) / k) / w**k
-    err = A / (p + 1) * rho ** (p + 1) / (1 - rho)
-    return Certified(float(total.real), err, Tier.RIGOROUS,
+    return Certified(float(total.real), _tail(A, rho, p), Tier.RIGOROUS,
                      (f"multipole p={p} rho={rho:.3g}",))
+
+
+def _tail(A: float, rho: float, p: int) -> float:
+    """Greengard-Rokhlin tail bound at truncation order p."""
+    return A / (p + 1) * rho ** (p + 1) / (1 - rho)
+
+
+def _min_order(A: float, rho: float, tol: float) -> int:
+    """Minimal p with _tail(A, rho, p) <= tol: closed-form sufficient order
+    from the geometric part, then walked down."""
+    if A == 0 or rho == 0:
+        return 0
+    t = tol * (1 - rho) / A
+    p = max(0, math.ceil(math.log(t) / math.log(rho)) - 1) if t < 1 else 0
+    while p > 0 and _tail(A, rho, p - 1) <= tol:
+        p -= 1
+    return p
 
 
 def multipole_to_tol(q: np.ndarray, src: np.ndarray, center: complex,
                      z: complex, tol: float) -> Certified:
-    """Inverse rewrite: minimal truncation order whose tail bound meets tol.
-    Closed-form sufficient order from the geometric part, then walked down."""
+    """Inverse rewrite: minimal truncation order whose tail bound meets tol."""
     if tol <= 0:
         raise ValueError("tol must be positive")
     A, rho = _far_geometry(q, src, center, z)
-    p = 0
-    if A > 0 and rho > 0:
-        t = tol * (1 - rho) / A
-        if t < 1:
-            p = max(0, math.ceil(math.log(t) / math.log(rho)) - 1)
-        def tail(p):
-            return A / (p + 1) * rho ** (p + 1) / (1 - rho)
-        while p > 0 and tail(p - 1) <= tol:
-            p -= 1
-    return multipole_far_potential(q, src, center, z, p)
+    return multipole_far_potential(q, src, center, z, _min_order(A, rho, tol))
+
+
+# ---------------------------------------------------------------- Phase 1:
+# hierarchical certified treecode. Dual quadtree traversal; well-separated
+# cell pairs use per-cell multipole expansions (order chosen per pair from
+# the target's error budget), everything else is direct. Hand-compiled
+# schedule — the search that should discover it is future work.
+
+_RHO_MAX = 0.5      # worst-case separation ratio for accepting a far pair
+_P_CAP = 300        # order beyond this means the tolerance is absurd
+
+
+class _Cell:
+    __slots__ = ("center", "half", "idx", "radius", "children",
+                 "coeffs", "Q", "A")
+
+    def __init__(self, pts, idx, center, half):
+        self.center, self.half, self.idx = center, half, idx
+        self.radius = float(np.max(np.abs(pts[idx] - center))) if len(idx) else 0.0
+        self.children = []
+        self.coeffs = np.zeros(0, complex)   # multipole b_k, grown on demand
+        self.Q = self.A = None
+
+
+def _build(pts, idx, center, half, leaf_size, depth=0):
+    cell = _Cell(pts, idx, center, half)
+    if len(idx) > leaf_size and depth < 30:
+        h = half / 2
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                c = center + complex(sx * h, sy * h)
+                sub = idx[(np.sign(pts[idx].real - center.real + 1e-300) == sx)
+                          & (np.sign(pts[idx].imag - center.imag + 1e-300) == sy)]
+                if len(sub):
+                    cell.children.append(_build(pts, sub, c, h, leaf_size,
+                                                depth + 1))
+    return cell
+
+
+def _root(pts, leaf_size):
+    lo, hi = complex(pts.real.min(), pts.imag.min()), \
+             complex(pts.real.max(), pts.imag.max())
+    half = max(hi.real - lo.real, hi.imag - lo.imag) / 2 + 1e-12
+    return _build(pts, np.arange(len(pts)), (lo + hi) / 2, half, leaf_size)
+
+
+def _ensure_coeffs(S, src, q, p, ops):
+    have = len(S.coeffs)
+    if have < p:
+        dz, qs = src[S.idx] - S.center, q[S.idx]
+        new = [-np.sum(qs * dz**k) / k for k in range(have + 1, p + 1)]
+        S.coeffs = np.concatenate([S.coeffs, np.array(new, complex)])
+        ops["p2m"] += len(S.idx) * (p - have)
+
+
+def treecode_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
+                       eps: float, leaf_size: int = 48):
+    """Phase 1 rewrite: sum_j q_j log|z_i - src_j| for every target, each
+    certified to pointwise error <= eps. Returns (Certified, stats); the
+    Certified err is the 2-norm of the per-target bounds, so it composes
+    with the rest of the algebra. stats counts kernel-equivalent ops."""
+    if eps <= 0:
+        raise ValueError("eps must be positive")
+    T0, S0 = _root(tgt, leaf_size), _root(src, leaf_size)
+
+    far, direct, stack = [], [], [(T0, S0)]
+    while stack:
+        T, S = stack.pop()
+        dmin = abs(T.center - S.center) - T.radius
+        if dmin > 0 and S.radius / dmin <= _RHO_MAX:
+            far.append((T, S, S.radius / dmin))
+        elif not T.children and not S.children:
+            direct.append((T, S))
+        elif S.children and (not T.children or S.half >= T.half):
+            stack += [(T, c) for c in S.children]
+        else:
+            stack += [(c, S) for c in T.children]
+
+    cnt = np.zeros(len(tgt), int)          # far interactions per target
+    for T, _, _ in far:
+        cnt[T.idx] += 1
+
+    out, bound = np.zeros(len(tgt)), np.zeros(len(tgt))
+    ops = {"p2m": 0, "far": 0, "direct": 0}
+    for T, S, rho in far:
+        if S.A is None:
+            S.Q, S.A = float(np.sum(q[S.idx])), float(np.sum(np.abs(q[S.idx])))
+        p = _min_order(S.A, rho, eps / cnt[T.idx].max())
+        if p > _P_CAP:
+            raise ValueError(f"eps={eps:g} needs order {p} at rho={rho:.3g}")
+        _ensure_coeffs(S, src, q, p, ops)
+        w = tgt[T.idx] - S.center
+        acc, wk = S.Q * np.log(np.abs(w)), np.ones_like(w)
+        for k in range(p):
+            wk = wk / w
+            acc = acc + (S.coeffs[k] * wk).real
+        out[T.idx] += acc
+        bound[T.idx] += _tail(S.A, rho, p)
+        ops["far"] += len(T.idx) * (p + 1)
+    for T, S in direct:
+        out[T.idx] += np.log(np.abs(tgt[T.idx, None] - src[None, S.idx])) @ q[S.idx]
+        ops["direct"] += len(T.idx) * len(S.idx)
+
+    total = sum(ops.values())
+    stats = {"ops": total, "dense_ops": len(tgt) * len(src),
+             "speedup": len(tgt) * len(src) / total,
+             "max_bound": float(bound.max()),
+             "far_pairs": len(far), "direct_pairs": len(direct), **ops}
+    cert = Certified(out, float(np.linalg.norm(bound)), Tier.RIGOROUS,
+                     (f"treecode eps={eps:g} far={len(far)} "
+                      f"direct={len(direct)}",))
+    return cert, stats
