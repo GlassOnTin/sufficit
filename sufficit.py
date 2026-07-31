@@ -2226,47 +2226,55 @@ def _window_operator(hw, eriw, lin, quad, const, extras=()):
 
 
 def _window_multipliers(mats, D, iters):
-    """Proximal-bundle ascent of sum_w lambda_min(M_w + [w>0] C x I
-    - [w<nw-1] I x C) over a shared Hermitian C (D x D) on the atom
-    overlaps. Telescoping holds at the qubit level for ANY C, so the
-    optimizer is pure quality — every window is re-certified downstream.
-    Windows are not translation-invariant, so the objective sums over
-    all of them; per-overlap C_w is the named refinement."""
+    """Proximal-bundle ascent of sum_w lambda_min over PER-OVERLAP
+    Hermitian corrections C_1..C_{nw-1}: window w gains +C_w x I on its
+    left overlap (w >= 1) and -I x C_{w+1} on its right (w <= nw-2), so
+    the sum telescopes exactly at the qubit level for any C's — validity
+    never constrains the optimizer. Jointly concave; exact affine cuts
+    from window ground vectors (each cuts into the two C's touching it).
+    Shared-C is the diagonal of this family; per-overlap freedom is
+    where the finite chain's edge effects live. Returns [C_w]."""
     dim, nw = len(mats[0]), len(mats)
     E = dim // D
     IE = np.eye(E)
+    nov = nw - 1
 
-    def build(w, C):
+    def unflat(x):
+        return [x[k * D * D:(k + 1) * D * D].reshape(D, D)
+                for k in range(nov)]
+
+    def build(w, Cs):
         M = mats[w]
-        if w > 0:
-            M = M + np.kron(C, IE)
-        if w < nw - 1:
-            M = M - np.kron(IE, C)
+        if w >= 1:
+            M = M + np.kron(Cs[w - 1], IE)
+        if w <= nw - 2:
+            M = M - np.kron(IE, Cs[w])
         return M
 
-    def oracle(C):
-        tot, const, G = 0.0, 0.0, np.zeros((D, D))
+    def oracle(x):
+        Cs = unflat(x)
+        tot, const = 0.0, 0.0
+        G = [np.zeros((D, D)) for _ in range(nov)]
         for w in range(nw):
-            lam, Vv = np.linalg.eigh(build(w, C))
+            lam, Vv = np.linalg.eigh(build(w, Cs))
             v = Vv[:, 0]
             tot += lam[0]
             const += float(v @ (mats[w] @ v))
             Vl, Vr = v.reshape(D, E), v.reshape(E, D)
-            if w > 0:
-                G += Vl @ Vl.T
-            if w < nw - 1:
-                G -= Vr.T @ Vr
-        return tot, const, G
+            if w >= 1:
+                G[w - 1] += Vl @ Vl.T
+            if w <= nw - 2:
+                G[w] -= Vr.T @ Vr
+        return tot, const, np.concatenate([g.ravel() for g in G])
 
-    Cref, tau = np.zeros((D, D)), 1.0
-    fref, a0, g0 = oracle(Cref)
+    xref, tau = np.zeros(nov * D * D), 1.0
+    fref, a0, g0 = oracle(xref)
     A, G = [a0], [g0]
-    best = (fref, Cref.copy())
+    gram = np.array([[float(g0 @ g0)]])   # maintained incrementally
+    best = (fref, xref.copy())
     for _ in range(iters - 1):
         m = len(A)
-        gram = np.array([[np.sum(G[i] * G[j]) for j in range(m)]
-                         for i in range(m)])
-        b = np.array([A[i] + np.sum(G[i] * Cref) for i in range(m)])
+        b = np.array([A[i] + float(G[i] @ xref) for i in range(m)])
         mu = np.full(m, 1.0 / m)
         eta = 1.0 / (1.0 + tau * float(np.max(np.abs(gram))))
         for _ in range(250):
@@ -2274,19 +2282,23 @@ def _window_multipliers(mats, D, iters):
             mu = mu * np.exp(-eta * (grad - grad @ mu))
             mu /= mu.sum()
         g = sum(w_ * Gi for w_, Gi in zip(mu, G))
-        Cnew = Cref + tau * g
-        fnew, an, gn = oracle(Cnew)
+        xnew = xref + tau * g
+        fnew, an, gn = oracle(xnew)
         A.append(an)
         G.append(gn)
+        row = np.array([float(gn @ Gi) for Gi in G])
+        gram = np.block([[gram, row[:-1, None]], [row[None, :-1],
+                                                  np.array([[row[-1]]])]])
         if len(A) > 60:
             A, G = A[-60:], G[-60:]
+            gram = gram[-60:, -60:]
         if fnew > fref:
-            Cref, fref, tau = Cnew, fnew, min(tau * 1.4, 50.0)
+            xref, fref, tau = xnew, fnew, min(tau * 1.4, 50.0)
         else:
             tau = max(tau * 0.6, 1e-3)
         if fref > best[0]:
-            best = (fref, Cref.copy())
-    return best[1]
+            best = (fref, xref.copy())
+    return unflat(best[1])
 
 
 def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
@@ -2472,14 +2484,14 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         mats = assemble(eps)
     if correction_iters and nw > 1:
         D = 4 ** (ell - 1)
-        C = _window_multipliers(mats, D, correction_iters)
+        Cs = _window_multipliers(mats, D, correction_iters)
         IE = np.eye(4 ** ell // D)
         for w in range(nw):
             M = mats[w]
             if w > 0:
-                M = M + np.kron(C, IE)
+                M = M + np.kron(Cs[w - 1], IE)
             if w < nw - 1:
-                M = M - np.kron(IE, C)
+                M = M - np.kron(IE, Cs[w])
             mats[w] = M
     for M in mats:
         c = eigen_bracket(M)

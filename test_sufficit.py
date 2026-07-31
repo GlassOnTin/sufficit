@@ -1350,13 +1350,10 @@ def test_molecular_multipliers_tighten():
     corr = sf.h_chain_bracket(6, 1.8, ell=3)
     assert corr.value - corr.err <= truth <= corr.value + corr.err
     gain = (corr.value - corr.err) - (plain.value - plain.err)
-    # measured 0.066 Ha at H6/ell=3 — 10x weaker than Heisenberg's 59%
-    # gap closure, because the molecular gap is DOMINATED by flat far-term
-    # norm penalties (measured 1.04 of 1.79 Ha: pair-density ERIs decay
-    # as Coulomb 1/R, not exponentially, plus Lowdin hopping tails 0.31)
-    # and AM-GM charge penalties, neither of which multipliers address.
-    # The Cauchy-Schwarz far-term absorption is the named real fix.
-    assert gain > 0.04
+    # per-overlap multipliers: 0.206 Ha measured at H6/ell=3, 3x the
+    # shared-C version (the finite chain's edge effects live in the
+    # per-overlap freedom); on top of CS absorption
+    assert gain > 0.15
 
 
 def test_eps_loop_never_hurts():
