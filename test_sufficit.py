@@ -1422,6 +1422,28 @@ def test_sectored_certification_matches_dense():
     assert lo <= dense.value <= up
 
 
+def test_fp32_certification_prep():
+    """GPU prep: fp32 Cholesky certification with honestly widened pads
+    — the MEASURED casting error ||H - fl32(H)||_F plus Higham margins
+    at fp32 eps. Contained, width at the predicted ~1e-3 pad scale,
+    negligible against mHa brackets. Consumer-GPU fp64 is ~1:64
+    throttled; fp32-with-pads is what makes the GPU pay."""
+    H = _heisenberg_chain(10)
+    truth = float(np.linalg.eigvalsh(H)[0])
+    c = sf.eigen_bracket(H, fp32=True)
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert 1e-4 < c.err < 2e-2               # pads present, not vacuous
+    from scipy.sparse.linalg import eigsh
+    t6 = float(eigsh(sf.h_chain_fock_hamiltonian(6, 1.8),
+                     k=1, which="SA")[0][0])
+    cb = sf.h_chain_bracket(6, 1.8, ell=4, fp32=True)
+    assert cb.value - cb.err <= t6 <= cb.value + cb.err
+    c64 = sf.h_chain_bracket(6, 1.8, ell=4)
+    assert cb.err < c64.err + 0.01           # inflated by pads only
+    with pytest.raises(ImportError):         # no cupy on this box
+        sf.use_gpu(True)
+
+
 def test_h_chain_ell5_hierarchy_knob():
     """The hierarchy knob at ell=5 (1024-dim windows): steep payoff —
     H6 width/atom 244 (ell=3) -> 89 (ell=4) -> 66 mHa (ell=5), still

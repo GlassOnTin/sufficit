@@ -1447,10 +1447,29 @@ class ButterflyBlock:
 # pipeline. This demonstrates the bracket structure itself.
 
 
-def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
+_GPU = {"on": False}
+
+
+def use_gpu(on: bool = True):
+    """Route fp32 Cholesky certification through CuPy (consumer-GPU fp64
+    is ~1:64 throttled; fp32 with honestly widened pads is the move).
+    Validity is unaffected either way — the pads carry the working eps
+    and the measured casting error. Requires cupy when enabled."""
+    if on:
+        import cupy                          # noqa: F401 — availability
+    _GPU["on"] = bool(on)
+
+
+def eigen_bracket(H: np.ndarray, tol: float = None,
+                  fp32: bool = False) -> Certified:
     """Certified bracket on lambda_min(H), H Hermitian: value +- err
     contains the true ground energy. Raises if tol is given and the
-    achieved width exceeds it."""
+    achieved width exceeds it. fp32=True runs the Cholesky feasibility
+    proofs in float32 (optionally on GPU via use_gpu) with rigor kept
+    honest by two additional carried terms: the MEASURED casting error
+    ||H - fl32(H)||_F (computed exactly in f64, a posteriori — no
+    assumption) and Higham-style margins at fp32 eps. Pads land at
+    ~1e-4-scale — negligible against mHa brackets."""
     H = np.asarray(H)
     n = len(H)
     if n < 64:                              # dense: exact vector, and no
@@ -1466,36 +1485,61 @@ def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
     v = v / np.linalg.norm(v)
     up = float(np.real(v.conj() @ (H @ v)))     # variational theorem
 
-    def psd(c):
-        try:
-            np.linalg.cholesky(H - c * np.eye(n))
-            return True
-        except np.linalg.LinAlgError:
-            return False
+    if fp32:
+        H32 = H.astype(np.float32)
+        cast_err = float(np.linalg.norm(H - H32.astype(np.float64)))
+        eps_w = float(np.finfo(np.float32).eps)
+        if _GPU["on"]:
+            import cupy as xp
+            Hw_, eye_w = xp.asarray(H32), xp.eye(n, dtype=xp.float32)
+        else:
+            xp, Hw_, eye_w = np, H32, np.eye(n, dtype=np.float32)
+
+        def psd(c):
+            # CuPy's non-PSD behaviour varies by version: exception OR
+            # NaNs. Belt and braces — any doubt counts as failure, which
+            # only loosens the bound (the safe direction).
+            try:
+                L = xp.linalg.cholesky(Hw_ - np.float32(c) * eye_w)
+                return bool(xp.isfinite(L).all())
+            except Exception:
+                return False
+    else:
+        cast_err, eps_w = 0.0, float(np.finfo(np.float64).eps)
+
+        def psd(c):
+            try:
+                np.linalg.cholesky(H - c * np.eye(n))
+                return True
+            except np.linalg.LinAlgError:
+                return False
 
     d = np.real(np.diag(H))
     gersh = float(np.min(d - (np.sum(np.abs(H), axis=1) - np.abs(d))))
     r = float(np.linalg.norm(H @ v - up * v))
-    lo = up - 2 * r - 1e-12 * (1 + abs(up))     # near-optimal guess ...
+    lo = up - 2 * r - max(1e-12, 4 * eps_w) * (1 + abs(up))
     if not psd(lo):
-        lo = gersh                              # ... else rigorous seed
-        if not psd(lo):
-            raise ValueError("Gershgorin seed not certifiable (FP)")
+        # Gershgorin IS a certificate by itself — no Cholesky proof
+        # needed (and for exactly-degenerate cases H - gersh*I is
+        # singular, so demanding one would wrongly fail)
+        lo = gersh
     hi = up
+    floor = max(1e-13, 0.25 * eps_w) * (1 + abs(up))
     for _ in range(60):
-        if hi - lo <= 1e-13 * (1 + abs(up)):
+        if hi - lo <= floor:
             break
         c = 0.5 * (lo + hi)
         if psd(c):
             lo = c
         else:
             hi = c
-    # carry the FP margins: the Rayleigh quotient's evaluation error and
-    # Cholesky's backward-stability slack (success proves PSD of
-    # H - cI + E, ||E|| <~ n eps ||H||, Higham) — conservative constant
-    pad = 8 * (n + 2) * np.finfo(float).eps \
-        * (float(np.linalg.norm(H, 1)) + abs(up))
-    up, lo = up + pad, lo - pad
+    # carry the FP margins: the Rayleigh quotient's evaluation error
+    # (f64) and Cholesky's backward-stability slack at the WORKING eps
+    # (success proves PSD of H - cI + E, ||E|| <~ n eps ||H||, Higham),
+    # plus the measured fp32 casting error when applicable
+    norm1 = float(np.linalg.norm(H, 1))
+    up = up + 8 * (n + 2) * np.finfo(np.float64).eps * (norm1 + abs(up))
+    lo = lo - 8 * (n + 2) * eps_w * (norm1 + abs(up)) - cast_err
     value, err = 0.5 * (up + lo), 0.5 * (up - lo)
     if tol is not None and err > tol:
         raise ValueError(f"bracket width {err:.3g} exceeds tol={tol:.3g} "
@@ -2322,7 +2366,7 @@ def _sector_mask(nsp):
     return key[:, None] == key[None, :]
 
 
-def _eigen_bracket_sectored(M):
+def _eigen_bracket_sectored(M, fp32=False):
     """(lower, upper) bracket on lambda_min of a sparse symmetric window
     operator via its occupation sectors: dense eigen_bracket per sector,
     plus a rigorous additive penalty for any off-sector coupling
@@ -2333,7 +2377,7 @@ def _eigen_bracket_sectored(M):
     for idx in _sector_indices(nsp):
         sub = np.asarray(M[np.ix_(idx, idx)].todense())
         diag_f2 += float(np.sum(sub * sub))
-        c = eigen_bracket(sub)
+        c = eigen_bracket(sub, fp32=fp32)
         lows.append(c.value - c.err)
         ups.append(c.value + c.err)
     off = math.sqrt(max(0.0, total_f2 - diag_f2))
@@ -2380,8 +2424,17 @@ def _window_multipliers(mats, D, iters):
     # kron(I_E,C)[a,b] = C[a%D,b%D] (a//D == b//D).
     nsp_w = round(math.log(dim) / math.log(4))
     sec_ix = _sector_indices(nsp_w)
-    base_secs = [[np.asarray(mats[w][np.ix_(ix, ix)].todense())
-                  for ix in sec_ix] for w in range(nw)]
+    # sector blocks extracted ON DEMAND and cached: Weyl pruning means
+    # most sectors are never solved, and eager densification of all of
+    # them costs ~1.3 GB/window at ell=8 — the ell=8 memory wall
+    _bs_cache = {}
+
+    def base_sec(w, si):
+        if (w, si) not in _bs_cache:
+            ix = sec_ix[si]
+            _bs_cache[(w, si)] = np.asarray(mats[w][np.ix_(ix, ix)]
+                                            .todense())
+        return _bs_cache[(w, si)]
     lidx = [ix // E for ix in sec_ix]
     lmask = [(ix % E)[:, None] == (ix % E)[None, :] for ix in sec_ix]
     ridx = [ix % D for ix in sec_ix]
@@ -2395,13 +2448,41 @@ def _window_multipliers(mats, D, iters):
     # calls than solving every sector every oracle call (whose per-call
     # driver overhead measured 10x SLOWER than Lanczos at ell=6).
     nsec = len(sec_ix)
-    lam_cache = [[math.inf] * nsec for _ in range(nw)]
-    mark = [[-math.inf] * nsec for _ in range(nw)]
-    drift = [0.0] * nw
-    last_C = [None] * nw
+    # -inf = never solved: no information, optimistically arbitrarily low
+    lam_cache = [[-math.inf] * nsec for _ in range(nw)]
+    # per-window per-sector drift budgets from correction SUB-BLOCK
+    # norms: a sector's eigenvalue shifts by at most the Weyl norm of
+    # the correction change restricted to its own overlap block
+    # (unmasked Frobenius upper-bounds the masked sub-block). Delta C is
+    # built from ground densities in the few minimal sectors, so most
+    # sectors' budgets barely grow and their cached lambdas stay valid.
+    budgets = [np.zeros(nsec) for _ in range(nw)]
+    lflat = [(lidx[si][:, None].astype(np.int64) * D
+              + lidx[si][None, :]).ravel() for si in range(nsec)]
+    rflat = [(ridx[si][:, None].astype(np.int64) * D
+              + ridx[si][None, :]).ravel() for si in range(nsec)]
+    last_eval = [None]
+
+    def update_budgets(Cs):
+        if last_eval[0] is None:
+            last_eval[0] = [c.copy() for c in Cs]
+            return
+        subL, subR = [], []
+        for b in range(nov):
+            d2 = ((Cs[b] - last_eval[0][b]).ravel()) ** 2
+            subL.append(np.array([math.sqrt(float(d2[lflat[si]].sum()))
+                                  for si in range(nsec)]))
+            subR.append(np.array([math.sqrt(float(d2[rflat[si]].sum()))
+                                  for si in range(nsec)]))
+        for w in range(nw):
+            if w >= 1:
+                budgets[w] += subL[w - 1]
+            if w <= nw - 2:
+                budgets[w] += subR[w]
+        last_eval[0] = [c.copy() for c in Cs]
 
     def solve_sector(w, si, Cs):
-        M = base_secs[w][si]
+        M = base_sec(w, si)
         if w >= 1 or w <= nw - 2:
             M = M.copy()
             if w >= 1:
@@ -2410,20 +2491,11 @@ def _window_multipliers(mats, D, iters):
                 M -= Cs[w][np.ix_(ridx[si], ridx[si])] * rmask[si]
         lam, vec = dense_eigh(M, subset_by_index=[0, 0])
         lam_cache[w][si] = float(lam[0])
-        mark[w][si] = drift[w]
+        budgets[w][si] = 0.0
         return float(lam[0]), vec[:, 0]
 
     def ground(w, Cs):
-        cur = (Cs[w - 1].copy() if w >= 1 else None,
-               Cs[w].copy() if w <= nw - 2 else None)
-        if last_C[w] is not None:
-            step = 0.0
-            for a, b in zip(cur, last_C[w]):
-                if a is not None:
-                    step += float(np.linalg.norm(a - b))
-            drift[w] += step
-        last_C[w] = cur
-        optimistic = [(lam_cache[w][si] - (drift[w] - mark[w][si]), si)
+        optimistic = [(lam_cache[w][si] - budgets[w][si], si)
                       for si in range(nsec)]
         optimistic.sort()
         best = (math.inf, None, None)
@@ -2438,6 +2510,7 @@ def _window_multipliers(mats, D, iters):
         return best[0], v
 
     def oracle(Cs):
+        update_budgets(Cs)
         tot, const = 0.0, 0.0
         facs = [[] for _ in range(nov)]     # per overlap: (sign, D x E)
         for w in range(nw):
@@ -2514,7 +2587,7 @@ def _window_multipliers(mats, D, iters):
 
 def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                     correction_iters: int = 60,
-                    cs_rounds: int = 2) -> Certified:
+                    cs_rounds: int = 2, fp32: bool = False) -> Certified:
     """Certified two-sided bracket on the ground energy of the n-atom
     hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell.
     correction_iters=0 disables the shared-multiplier bundle ascent."""
@@ -2710,7 +2783,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
             out.append(M.tocsr())
         mats = out
     for M in mats:
-        lo, _up = _eigen_bracket_sectored(M)
+        lo, _up = _eigen_bracket_sectored(M, fp32=fp32)
         lower += lo
 
     # upper: product of exactly solved blocks, cross energy by exact
