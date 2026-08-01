@@ -3080,3 +3080,139 @@ def tfi_quench_dispatch(n: int, site: int, t: float, tol: float,
                               "a-posteriori boundary commutator, "
                               "exact-arithmetic",))
         r += 1
+
+
+# ------------------------------------------------------------- Plasma
+# hierarchy (guiding-center reduction): the ASYMPTOTIC tier's first
+# shipment. The tier's semantics, made concrete: the truncation
+# EXPONENT of a reduction is a theorem — guiding-center drift theory
+# errs at O(eps^{order+1}) in eps = gyroradius/gradient scale — but
+# the CONSTANT is not computable. So the certificate measures it where
+# measuring is cheap: the full kinetic solve costs ~1/eps, so a ladder
+# of LARGE eps calibrates the constant with cheap solves, the observed
+# convergence order is checked against the proven exponent (refusing
+# if it falls short — the asymptotic regime has not set in), the most
+# pessimistic ladder constant is kept with a declared safety factor,
+# and the bound is extrapolated DOWN to the query's small eps, where
+# the kinetic solve would be expensive. Proven (the exponent), measured
+# (the constant, the observed order), and assumed (no higher-term
+# takeover below the ladder) are all named in the provenance — that is
+# what Tier.ASYMPTOTIC means. Truth functional: the guiding-center
+# transform X = x + (v x zhat)/Omega applied to the true orbit's
+# endpoints — operational and gyrophase-free at leading order. Orbit
+# solves at rtol 1e-11; solver error not carried (declared), matching
+# the Phase 3/4 precedent.
+
+
+def _gc_orbit_delta(eps, a, v, T):
+    """Full kinetic truth: y-displacement of the guiding-center
+    transform between the endpoints of the true orbit in
+    B = (1 + a x)/eps zhat, unit mass and charge, x0 = 0, v0 = (v, 0)."""
+    from scipy.integrate import solve_ivp
+
+    def rhs(t, s):
+        B = (1.0 + a * s[0]) / eps
+        return (s[2], s[3], s[3] * B, -s[2] * B)
+
+    sol = solve_ivp(rhs, (0.0, T), (0.0, 0.0, v, 0.0), method="DOP853",
+                    rtol=1e-11, atol=1e-12)
+
+    def gc_y(s):
+        return s[1] - s[2] * eps / (1.0 + a * s[0])   # (v x zhat)_y = -vx
+
+    return float(gc_y(sol.y[:, -1]) - gc_y(sol.y[:, 0]))
+
+
+@functools.lru_cache(maxsize=None)
+def _gc_truth_cached(eps, a, v, T):
+    return _gc_orbit_delta(eps, a, v, T)
+
+
+def _gc_prediction(order, eps, a, v, T):
+    """Guiding-center prediction of the same displacement. Order 0:
+    no drift. Order 1: grad-B drift v^2 a eps/2 at the initial guiding
+    center (b = 1 there; the drift is along y, so b is constant along
+    the order-1 trajectory and the integral is closed-form)."""
+    if order == 0:
+        return 0.0
+    if order == 1:
+        return eps * v * v * a * T / 2.0
+    raise NotImplementedError("guiding-center orders above 1")
+
+
+def asymptotic_extrapolate(predict: Callable[[float], float],
+                           truth: Callable[[float], float],
+                           eps: float, k: int, ladder,
+                           eta: float = 2.0,
+                           ratio_slack: float = 2.0) -> Certified:
+    """The ASYMPTOTIC tier's generic certifier. A reduction with a
+    PROVEN truncation exponent k — error = O(eps^k) — but an unknown
+    constant: measure the envelope constant C = max E(eps)/eps^k on a
+    calibration ladder where truth(eps) is affordable, then certify
+    predict(eps) at any eps at or below the ladder floor with
+    err = eta * C * eps^k. The truncation coefficient may oscillate
+    (gyrophase-like), so the check is on the ENVELOPE, in the one
+    dangerous direction: refuse when the measured constant GROWS
+    toward the ladder floor (monotonically, or the floor rung exceeds
+    ratio_slack times the coarser rungs) — the signature of a claimed
+    exponent the data contradict. Refuses to extrapolate above the
+    ladder. What is proven (k), measured (C and its spread), and
+    assumed (no higher-term takeover below the ladder) are named in
+    the provenance; that declaration is what Tier.ASYMPTOTIC means."""
+    els = sorted(ladder, reverse=True)
+    if eps > els[-1]:
+        raise ValueError(f"eps={eps:g} above the calibration ladder floor "
+                         f"{els[-1]:g}: refusing to extrapolate upward")
+    chat = [abs(predict(el) - truth(el)) / el ** k for el in els]
+    grows = all(b > a for a, b in zip(chat, chat[1:])) if len(chat) > 1 \
+        else False
+    if len(chat) > 1 and (grows or chat[-1] > ratio_slack * max(chat[:-1])):
+        raise ValueError(
+            "measured constant grows toward the ladder floor "
+            f"({', '.join(f'{c:.3g}' for c in chat)}): the claimed order "
+            f"{k} is not what the data show")
+    C = max(chat)
+    spread = C / min(chat) if min(chat) > 0 else math.inf
+    return Certified(
+        predict(eps), _up(eta * C * eps ** k), Tier.ASYMPTOTIC,
+        (f"exponent {k} proven; envelope constant C={C:.3g} measured on "
+         f"ladder {tuple(els)} (spread {spread:.1f}x); safety eta={eta:g}; "
+         "assumes no higher-term takeover below the ladder",))
+
+
+def gc_drift_asymptotic(eps: float, order: int = 1, a: float = 0.3,
+                        v: float = 1.0, T: float = 25.0,
+                        ladder=(0.16, 0.08, 0.04),
+                        eta: float = 2.0) -> Certified:
+    """ASYMPTOTIC certificate on the order-`order` guiding-center
+    prediction at eps, calibrated by full kinetic solves on the (cheap,
+    large-eps) ladder. The order-1 truncation coefficient is
+    gyrophase-oscillatory here — measured, its envelope is flat while
+    pairwise log-slopes swing wildly — which is exactly why the generic
+    certifier checks envelopes, not slopes."""
+    c = asymptotic_extrapolate(
+        lambda e: _gc_prediction(order, e, a, v, T),
+        lambda e: _gc_truth_cached(e, a, v, T),
+        eps, order + 1, ladder, eta)
+    return replace(c, provenance=(
+        f"gc-hierarchy order={order} eps={eps:g}: " + c.provenance[0],))
+
+
+def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
+                      v: float = 1.0, T: float = 25.0,
+                      **kw) -> Certified:
+    """Certified dispatch along the reduction hierarchy: the cheapest
+    guiding-center order whose asymptotic certificate meets tol.
+    Refuses — pricing the full kinetic fallback — when the hierarchy
+    is exhausted."""
+    last = None
+    for order in (0, 1):
+        c = gc_drift_asymptotic(eps, order, a, v, T, **kw)
+        if c.err <= tol:
+            return c
+        last = c
+    raise ValueError(
+        f"plasma-dispatch: hierarchy exhausted at eps={eps:g}: order-1 "
+        f"certifies {last.err:.3g} > tol={tol:g}; the full kinetic solve "
+        f"(~{int(40 * T / eps)} RHS evaluations, cost ~ T/eps) with a "
+        "rigorous ODE certificate is the remaining rung")

@@ -7,7 +7,7 @@ the certificate.*
 Working research code. One module of certified rewrites
 ([`sufficit.py`](sufficit.py)), one test suite in which every claimed bound is
 checked against brute force, exact solutions, or independent constructions
-([`test_sufficit.py`](test_sufficit.py) — 87 checks, several of which exist to
+([`test_sufficit.py`](test_sufficit.py) — 92 checks, several of which exist to
 commemorate a mistake). **The certificate is the product**: every answer ships
 as `value ± err` where the `±` is a theorem (or carries a printed failure
 probability), never a hope.
@@ -45,6 +45,7 @@ Requirements: `numpy`, `scipy`, `mpmath` (tests only). Run the suite with
 | H₂ from scratch (McMurchie–Davidson, s+p) | −1.137275944 ± 1.5e-13 Ha; 5.000 mHa polarization gain proven strictly | two-sided bracket over all particle sectors |
 | Hydrogen chains, up to 2²⁰ states (H₁₀, ℓ=7) | 55 mHa/atom bracket | rigorous both sides — no exact answer exists, none needed |
 | TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s (Lieb–Robinson cone) | a-posteriori boundary-commutator certificate; refuses when the light cone outruns the budget |
+| Guiding-center drift (plasma hierarchy) | first ASYMPTOTIC-tier certificate: exponent proven, constant measured on a cheap large-ε ladder, extrapolated down | refuses when the measured constant contradicts the claimed order |
 | Smeared spectral functions (HLT mold) | resolution is part of the query | error bounded by the data itself; degrades honestly to statistics |
 | Mori–Zwanzig closures | certified linear tier + conformal empirical tier | gap-dependent bound, or distribution-free `fail_p = 1/(n+1)` |
 

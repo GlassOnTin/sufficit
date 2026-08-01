@@ -1595,3 +1595,68 @@ def test_lr_quadrature_honesty():
     _, e_coarse = sf._lr_cone_run(30, 15, 0.8, 1.0, 1.0, 3, 60)
     _, e_fine = sf._lr_cone_run(30, 15, 0.8, 1.0, 1.0, 3, 480)
     assert e_fine < e_coarse
+
+
+def test_asymptotic_tier_ships():
+    """The first ASYMPTOTIC certificate: order-1 guiding-center drift,
+    exponent proven, constant measured on a cheap large-eps ladder,
+    extrapolated to a small query eps — and verified here against an
+    expensive full kinetic solve the certificate never used."""
+    eps = 0.02
+    c = sf.gc_drift_asymptotic(eps, order=1)
+    truth = sf._gc_truth_cached(eps, 0.3, 1.0, 25.0)
+    assert c.tier == sf.Tier.ASYMPTOTIC and c.fail_p == 0.0
+    assert abs(c.value - truth) <= c.err
+    assert c.err < 0.1 * abs(truth)          # useful, not just valid
+    assert "exponent 2 proven" in c.provenance[0]
+    assert "measured" in c.provenance[0]
+
+
+def test_gc_proven_exponent_fingerprint():
+    """The theorem's fingerprint in the measurements. Order 0: the
+    error constant E/eps is flat across a factor-4 range (secular
+    drift, clean slope 1). Order 1: the coefficient is gyrophase-
+    oscillatory, so the fingerprint is the ENVELOPE — E/eps^2 stays
+    bounded and does not grow toward small eps."""
+    import math as m
+    eps_ladder = (0.16, 0.08, 0.04, 0.02)
+    E0 = [abs(sf._gc_truth_cached(e, 0.3, 1.0, 25.0)) for e in eps_ladder]
+    slope0 = m.log(E0[0] / E0[-1]) / m.log(eps_ladder[0] / eps_ladder[-1])
+    assert 0.9 < slope0 < 1.1, slope0
+    chat = [abs(sf._gc_prediction(1, e, 0.3, 1.0, 25.0)
+                - sf._gc_truth_cached(e, 0.3, 1.0, 25.0)) / e ** 2
+            for e in eps_ladder]
+    assert max(chat) < 0.1                       # bounded envelope
+    assert chat[-1] <= 2.0 * max(chat[:-1])      # no growth at the floor
+
+
+def test_asymptotic_refuses():
+    """No extrapolation above the calibration ladder; and the generic
+    certifier must refuse a claimed exponent the data contradict —
+    here truth ~ eps fed to a claimed k=2, so the measured constant
+    grows 2x per rung toward the floor."""
+    with pytest.raises(ValueError, match="ladder"):
+        sf.gc_drift_asymptotic(0.3, order=1, ladder=(0.16, 0.08, 0.04))
+    with pytest.raises(ValueError, match="grows"):
+        sf.asymptotic_extrapolate(lambda e: 0.0, lambda e: e, 0.05, 2,
+                                  (0.8, 0.4, 0.2, 0.1))
+
+
+def test_plasma_hierarchy_dispatch():
+    """Certified dispatch along the reduction hierarchy: a loose tol is
+    served by order 0 (free), a tighter one escalates to order 1, and
+    an impossible one refuses with the priced full-kinetic fallback."""
+    c0 = sf.gc_drift_dispatch(0.004, tol=0.05)
+    assert "order=0" in c0.provenance[0]
+    c1 = sf.gc_drift_dispatch(0.02, tol=2e-3)
+    assert "order=1" in c1.provenance[0] and c1.err <= 2e-3
+    with pytest.raises(ValueError, match="kinetic"):
+        sf.gc_drift_dispatch(0.02, tol=1e-9)
+
+
+def test_asymptotic_tier_composes_downward():
+    """IR check: ASYMPTOTIC composed with RIGOROUS degrades to
+    ASYMPTOTIC — the weakest link names the chain."""
+    c = sf.gc_drift_asymptotic(0.02, order=1)
+    rig = sf.Certified(1.0, 0.0, sf.Tier.RIGOROUS, ("const",))
+    assert (c + rig).tier == sf.Tier.ASYMPTOTIC
