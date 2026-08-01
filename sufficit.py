@@ -2340,6 +2340,24 @@ def _eigen_bracket_sectored(M):
     return min(lows) - off, min(ups) + off
 
 
+def _sectored_ground(M):
+    """(lambda_min, full ground vector) of a sector-block-diagonal sparse
+    window operator, via dense selected-eigenpair solves per occupation
+    sector (largest ell=7 sector ~1225-dim) — replaces full-space
+    Lanczos on 4^ell."""
+    from scipy.linalg import eigh as dense_eigh
+    nsp = round(math.log(M.shape[0]) / math.log(4))
+    best = (math.inf, None, None)
+    for ix in _sector_indices(nsp):
+        sub = np.asarray(M[np.ix_(ix, ix)].todense())
+        lam, vec = dense_eigh(sub, subset_by_index=[0, 0])
+        if lam[0] < best[0]:
+            best = (float(lam[0]), ix, vec[:, 0])
+    v = np.zeros(M.shape[0])
+    v[best[1]] = best[2]
+    return best[0], v
+
+
 def _window_multipliers(mats, D, iters):
     """Proximal-bundle ascent over PER-OVERLAP Hermitian corrections
     C_1..C_{nw-1} (see history). Scaled for large D (ell=6: D=1024,
@@ -2350,40 +2368,80 @@ def _window_multipliers(mats, D, iters):
     are stored FACTORED — each overlap block is +Vl Vl' - Vr' Vr, two
     rank-E outer products, so gram entries are ||A'B||_F^2 sums. C stays
     dense per overlap (matvec-optimal). Returns [C_w]."""
-    from scipy.sparse.linalg import LinearOperator, eigsh
+    from scipy.linalg import eigh as dense_eigh
     dim = mats[0].shape[0]
     nw, E, nov = len(mats), dim // D, len(mats) - 1
+    # sector-restricted oracle: C is enforced sector-conserving, so the
+    # corrected windows stay block-diagonal and lambda_min = min over
+    # sector sub-blocks — dense selected-eigenpair solves (<= ~1225-dim
+    # at ell=7) replace full-space Lanczos, ~12x on the dominant ell=7
+    # cost. Correction sub-blocks extract from the kron structure by
+    # index arithmetic: kron(C,I_E)[a,b] = C[a//E,b//E] (a%E == b%E),
+    # kron(I_E,C)[a,b] = C[a%D,b%D] (a//D == b//D).
+    nsp_w = round(math.log(dim) / math.log(4))
+    sec_ix = _sector_indices(nsp_w)
+    base_secs = [[np.asarray(mats[w][np.ix_(ix, ix)].todense())
+                  for ix in sec_ix] for w in range(nw)]
+    lidx = [ix // E for ix in sec_ix]
+    lmask = [(ix % E)[:, None] == (ix % E)[None, :] for ix in sec_ix]
+    ridx = [ix % D for ix in sec_ix]
+    rmask = [(ix // D)[:, None] == (ix // D)[None, :] for ix in sec_ix]
 
-    def ground(w, Cs, v0):
-        if dim < 512:
-            M = mats[w].toarray()
-            if w >= 1:
-                M = M + np.kron(Cs[w - 1], np.eye(E))
-            if w <= nw - 2:
-                M = M - np.kron(np.eye(E), Cs[w])
-            lam, Vv = np.linalg.eigh(M)
-            return lam[0], Vv[:, 0]
+    # Weyl-pruned branch-and-bound over sectors: each sector's cached
+    # lambda plus the path-length drift ||Delta C||_F accumulated since
+    # its last solve (Weyl + triangle inequality) gives a rigorous
+    # optimistic bound; solve in optimistic order, stop when the next
+    # bound cannot beat the best found. Exact minimum, ~10x fewer eigh
+    # calls than solving every sector every oracle call (whose per-call
+    # driver overhead measured 10x SLOWER than Lanczos at ell=6).
+    nsec = len(sec_ix)
+    lam_cache = [[math.inf] * nsec for _ in range(nw)]
+    mark = [[-math.inf] * nsec for _ in range(nw)]
+    drift = [0.0] * nw
+    last_C = [None] * nw
 
-        def mv(x):
-            y = mats[w] @ x
+    def solve_sector(w, si, Cs):
+        M = base_secs[w][si]
+        if w >= 1 or w <= nw - 2:
+            M = M.copy()
             if w >= 1:
-                y = y + (Cs[w - 1] @ x.reshape(D, E)).ravel()
+                M += Cs[w - 1][np.ix_(lidx[si], lidx[si])] * lmask[si]
             if w <= nw - 2:
-                y = y - (x.reshape(E, D) @ Cs[w]).ravel()
-            return y
-        op = LinearOperator((dim, dim), matvec=mv, dtype=float)
-        # NO v0 warm start: measured to degrade the bound (66 -> 87
-        # mHa/atom at H6/ell=5) — it biases the Lanczos subspace toward
-        # the previous vector, producing correlated, less informative
-        # cuts. The sparse matvecs alone carry the speedup.
-        lam, Vv = eigsh(op, k=1, which="SA", tol=1e-9, maxiter=5000)
-        return float(lam[0]), Vv[:, 0]
+                M -= Cs[w][np.ix_(ridx[si], ridx[si])] * rmask[si]
+        lam, vec = dense_eigh(M, subset_by_index=[0, 0])
+        lam_cache[w][si] = float(lam[0])
+        mark[w][si] = drift[w]
+        return float(lam[0]), vec[:, 0]
+
+    def ground(w, Cs):
+        cur = (Cs[w - 1].copy() if w >= 1 else None,
+               Cs[w].copy() if w <= nw - 2 else None)
+        if last_C[w] is not None:
+            step = 0.0
+            for a, b in zip(cur, last_C[w]):
+                if a is not None:
+                    step += float(np.linalg.norm(a - b))
+            drift[w] += step
+        last_C[w] = cur
+        optimistic = [(lam_cache[w][si] - (drift[w] - mark[w][si]), si)
+                      for si in range(nsec)]
+        optimistic.sort()
+        best = (math.inf, None, None)
+        for opt, si in optimistic:
+            if opt >= best[0]:
+                break
+            lam, vec = solve_sector(w, si, Cs)
+            if lam < best[0]:
+                best = (lam, si, vec)
+        v = np.zeros(dim)
+        v[sec_ix[best[1]]] = best[2]
+        return best[0], v
 
     def oracle(Cs):
         tot, const = 0.0, 0.0
         facs = [[] for _ in range(nov)]     # per overlap: (sign, D x E)
         for w in range(nw):
-            lam0, v = ground(w, Cs, None)
+            lam0, v = ground(w, Cs)
             tot += lam0
             const += float(v @ (mats[w] @ v))
             if w >= 1:
@@ -2620,7 +2678,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         mats = assemble(eps)
         tot, p2 = 0.0, []
         for M in mats:
-            lam0, v = _ground_vec(M.toarray() if M.shape[0] < 512 else M)
+            lam0, v = _sectored_ground(M)
             tot += lam0
             p2.append(v ** 2)
         if tot > best_tot:
@@ -2632,8 +2690,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
             eps[k] = min(20.0, max(0.05, eps[k] ** 0.7 * bal ** 0.3))
     if cs_rounds:
         mats = assemble(eps)
-        tot = sum(_ground_vec(M.toarray() if M.shape[0] < 512 else M)[0]
-                  for M in mats)
+        tot = sum(_sectored_ground(M)[0] for M in mats)
         if tot < best_tot:
             eps, mats = best_eps, assemble(best_eps)
     else:
