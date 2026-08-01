@@ -2864,3 +2864,93 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
                       f"iters={correction_iters} block-product-upper",))
+
+
+# --------------------------------------------- certified reduced bases /
+# eigenvector continuation. For AFFINE operator families
+# H(theta) = H0 + theta H1, two structural facts make certified
+# parameter sweeps nearly free:
+#   1. lambda_min(theta) = min_v [<v|H0|v> + theta <v|H1|v>] is an
+#      infimum of affine functions of theta, hence CONCAVE — so certified
+#      snapshot lower bounds give a rigorous lower bound at every theta
+#      between them by the chord inequality. O(1) online, no solve.
+#   2. The reduced-basis Rayleigh quotient is EXACT at k x k cost online:
+#      with B an orthonormal snapshot basis, min-eig of B'(H0+theta H1)B
+#      is the full-space Rayleigh quotient of the best basis vector —
+#      a variational upper bound (this is eigenvector continuation's
+#      engine, and near-critical points it is startlingly accurate).
+# Outside the snapshot hull concavity certifies nothing: refuse.
+# One rewrite, two TARGETS columns: CEM parameter sweeps and the
+# nuclear-EFT eigenvector-continuation program.
+
+
+def tfi_chain(N):
+    """(H0, H1) for the transverse-field Ising chain
+    H(g) = -sum Z_i Z_{i+1} - g sum X_i — the demo affine family, swept
+    across its quantum phase transition at g = 1."""
+    X = np.array([[0.0, 1.0], [1.0, 0.0]])
+    Z = np.diag([1.0, -1.0])
+
+    def embed(op, i):
+        M = np.eye(1)
+        for j in range(N):
+            M = np.kron(M, op if j == i else np.eye(2))
+        return M
+
+    H0 = np.zeros((2 ** N, 2 ** N))
+    for i in range(N - 1):
+        H0 -= embed(Z, i) @ embed(Z, i + 1)
+    H1 = np.zeros((2 ** N, 2 ** N))
+    for i in range(N):
+        H1 -= embed(X, i)
+    return H0, H1
+
+
+def reduced_basis_surrogate(H0, H1, thetas):
+    """Offline stage: certified brackets and ground vectors at each
+    snapshot theta, an orthonormalized snapshot basis B, and the exact
+    small Grams B'H0B, B'H1B that make every online Rayleigh quotient
+    computable at k x k cost."""
+    from scipy.sparse.linalg import eigsh
+    thetas = np.sort(np.asarray(thetas, float))
+    vs, los = [], []
+    for th in thetas:
+        H = H0 + th * H1
+        c = eigen_bracket(H)
+        los.append(c.value - c.err)
+        if len(H) < 64:
+            _, V = np.linalg.eigh(H)
+            vs.append(V[:, 0])
+        else:
+            _, V = eigsh(H, k=1, which="SA")
+            vs.append(V[:, 0])
+    B, _ = np.linalg.qr(np.column_stack(vs))
+    n = len(H0)
+    pad = 8 * (n + 2) * np.finfo(float).eps \
+        * (float(np.linalg.norm(H0, 1))
+           + max(abs(thetas[0]), abs(thetas[-1]))
+           * float(np.linalg.norm(H1, 1)))
+    return {"thetas": thetas, "lows": np.array(los),
+            "A0": B.T @ H0 @ B, "A1": B.T @ H1 @ B, "pad": pad,
+            "k": B.shape[1]}
+
+
+def reduced_basis_bracket(sur, theta: float) -> Certified:
+    """Online stage: certified bracket on lambda_min(H0 + theta H1) at
+    k x k cost. Upper: exact reduced Rayleigh quotient (variational).
+    Lower: the concavity chord through the two bracketing certified
+    snapshot lows. Refuses outside the snapshot hull."""
+    t = sur["thetas"]
+    if theta < t[0] or theta > t[-1]:
+        raise ValueError(f"theta={theta:g} outside the snapshot hull "
+                         f"[{t[0]:g}, {t[-1]:g}]: concavity certifies "
+                         "chords, not extrapolations")
+    up = float(np.linalg.eigvalsh(sur["A0"] + theta * sur["A1"])[0]) \
+        + sur["pad"]
+    j = int(np.searchsorted(t, theta))
+    j = max(1, min(j, len(t) - 1))
+    w = (theta - t[j - 1]) / (t[j] - t[j - 1])
+    lo = (1 - w) * sur["lows"][j - 1] + w * sur["lows"][j] - sur["pad"]
+    return Certified(0.5 * (up + lo), 0.5 * (up - lo), Tier.RIGOROUS,
+                     (f"rb-ec k={sur['k']} theta={theta:g} "
+                      "chord-lower rayleigh-upper",))

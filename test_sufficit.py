@@ -1458,6 +1458,50 @@ def test_h_chain_ell5_hierarchy_knob():
     assert 2 * c5.err / 6 < 0.075            # <= 75 mHa/atom
 
 
+def test_reduced_basis_bracket_certified_across_sweep():
+    """Certified reduced basis / eigenvector continuation: 6 offline
+    snapshots of the transverse-field Ising chain, then a 100-point
+    sweep across the quantum phase transition at k x k online cost —
+    every point's bracket must contain the exact ground energy."""
+    H0, H1 = sf.tfi_chain(10)
+    thetas = np.linspace(0.0, 2.0, 6)
+    sur = sf.reduced_basis_surrogate(H0, H1, thetas)
+    widths = []
+    for g in np.linspace(0.0, 2.0, 100):
+        c = sf.reduced_basis_bracket(sur, g)
+        truth = float(np.linalg.eigvalsh(H0 + g * H1)[0])
+        assert c.value - c.err <= truth <= c.value + c.err
+        assert c.tier == sf.Tier.RIGOROUS
+        widths.append(2 * c.err)
+    assert max(widths) < 0.6          # non-vacuous everywhere (N=10 scale)
+    # the EC magic: the variational UPPER from 6 snapshots is excellent
+    g = 1.0                            # the critical point
+    c = sf.reduced_basis_bracket(sur, g)
+    truth = float(np.linalg.eigvalsh(H0 + g * H1)[0])
+    assert (c.value + c.err) - truth < 5e-3
+
+
+def test_reduced_basis_refuses_extrapolation():
+    """Concavity certifies chords INSIDE the snapshot hull only:
+    extrapolation is refused, not guessed."""
+    H0, H1 = sf.tfi_chain(6)
+    sur = sf.reduced_basis_surrogate(H0, H1, np.linspace(0.5, 1.5, 4))
+    with pytest.raises(ValueError):
+        sf.reduced_basis_bracket(sur, 2.0)
+    with pytest.raises(ValueError):
+        sf.reduced_basis_bracket(sur, 0.1)
+
+
+def test_reduced_basis_tightens_with_snapshots():
+    """The knob: more offline snapshots buy a tighter certified band."""
+    H0, H1 = sf.tfi_chain(8)
+    def mean_width(k):
+        sur = sf.reduced_basis_surrogate(H0, H1, np.linspace(0.0, 2.0, k))
+        return float(np.mean([2 * sf.reduced_basis_bracket(sur, g).err
+                              for g in np.linspace(0.0, 2.0, 50)]))
+    assert mean_width(9) < 0.5 * mean_width(3)
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

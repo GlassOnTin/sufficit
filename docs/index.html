@@ -2,10 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="0; url=explainer.html">
   <title>Sufficit</title>
+  <style>
+    body { font-family: "Iowan Old Style", Palatino, Georgia, serif;
+           max-width: 40rem; margin: 4rem auto; padding: 0 1.25rem;
+           line-height: 1.6; color: #1A2028; background: #F7F8F7; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #E6E4DE; background: #14181D; } a { color: #3E8CC2; } }
+    a { color: #1D6FA5; }
+    h1 { letter-spacing: -0.01em; }
+    .sub { color: #5A6472; }
+  </style>
 </head>
 <body>
-  <p><a href="explainer.html">Sufficit — a computer that knows how much it doesn’t need to know</a></p>
+  <h1>Sufficit</h1>
+  <p class="sub"><em>A query compiler for physics: declare the model, the
+  question, and the tolerance — get an algorithm and a certificate.</em></p>
+  <ul>
+    <li><a href="explainer.html">The illustrated tour</a> — start here</li>
+    <li><a href="cases/tfi-reduced-basis.html">Certified case: reduced basis
+        across a quantum phase transition</a> — theory, live-rendered code,
+        and the executed certification</li>
+    <li><a href="https://github.com/GlassOnTin/sufficit">Source on GitHub</a></li>
+  </ul>
 </body>
 </html>
