@@ -1377,6 +1377,20 @@ def test_h_chain_bracket_tightens_with_ell():
     assert tight.err < wide.err
 
 
+def test_h_chain_ell5_hierarchy_knob():
+    """The hierarchy knob at ell=5 (1024-dim windows): steep payoff —
+    H6 width/atom 244 (ell=3) -> 89 (ell=4) -> 66 mHa (ell=5), still
+    containing the exact FCI energy."""
+    from scipy.sparse.linalg import eigsh
+    truth = float(eigsh(sf.h_chain_fock_hamiltonian(6, 1.8),
+                        k=1, which="SA")[0][0])
+    c5 = sf.h_chain_bracket(6, 1.8, ell=5)
+    c4 = sf.h_chain_bracket(6, 1.8, ell=4)
+    assert c5.value - c5.err <= truth <= c5.value + c5.err
+    assert c5.err < 0.85 * c4.err
+    assert 2 * c5.err / 6 < 0.075            # <= 75 mHa/atom
+
+
 def test_end_to_end_chain():
     """The Phase 0 deliverable: a 3-rewrite chain (compress, project, truncate)
     whose composed bound contains the true end-to-end error."""

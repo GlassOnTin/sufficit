@@ -2225,6 +2225,17 @@ def _window_operator(hw, eriw, lin, quad, const, extras=()):
     return np.asarray(H.todense())
 
 
+def _ground_vec(M):
+    """Ground eigenpair; Lanczos above small dims (only the vector is
+    needed by the multiplier oracle and the eps loop)."""
+    if len(M) < 512:
+        lam, Vv = np.linalg.eigh(M)
+        return lam[0], Vv[:, 0]
+    from scipy.sparse.linalg import eigsh
+    lam, Vv = eigsh(M, k=1, which="SA")
+    return float(lam[0]), Vv[:, 0]
+
+
 def _window_multipliers(mats, D, iters):
     """Proximal-bundle ascent of sum_w lambda_min over PER-OVERLAP
     Hermitian corrections C_1..C_{nw-1}: window w gains +C_w x I on its
@@ -2256,9 +2267,8 @@ def _window_multipliers(mats, D, iters):
         tot, const = 0.0, 0.0
         G = [np.zeros((D, D)) for _ in range(nov)]
         for w in range(nw):
-            lam, Vv = np.linalg.eigh(build(w, Cs))
-            v = Vv[:, 0]
-            tot += lam[0]
+            lam0, v = _ground_vec(build(w, Cs))
+            tot += lam0
             const += float(v @ (mats[w] @ v))
             Vl, Vr = v.reshape(D, E), v.reshape(E, D)
             if w >= 1:
@@ -2289,9 +2299,9 @@ def _window_multipliers(mats, D, iters):
         row = np.array([float(gn @ Gi) for Gi in G])
         gram = np.block([[gram, row[:-1, None]], [row[None, :-1],
                                                   np.array([[row[-1]]])]])
-        if len(A) > 60:
-            A, G = A[-60:], G[-60:]
-            gram = gram[-60:, -60:]
+        if len(A) > 40:                    # cut vectors are large at
+            A, G = A[-40:], G[-40:]        # big D; cap the bundle
+            gram = gram[-40:, -40:]
         if fnew > fref:
             xref, fref, tau = xnew, fnew, min(tau * 1.4, 50.0)
         else:
@@ -2465,9 +2475,9 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         mats = assemble(eps)
         tot, p2 = 0.0, []
         for M in mats:
-            lam, Vv = np.linalg.eigh(M)
-            tot += lam[0]
-            p2.append(Vv[:, 0] ** 2)
+            lam0, v = _ground_vec(M)
+            tot += lam0
+            p2.append(v ** 2)
         if tot > best_tot:
             best_tot, best_eps = tot, eps.copy()
         for k in range(len(cs_terms)):
