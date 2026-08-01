@@ -695,6 +695,127 @@ tubes around the reduced-model trajectories of both slow variables">
         ])
 
 
+# ======================================================================
+def lr_case():
+    n, site, tol, md = 11, 5, 1e-2, 256
+    H0, H1 = sf.tfi_chain(n)
+    lam, V = np.linalg.eigh(H0 + H1)
+    psi0 = np.zeros(2 ** n)
+    psi0[0] = 1.0
+    zdiag = 1.0 - 2.0 * ((np.arange(2 ** n) >> (n - 1 - site)) & 1)
+
+    def exact_zt(t):
+        psi = V @ (np.exp(-1j * lam * t) * (V.T @ psi0))
+        return float(np.real(np.vdot(psi, zdiag * psi)))
+
+    ts = np.linspace(0.0, 2.0, 21)
+    cert, wall = [], None          # (t, value, err, r) for certified points
+    for t in ts:
+        try:
+            c = sf.tfi_quench_dispatch(n, site, float(t), tol=tol,
+                                       max_dim=md, n_steps=300)
+            r = int(c.provenance[0].split("r=")[1].split()[0])
+            cert.append((float(t), c.value, c.err, r))
+        except ValueError:
+            wall = float(t) if wall is None else wall
+    # the t=0 certificate is exactly 0 (declared exact-arithmetic);
+    # the eigh-based checker itself carries ~1e-15 float noise
+    contained = sum(abs(v - exact_zt(t)) <= e + 1e-12 for t, v, e, _ in cert)
+    exact = [exact_zt(float(t)) for t in ts]
+
+    import time as _time
+    t0 = _time.time()
+    big = sf.tfi_quench_dispatch(10 ** 6, 500_000, 0.6, tol=1e-3,
+                                 n_steps=300)
+    big_secs = _time.time() - t0
+    small = sf.tfi_quench_dispatch(2001, 1000, 0.6, tol=1e-3, n_steps=300)
+    identical = (big.value == small.value and big.err == small.err)
+
+    ax = Axes((0.0, 2.0), (-0.45, 1.12), h=340)
+    tc = [p[0] for p in cert]
+    band = (ax.path(tc, [p[1] + p[2] for p in cert]) + " L "
+            + " L ".join(f"{ax.X(p[0]):.1f} {ax.Y(p[1] - p[2]):.1f}"
+                         for p in cert[::-1]) + " Z")
+    rmarks = []
+    for i in range(1, len(cert)):
+        if cert[i][3] > cert[i - 1][3]:
+            x = ax.X(cert[i][0])
+            rmarks.append(
+                f'<line x1="{x:.1f}" y1="{340 - ax.mb}" x2="{x:.1f}" '
+                f'y2="{340 - ax.mb - 14}" class="blue-ink" '
+                f'stroke-width="1.4"/>'
+                f'<text x="{x:.1f}" y="{340 - ax.mb - 18}" '
+                f'text-anchor="middle" class="board-text" font-size="10" '
+                f'fill="var(--blue)">r={cert[i][3]}</text>')
+    wall_x = ax.X(wall)
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Certified
+band around the quench observable, cone radius escalating, refusal region
+shaded past the budget wall">
+{ax.grid((-0.4, 0.0, 0.4, 0.8), (0.5, 1.0, 1.5, 2.0),
+         xfmt=lambda v: f"t = {v:g}", yfmt=lambda v: f"{v:g}")}
+<rect x="{wall_x:.1f}" y="{ax.mt}" width="{640 - ax.mr - wall_x:.1f}"
+      height="{340 - ax.mt - ax.mb}" fill="var(--rust)" opacity="0.08"/>
+<line x1="{wall_x:.1f}" y1="{ax.mt}" x2="{wall_x:.1f}" y2="{340 - ax.mb}"
+      class="rust-ink" stroke-dasharray="4 4" stroke-width="1.4"/>
+<text x="{wall_x + 8:.1f}" y="{ax.mt + 14}" class="board-text"
+      font-size="10.5" fill="var(--rust)">refuses: light cone outruns
+ the budget</text>
+<path d="{band}" fill="var(--blue)" opacity="0.16" stroke="none"/>
+<path d="{ax.path(tc, [p[1] for p in cert])}" fill="none" class="blue-ink"
+      stroke-width="2"/>
+<path d="{ax.path(ts, exact)}" fill="none" class="board-ink"
+      stroke-width="1.5" stroke-dasharray="5 4"/>
+{"".join(rmarks)}
+<text x="{ax.ml + 10}" y="{ax.mt + 14}" class="board-text" font-size="10.5">
+⟨Z(t)⟩ after a quench, critical TFI chain</text></svg>'''
+
+    return page(
+        "Case: quantum-dynamics dispatch by Lieb-Robinson cone",
+        "certified case",
+        "Does a certified classical simulation exist? Ask the boundary",
+        "A quench observable on a transverse-field Ising chain, certified "
+        "by simulating only a cone of sites and measuring — not "
+        "estimating — what leaks across its edge. The compiler grows the "
+        "cone as the light cone spreads, and refuses when its budget is "
+        "outrun. Chain length never enters the cost.",
+        [
+            "<h2>The theory, a priori</h2>"
+            "<p>Comparing full dynamics with cone-restricted dynamics, "
+            "Duhamel gives ‖A(t) − A_cone(t)‖ ≤ ∫₀ᵗ ‖[H − H_cone, "
+            "A_cone(s)]‖ ds, and only the two bonds crossing the cone "
+            "boundary fail to commute with the cone-supported operator. "
+            "Those commutator norms are <em>measured inside the "
+            "simulation itself</em> — near zero until the excitation "
+            "front physically arrives — so the certificate carries no "
+            "Lieb–Robinson velocity constants to be loose about. "
+            "Quadrature is rigorous too: the interpolation remainder is "
+            "priced by the measured second derivative ‖[P,[H,[H,A]]]‖, "
+            "with a crude cap only at the harmless δ⁴ level.</p>",
+            code_section(sf.tfi_quench_dispatch, sf._lr_cone_run,
+                         sf._opnorm_ub),
+            "<h2>The certification, executed and drawn</h2>"
+            f"<figure>{svg}<figcaption>The certified band around "
+            "⟨Z(t)⟩ at the critical point (g = 1), tolerance 10⁻². Ticks "
+            "mark where dispatch grew the cone; the shaded region is "
+            "refusal — the measured boundary leakage exceeds the "
+            "tolerance at every affordable radius, and the error message "
+            "prices the next cone instead of guessing. The certified "
+            "width breathes in a sawtooth because dispatch always takes "
+            "the cheapest adequate cone. Dashed: the exact "
+            "2048-dimensional answer, computed only to check the band."
+            "</figcaption></figure>",
+            "<h2>Verified in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/{len(cert)}</strong> "
+            "certified sweep points vs exact diagonalization.</li>"
+            f"<li>Refusal wall at <strong>t = {wall:g}</strong> with "
+            f"max_dim = {md}: past it, no certificate is claimed.</li>"
+            "<li>Chain length never enters: a <strong>10⁶-site</strong> "
+            f"chain certified ±10⁻³ in <strong>{big_secs:.1f} s</strong>, "
+            "bit-identical to the 2001-site run: "
+            f"<strong>{'yes' if identical else 'NO'}</strong>.</li></ul>",
+        ])
+
+
 STYLE = '''<style>
   :root { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472; --blue:#1D6FA5;
     --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0; --panel-ink:#333C46; }
@@ -748,6 +869,7 @@ CASES = {
     "ising-cluster.html": ising_case,
     "smeared-spectral.html": spectral_case,
     "mz-closure.html": mz_case,
+    "lr-dispatch.html": lr_case,
 }
 
 if __name__ == "__main__":

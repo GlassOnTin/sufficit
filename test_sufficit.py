@@ -1528,3 +1528,70 @@ def test_end_to_end_chain():
     assert answer.err < 1e-2  # and the bound is tight enough to be useful
     assert answer.tier == sf.Tier.RIGOROUS
     assert "add" in answer.provenance and "mean" in answer.provenance
+
+
+def _tfi_full_zt(n, site, t, g):
+    """Exact <Z_site(t)> from the all-up state of the full 2^n chain,
+    built independently of the cone code (same embed convention as
+    tfi_chain: site 0 most significant)."""
+    H0, H1 = sf.tfi_chain(n)
+    lam, V = np.linalg.eigh(H0 + g * H1)
+    psi0 = np.zeros(2 ** n)
+    psi0[0] = 1.0
+    psi_t = V @ (np.exp(-1j * lam * t) * (V.T @ psi0))
+    z = 1.0 - 2.0 * ((np.arange(2 ** n) >> (n - 1 - site)) & 1)
+    return float(np.real(np.vdot(psi_t, z * psi_t)))
+
+
+def test_lr_dispatch_certified_vs_exact():
+    """Quantum-dynamics dispatch: the cone answer with its a-posteriori
+    boundary-commutator certificate must contain the exact full-chain
+    value — mid-chain and with the cone clipped at the chain end, at
+    the critical point g=1 where spreading is fastest."""
+    n, g = 10, 1.0
+    for site in (4, 1):
+        for t in (0.4, 0.9):
+            truth = _tfi_full_zt(n, site, t, g)
+            c = sf.tfi_quench_dispatch(n, site, t, tol=2e-2, g=g,
+                                       n_steps=300)
+            assert abs(c.value - truth) <= c.err
+            assert c.err <= 2e-2
+            assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+            assert "lr-cone" in c.provenance[0]
+
+
+def test_lr_cone_tightens_with_radius():
+    """A wider cone must certify tighter (the light cone has farther to
+    travel), and every radius must still contain the truth."""
+    n, site, t, g = 10, 4, 0.9, 1.0
+    truth = _tfi_full_zt(n, site, t, g)
+    v2, e2 = sf._lr_cone_run(n, site, t, 1.0, g, 2, 200)
+    v3, e3 = sf._lr_cone_run(n, site, t, 1.0, g, 3, 200)
+    assert abs(v2 - truth) <= e2 and abs(v3 - truth) <= e3
+    assert 0.0 < e3 < e2
+
+
+def test_lr_dispatch_refuses_beyond_budget():
+    """t large enough that the light cone outruns every affordable cone:
+    dispatch must refuse with the measured ladder, not extrapolate."""
+    with pytest.raises(ValueError, match="lr-dispatch"):
+        sf.tfi_quench_dispatch(50, 25, 3.0, tol=1e-6, max_dim=256,
+                               n_steps=200)
+
+
+def test_lr_dispatch_n_independent():
+    """The whole point: the certified answer must not depend on the
+    chain length — a 10^6-site chain costs the same as 2001 sites and
+    returns the bit-identical certificate."""
+    c1 = sf.tfi_quench_dispatch(2001, 1000, 0.6, tol=1e-3, n_steps=300)
+    c2 = sf.tfi_quench_dispatch(10 ** 6, 500_000, 0.6, tol=1e-3,
+                                n_steps=300)
+    assert c1.value == c2.value and c1.err == c2.err
+
+
+def test_lr_quadrature_honesty():
+    """Coarser time quadrature must cost certified error (the measured
+    derivative-ladder pad grows with the step), never gain it."""
+    _, e_coarse = sf._lr_cone_run(30, 15, 0.8, 1.0, 1.0, 3, 60)
+    _, e_fine = sf._lr_cone_run(30, 15, 0.8, 1.0, 1.0, 3, 480)
+    assert e_fine < e_coarse

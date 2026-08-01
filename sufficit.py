@@ -2954,3 +2954,129 @@ def reduced_basis_bracket(sur, theta: float) -> Certified:
     return Certified(0.5 * (up + lo), 0.5 * (up - lo), Tier.RIGOROUS,
                      (f"rb-ec k={sur['k']} theta={theta:g} "
                       "chord-lower rayleigh-upper",))
+
+
+# ------------------------------------------------------------- Quantum
+# dynamics dispatch (Lieb-Robinson cone). The query with commercial
+# teeth: given a local Hamiltonian, a local observable, a time and a
+# tolerance — does a classical simulation with a certificate exist, and
+# at what cost? The rewrite simulates only a cone of sites around the
+# observable and certifies the truncation A-POSTERIORI: by Duhamel,
+#   ||A(t) - A_cone(t)|| <= int_0^t ||[H - H_cone, A_cone(s)]|| ds,
+# and only the two bonds crossing the cone boundary fail to commute
+# with the cone-supported A_cone(s), so the integrand is MEASURED
+# inside the cone simulation itself — no Lieb-Robinson velocity
+# constants, and the bound is near-zero until the light cone
+# physically reaches the edge. Quadrature is made rigorous by the
+# Banach-valued interpolation remainder: with K(s) = [P, A_cone(s)],
+#   int ||K|| over a cell <= trapezoid + (dt^3/8) sup ||K''||,
+# (||T1(s)|| <= interpolated endpoint norms by convexity, and
+# ||K - T1|| <= (s-a)(b-s)/2 sup||K''|| from the integral remainder),
+# where ||K''|| = ||[P,[H,[H,A]]]|| is MEASURED at the samples and its
+# cell drift capped by the crude ||ad_P ad_H^3 A|| <= 16 J ||H||^3,
+# harmless behind dt^4. Certificate exact-arithmetic (FP not carried
+# in this pipeline).
+
+
+def _opnorm_ub(M):
+    """Cheap rigorous upper bound on the spectral norm:
+    min(Frobenius, sqrt(||M||_1 ||M||_inf))."""
+    am = np.abs(M)
+    return float(min(np.linalg.norm(M),
+                     math.sqrt(np.max(am.sum(0)) * np.max(am.sum(1)))))
+
+
+def _lr_cone_run(n, site, t, J, g, r, n_steps):
+    """One cone of the TFI chain H = -J sum ZZ - g sum X: evolve
+    Z_site as a dense operator under the cone Hamiltonian and return
+    (value, err) with value = <all-up| Z_site(t) |all-up> and err the
+    certified truncation + quadrature bound (see the section comment).
+    err is exactly 0 when the cone covers the whole chain."""
+    lo, hi = max(0, site - r), min(n - 1, site + r)
+    nc = hi - lo + 1
+    dim = 1 << nc
+    bits = (np.arange(dim)[:, None] >> np.arange(nc - 1, -1, -1)[None, :]) & 1
+    z = 1.0 - 2.0 * bits                    # z[:, i]: Z eigenvalue, site i
+    diag = -J * np.sum(z[:, :-1] * z[:, 1:], axis=1)
+    H = np.diag(diag)
+    idx = np.arange(dim)
+    masks = [1 << (nc - 1 - i) for i in range(nc)]
+    for m in masks:
+        H[idx, idx ^ m] += -g
+    hnorm = J * (nc - 1) + g * nc           # ||H_cone|| by triangle ineq
+
+    def commH(M):
+        """[H, M] via the diagonal + bit-flip structure, O(nc dim^2)."""
+        HM = diag[:, None] * M
+        MH = M * diag[None, :]
+        for m in masks:
+            p = idx ^ m
+            HM -= g * M[p, :]
+            MH -= g * M[:, p]
+        return HM - MH
+
+    A = np.diag(z[:, site - lo]).astype(complex)
+    edges = ([0] if lo > 0 else []) + ([nc - 1] if hi < n - 1 else [])
+    if t == 0.0 or not edges:
+        if t != 0.0:
+            lam, V = np.linalg.eigh(H)
+            ph = np.exp(-1j * lam * t)
+            A = (V * ph.conj()) @ (V.T @ A @ V * ph[None, :]) @ V.T
+        return float(np.real(A[0, 0])), 0.0
+
+    lam, V = np.linalg.eigh(H)
+    dt = t / n_steps
+    Ud = (V * np.exp(-1j * lam * dt)) @ V.T   # e^{-i H dt}, V real
+    gs = {e: np.empty(n_steps + 1) for e in edges}
+    Es = {e: np.empty(n_steps + 1) for e in edges}
+    for k in range(n_steps + 1):
+        C2 = commH(commH(A))
+        for e in edges:
+            ze = z[:, e]
+            gs[e][k] = J * _opnorm_ub(ze[:, None] * A - A * ze[None, :])
+            Es[e][k] = J * _opnorm_ub(ze[:, None] * C2 - C2 * ze[None, :])
+        if k < n_steps:
+            A = Ud.conj().T @ A @ Ud
+    err = 0.0
+    cap = 16.0 * J * hnorm ** 3              # ||ad_P ad_H^3 A|| crude cap
+    for e in edges:
+        ge, Ee = gs[e], Es[e]
+        err += dt * (np.sum(ge) - 0.5 * (ge[0] + ge[-1]))    # trapezoid
+        supE = np.maximum(Ee[:-1], Ee[1:]) + 0.5 * dt * cap
+        err += float(np.sum(dt ** 3 / 8.0 * supE))           # quad pad
+    return float(np.real(A[0, 0])), _up(err)
+
+
+def tfi_quench_dispatch(n: int, site: int, t: float, tol: float,
+                        g: float = 1.0, J: float = 1.0,
+                        n_steps: int = 400,
+                        max_dim: int = 4096) -> Certified:
+    """Quantum-dynamics dispatch: <Z_site(t)> from the all-up state of
+    an n-site transverse-field Ising chain, certified within tol by the
+    smallest Lieb-Robinson cone whose measured boundary-commutator
+    certificate meets it. Cost depends on the cone, never on n.
+    Refuses — with the measured (radius, err) ladder and the price of
+    the next cone — when no cone within max_dim certifies tol."""
+    if t < 0:
+        raise ValueError("t must be >= 0")
+    tried = []
+    r = 1
+    while True:
+        lo, hi = max(0, site - r), min(n - 1, site + r)
+        nc = hi - lo + 1
+        if (1 << nc) > max_dim:
+            raise ValueError(
+                f"lr-dispatch: no cone within max_dim={max_dim} certifies "
+                f"tol={tol:g} at t={t:g}; measured (r, err): "
+                + ", ".join(f"({rr}, {ee:.3g})" for rr, ee in tried)
+                + f"; the next cone needs dim {1 << nc} "
+                f"(~{((1 << nc) / max_dim) ** 3:.0f}x the largest "
+                "affordable step cost)")
+        value, err = _lr_cone_run(n, site, t, J, g, r, n_steps)
+        tried.append((r, err))
+        if err <= tol:
+            return Certified(value, err, Tier.RIGOROUS,
+                             (f"lr-cone r={r} sites={nc} steps={n_steps} "
+                              "a-posteriori boundary commutator, "
+                              "exact-arithmetic",))
+        r += 1
