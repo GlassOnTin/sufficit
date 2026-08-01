@@ -1377,6 +1377,31 @@ def test_h_chain_bracket_tightens_with_ell():
     assert tight.err < wide.err
 
 
+def test_fermion_assemble_matches_jw_products():
+    """The bit-arithmetic assembler (each ladder string is a signed
+    partial permutation — no matrix products) against explicit JW
+    matrix products, including string-parity signs."""
+    rng = np.random.default_rng(42)
+    nq = 6
+    ann = sf._jw_ann(nq)
+    terms = []
+    ref = np.zeros((2 ** nq, 2 ** nq))
+    for _ in range(30):
+        k = rng.integers(2, 5)
+        modes = rng.choice(nq, size=k, replace=False)
+        dags = rng.integers(0, 2, size=k).astype(bool)
+        coef = float(rng.standard_normal())
+        terms.append((coef, [(int(m), bool(d))
+                             for m, d in zip(modes, dags)]))
+        M = np.eye(2 ** nq)
+        for m, d in reversed(list(zip(modes, dags))):
+            op = ann[int(m)].toarray()
+            M = (op.T if d else op) @ M
+        ref += coef * M
+    got = sf._fermion_assemble(nq, terms).toarray()
+    assert np.max(np.abs(got - ref)) < 1e-12
+
+
 def test_sectored_certification_matches_dense():
     """Occupation-sector certification (the ell=7 enabler — every window
     term conserves N_up/N_down, so the 4^ell space block-diagonalizes;

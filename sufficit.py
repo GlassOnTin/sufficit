@@ -2030,7 +2030,7 @@ def _jw_ann(nso):
     return ann
 
 
-def _fock_hamiltonian(S, h, eri, enuc):
+def _fock_hamiltonian(S, h, eri, enuc, dense=True):
     """Lowdin-orthogonalize, Jordan-Wigner, assemble the 4^nao Fock-space
     Hamiltonian (sparse internally, dense out)."""
     from scipy import sparse
@@ -2039,16 +2039,14 @@ def _fock_hamiltonian(S, h, eri, enuc):
     h = Xo @ h @ Xo
     eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, Xo, Xo, Xo, Xo)
     nso = 2 * len(h)
-    ann = _jw_ann(nso)
-    dim = 2 ** nso
-    H = sparse.identity(dim, format="csr") * enuc
     n_sp = len(h)
+    terms = []
     for p in range(n_sp):
         for q in range(n_sp):
-            if h[p, q] == 0.0:
-                continue
-            for sp in range(2):
-                H = H + h[p, q] * (ann[2 * p + sp].T @ ann[2 * q + sp])
+            if h[p, q] != 0.0:
+                for sp in range(2):
+                    terms.append((h[p, q],
+                                  [(2 * p + sp, True), (2 * q + sp, False)]))
     for p in range(n_sp):
         for q in range(n_sp):
             for r in range(n_sp):
@@ -2058,10 +2056,14 @@ def _fock_hamiltonian(S, h, eri, enuc):
                         continue
                     for sa in range(2):
                         for sb in range(2):
-                            H = H + 0.5 * g * (
-                                ann[2 * p + sa].T @ ann[2 * q + sb].T
-                                @ ann[2 * s2 + sb] @ ann[2 * r + sa])
-    return np.asarray(H.todense())
+                            terms.append((0.5 * g,
+                                          [(2 * p + sa, True),
+                                           (2 * q + sb, True),
+                                           (2 * s2 + sb, False),
+                                           (2 * r + sa, False)]))
+    H = _fermion_assemble(nso, terms) \
+        + sparse.identity(2 ** nso, format="csr") * enuc
+    return np.asarray(H.todense()) if dense else H.tocsr()
 
 
 def h2_polarized_bracket(R: float) -> Certified:
@@ -2180,6 +2182,59 @@ def h_chain_fock_hamiltonian(n, d):
     return _fock_hamiltonian(np.eye(n), T + V.sum(0), eri, enuc)
 
 
+def _fermion_assemble(nq, terms):
+    """Sparse operator from ladder-operator strings [(coef, [(mode,
+    dagger), ...])], vectorized over the occupation basis with bit
+    arithmetic: each string is a signed partial permutation (one nonzero
+    per column) — validity by bit tests, JW string parity by
+    bitwise_count, target state by XOR. No matrix products. Chunks are
+    tree-merged to keep csr additions O(nnz log #chunks)."""
+    from scipy import sparse
+    dim = 1 << nq
+    ks = np.arange(dim, dtype=np.int64)
+    chunks, rows, cols, vals, pending = [], [], [], [], 0
+    for coef, ops in terms:
+        cur, ok = ks, np.ones(dim, bool)
+        sign = np.ones(dim)
+        for p, dag in reversed(ops):        # rightmost operator first
+            bitpos = nq - 1 - p
+            bit = (cur >> bitpos) & 1
+            ok = ok & (bit == (0 if dag else 1))
+            if p > 0:
+                mask = ((1 << p) - 1) << (nq - p)
+                sign = sign * (1.0 - 2.0 * (np.bitwise_count(
+                    (cur & mask).astype(np.uint64)).astype(np.int64) & 1))
+            cur = cur ^ (1 << bitpos)
+        idx = np.nonzero(ok)[0]
+        if len(idx):
+            rows.append(cur[idx])
+            cols.append(idx)
+            vals.append(coef * sign[idx])
+            pending += len(idx)
+        if pending > 64 * dim:
+            chunks.append(sparse.coo_matrix(
+                (np.concatenate(vals),
+                 (np.concatenate(rows), np.concatenate(cols))),
+                shape=(dim, dim)).tocsr())
+            rows, cols, vals, pending = [], [], [], 0
+    if rows:
+        chunks.append(sparse.coo_matrix(
+            (np.concatenate(vals),
+             (np.concatenate(rows), np.concatenate(cols))),
+            shape=(dim, dim)).tocsr())
+    if not chunks:
+        return sparse.csr_matrix((dim, dim))
+    while len(chunks) > 1:                  # balanced tree merge
+        chunks = [chunks[i] + chunks[i + 1] if i + 1 < len(chunks)
+                  else chunks[i] for i in range(0, len(chunks), 2)]
+    return chunks[0]
+
+
+def _occ_diag(nq, q):
+    """Occupation diagonal of qubit q as a vector."""
+    return ((np.arange(1 << nq) >> (nq - 1 - q)) & 1).astype(float)
+
+
 def _window_operator(hw, eriw, lin, quad, const, extras=()):
     """Sparse-assembled window operator on 2*len(hw) spin orbitals:
     one- and two-electron parts, per-site linear n and -(quad)(n-1)^2
@@ -2188,14 +2243,15 @@ def _window_operator(hw, eriw, lin, quad, const, extras=()):
     Cauchy-Schwarz far-term absorption."""
     from scipy import sparse
     nsp = len(hw)
-    ann = _jw_ann(2 * nsp)
+    nq = 2 * nsp
     dim = 4 ** nsp
-    H = sparse.identity(dim, format="csr") * const
+    terms = []
     for p in range(nsp):
         for q in range(nsp):
             if hw[p, q] != 0.0:
                 for sp in range(2):
-                    H = H + hw[p, q] * (ann[2 * p + sp].T @ ann[2 * q + sp])
+                    terms.append((hw[p, q],
+                                  [(2 * p + sp, True), (2 * q + sp, False)]))
     for p in range(nsp):
         for q in range(nsp):
             for r in range(nsp):
@@ -2205,28 +2261,26 @@ def _window_operator(hw, eriw, lin, quad, const, extras=()):
                         continue
                     for sa in range(2):
                         for sb in range(2):
-                            H = H + 0.5 * g * (
-                                ann[2 * p + sa].T @ ann[2 * q + sb].T
-                                @ ann[2 * s2 + sb] @ ann[2 * r + sa])
-    eye = sparse.identity(dim, format="csr")
+                            terms.append((0.5 * g,
+                                          [(2 * p + sa, True),
+                                           (2 * q + sb, True),
+                                           (2 * s2 + sb, False),
+                                           (2 * r + sa, False)]))
+    H = _fermion_assemble(nq, terms)
+    diag = np.full(dim, float(const))
     for i in range(nsp):
-        num = ann[2 * i].T @ ann[2 * i] + ann[2 * i + 1].T @ ann[2 * i + 1]
+        num = _occ_diag(nq, 2 * i) + _occ_diag(nq, 2 * i + 1)
         if lin[i] != 0.0:
-            H = H + lin[i] * num
+            diag += lin[i] * num
         if quad[i] != 0.0:
-            dev = num - eye
-            H = H - quad[i] * (dev @ dev)
-    if extras:
-        ndiag = [np.asarray((ann[q].T @ ann[q]).todense()).diagonal()
-                 for q in range(2 * nsp)]
-        acc = np.zeros(dim)
-        for coef, pattern in extras:
-            dv = np.full(dim, coef)
-            for so, occ in pattern:
-                dv = dv * (ndiag[so] if occ else 1.0 - ndiag[so])
-            acc += dv
-        H = H + sparse.diags(acc)
-    return H.tocsr()
+            diag -= quad[i] * (num - 1.0) ** 2
+    for coef, pattern in extras:
+        dv = np.full(dim, coef)
+        for so, occ in pattern:
+            od = _occ_diag(nq, so)
+            dv = dv * (od if occ else 1.0 - od)
+        diag += dv
+    return (H + sparse.diags(diag)).tocsr()
 
 
 def _ground_vec(M):
@@ -2620,12 +2674,13 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         h_own = T[idx] + sum(V[c][idx] for c in b)
         eri_b = eri[np.ix_(b, b, b, b)]
         enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj > ii)
-        Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b)
+        Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b,
+                               dense=False)
         _, Vec = eigsh(Hb, k=1, which="SA")
         v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
         e = float(v @ (Hb @ v))
-        upper += e + 8 * (len(Hb) + 2) * np.finfo(float).eps \
-            * (float(np.linalg.norm(Hb, 1)) + abs(e))
+        upper += e + 8 * (Hb.shape[0] + 2) * np.finfo(float).eps \
+            * (float(np.abs(Hb).sum(axis=0).max()) + abs(e))
         ann = _jw_ann(2 * len(b))
         gam = np.zeros((2 * len(b), 2 * len(b)))
         for P in range(2 * len(b)):
