@@ -1377,6 +1377,26 @@ def test_h_chain_bracket_tightens_with_ell():
     assert tight.err < wide.err
 
 
+def test_sectored_certification_matches_dense():
+    """Occupation-sector certification (the ell=7 enabler — every window
+    term conserves N_up/N_down, so the 4^ell space block-diagonalizes;
+    dense Cholesky runs per sector) must reproduce the dense
+    eigen_bracket on the same operator, with a rigorous ~0 off-sector
+    penalty rather than an assumption."""
+    from scipy import sparse
+    T, V, eri, _ = sf._h_chain_basis(6, 1.8)
+    idx = np.ix_(range(3), range(3))
+    hw = (T + V.sum(0))[idx]
+    Hw = sf._window_operator(hw, eri[np.ix_(range(3), range(3),
+                                            range(3), range(3))],
+                             np.zeros(3), np.full(3, 0.1), 0.3)
+    lo, up = sf._eigen_bracket_sectored(Hw.tocsr())
+    dense = sf.eigen_bracket(np.asarray(Hw.todense()))
+    assert abs(lo - (dense.value - dense.err)) < 1e-9
+    assert abs(up - (dense.value + dense.err)) < 1e-9
+    assert lo <= dense.value <= up
+
+
 def test_h_chain_ell5_hierarchy_knob():
     """The hierarchy knob at ell=5 (1024-dim windows): steep payoff —
     H6 width/atom 244 (ell=3) -> 89 (ell=4) -> 66 mHa (ell=5), still

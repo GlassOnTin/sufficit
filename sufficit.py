@@ -2237,6 +2237,51 @@ def _ground_vec(M):
     return float(lam[0]), Vv[:, 0]
 
 
+@functools.lru_cache(maxsize=None)
+def _sector_indices(nsp):
+    """Occupation sectors (N_up, N_down) of the 4^nsp window basis (JW
+    qubit q <-> bit nq-1-q; even qubits spin-up). Every window term
+    conserves both, so window operators are block-diagonal here — the
+    certification wall at large ell is dissolved by symmetry, not by
+    sparse factorization: the largest ell=7 sector is ~1225-dim."""
+    nq, dim = 2 * nsp, 4 ** nsp
+    ks = np.arange(dim)
+    nup = sum((ks >> (nq - 1 - q)) & 1 for q in range(0, nq, 2))
+    ndn = sum((ks >> (nq - 1 - q)) & 1 for q in range(1, nq, 2))
+    sectors = {}
+    for k in range(dim):
+        sectors.setdefault((int(nup[k]), int(ndn[k])), []).append(k)
+    return tuple(np.array(ix) for ix in sectors.values())
+
+
+def _sector_mask(nsp):
+    """Boolean mask of sector-conserving entries for a 4^nsp operator."""
+    nq, dim = 2 * nsp, 4 ** nsp
+    ks = np.arange(dim)
+    nup = sum((ks >> (nq - 1 - q)) & 1 for q in range(0, nq, 2))
+    ndn = sum((ks >> (nq - 1 - q)) & 1 for q in range(1, nq, 2))
+    key = nup * (nsp + 1) + ndn
+    return key[:, None] == key[None, :]
+
+
+def _eigen_bracket_sectored(M):
+    """(lower, upper) bracket on lambda_min of a sparse symmetric window
+    operator via its occupation sectors: dense eigen_bracket per sector,
+    plus a rigorous additive penalty for any off-sector coupling
+    (Frobenius bound; ~0 by construction, never assumed)."""
+    nsp = round(math.log(M.shape[0]) / math.log(4))
+    total_f2 = float((M.multiply(M)).sum())
+    lows, ups, diag_f2 = [], [], 0.0
+    for idx in _sector_indices(nsp):
+        sub = np.asarray(M[np.ix_(idx, idx)].todense())
+        diag_f2 += float(np.sum(sub * sub))
+        c = eigen_bracket(sub)
+        lows.append(c.value - c.err)
+        ups.append(c.value + c.err)
+    off = math.sqrt(max(0.0, total_f2 - diag_f2))
+    return min(lows) - off, min(ups) + off
+
+
 def _window_multipliers(mats, D, iters):
     """Proximal-bundle ascent over PER-OVERLAP Hermitian corrections
     C_1..C_{nw-1} (see history). Scaled for large D (ell=6: D=1024,
@@ -2305,6 +2350,10 @@ def _window_multipliers(mats, D, iters):
                 tot += s1 * float(np.sum(A * (Cs[b] @ A)))
         return tot
 
+    # C restricted to sector-conserving form: WLOG by symmetrization
+    # (conjugating by e^{i theta N} leaves the objective invariant), and
+    # it keeps the correction krons sparse for sectored certification
+    cmask = _sector_mask(round(math.log(D) / math.log(4)))
     Cs = [np.zeros((D, D)) for _ in range(nov)]
     tau = 1.0
     fref, a0, f0 = oracle(Cs)
@@ -2327,6 +2376,8 @@ def _window_multipliers(mats, D, iters):
             for bb in range(nov):
                 for s1, Af in F[i][bb]:
                     Cnew[bb] += (tau * mu[i] * s1) * (Af @ Af.T)
+        for bb in range(nov):
+            Cnew[bb] *= cmask
         fnew, an, fn = oracle(Cnew)
         A.append(an)
         F.append(fn)
@@ -2530,23 +2581,22 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
     else:
         mats = assemble(eps)
     if correction_iters and nw > 1:
+        from scipy import sparse as sp
         D = 4 ** (ell - 1)
         Cs = _window_multipliers(mats, D, correction_iters)
-        IE = np.eye(4 ** ell // D)
-        dense = []
+        IE = sp.identity(4 ** ell // D, format="csr")
+        out = []
         for w in range(nw):
-            M = mats[w].toarray()
+            M = mats[w]
             if w > 0:
-                M = M + np.kron(Cs[w - 1], IE)
+                M = M + sp.kron(sp.csr_matrix(Cs[w - 1]), IE, format="csr")
             if w < nw - 1:
-                M = M - np.kron(IE, Cs[w])
-            dense.append(M)
-        mats = dense
-    else:
-        mats = [M.toarray() for M in mats]
+                M = M - sp.kron(IE, sp.csr_matrix(Cs[w]), format="csr")
+            out.append(M.tocsr())
+        mats = out
     for M in mats:
-        c = eigen_bracket(M)
-        lower += c.value - c.err
+        lo, _up = _eigen_bracket_sectored(M)
+        lower += lo
 
     # upper: product of exactly solved blocks, cross energy by exact
     # factorization of block-diagonal spin-orbital 1-RDMs
