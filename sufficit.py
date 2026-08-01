@@ -2222,14 +2222,15 @@ def _window_operator(hw, eriw, lin, quad, const, extras=()):
                 dv = dv * (ndiag[so] if occ else 1.0 - ndiag[so])
             acc += dv
         H = H + sparse.diags(acc)
-    return np.asarray(H.todense())
+    return H.tocsr()
 
 
 def _ground_vec(M):
     """Ground eigenpair; Lanczos above small dims (only the vector is
     needed by the multiplier oracle and the eps loop)."""
-    if len(M) < 512:
-        lam, Vv = np.linalg.eigh(M)
+    if M.shape[0] < 512:
+        lam, Vv = np.linalg.eigh(np.asarray(M.todense())
+                                 if not isinstance(M, np.ndarray) else M)
         return lam[0], Vv[:, 0]
     from scipy.sparse.linalg import eigsh
     lam, Vv = eigsh(M, k=1, which="SA")
@@ -2237,78 +2238,111 @@ def _ground_vec(M):
 
 
 def _window_multipliers(mats, D, iters):
-    """Proximal-bundle ascent of sum_w lambda_min over PER-OVERLAP
-    Hermitian corrections C_1..C_{nw-1}: window w gains +C_w x I on its
-    left overlap (w >= 1) and -I x C_{w+1} on its right (w <= nw-2), so
-    the sum telescopes exactly at the qubit level for any C's — validity
-    never constrains the optimizer. Jointly concave; exact affine cuts
-    from window ground vectors (each cuts into the two C's touching it).
-    Shared-C is the diagonal of this family; per-overlap freedom is
-    where the finite chain's edge effects live. Returns [C_w]."""
-    dim, nw = len(mats[0]), len(mats)
-    E = dim // D
-    IE = np.eye(E)
-    nov = nw - 1
+    """Proximal-bundle ascent over PER-OVERLAP Hermitian corrections
+    C_1..C_{nw-1} (see history). Scaled for large D (ell=6: D=1024,
+    millions of parameters): window operators stay sparse with
+    kron-structured matvecs (kron(C,I)x = (C X).ravel — never
+    materialized), the Lanczos oracle is warm-started and loose-tol
+    (it only guides the optimizer; certification is separate), and cuts
+    are stored FACTORED — each overlap block is +Vl Vl' - Vr' Vr, two
+    rank-E outer products, so gram entries are ||A'B||_F^2 sums. C stays
+    dense per overlap (matvec-optimal). Returns [C_w]."""
+    from scipy.sparse.linalg import LinearOperator, eigsh
+    dim = mats[0].shape[0]
+    nw, E, nov = len(mats), dim // D, len(mats) - 1
 
-    def unflat(x):
-        return [x[k * D * D:(k + 1) * D * D].reshape(D, D)
-                for k in range(nov)]
+    def ground(w, Cs, v0):
+        if dim < 512:
+            M = mats[w].toarray()
+            if w >= 1:
+                M = M + np.kron(Cs[w - 1], np.eye(E))
+            if w <= nw - 2:
+                M = M - np.kron(np.eye(E), Cs[w])
+            lam, Vv = np.linalg.eigh(M)
+            return lam[0], Vv[:, 0]
 
-    def build(w, Cs):
-        M = mats[w]
-        if w >= 1:
-            M = M + np.kron(Cs[w - 1], IE)
-        if w <= nw - 2:
-            M = M - np.kron(IE, Cs[w])
-        return M
+        def mv(x):
+            y = mats[w] @ x
+            if w >= 1:
+                y = y + (Cs[w - 1] @ x.reshape(D, E)).ravel()
+            if w <= nw - 2:
+                y = y - (x.reshape(E, D) @ Cs[w]).ravel()
+            return y
+        op = LinearOperator((dim, dim), matvec=mv, dtype=float)
+        # NO v0 warm start: measured to degrade the bound (66 -> 87
+        # mHa/atom at H6/ell=5) — it biases the Lanczos subspace toward
+        # the previous vector, producing correlated, less informative
+        # cuts. The sparse matvecs alone carry the speedup.
+        lam, Vv = eigsh(op, k=1, which="SA", tol=1e-9, maxiter=5000)
+        return float(lam[0]), Vv[:, 0]
 
-    def oracle(x):
-        Cs = unflat(x)
+    def oracle(Cs):
         tot, const = 0.0, 0.0
-        G = [np.zeros((D, D)) for _ in range(nov)]
+        facs = [[] for _ in range(nov)]     # per overlap: (sign, D x E)
         for w in range(nw):
-            lam0, v = _ground_vec(build(w, Cs))
+            lam0, v = ground(w, Cs, None)
             tot += lam0
             const += float(v @ (mats[w] @ v))
-            Vl, Vr = v.reshape(D, E), v.reshape(E, D)
             if w >= 1:
-                G[w - 1] += Vl @ Vl.T
+                facs[w - 1].append((1.0, v.reshape(D, E).copy()))
             if w <= nw - 2:
-                G[w] -= Vr.T @ Vr
-        return tot, const, np.concatenate([g.ravel() for g in G])
+                facs[w].append((-1.0, np.ascontiguousarray(
+                    v.reshape(E, D).T)))
+        return tot, const, facs
 
-    xref, tau = np.zeros(nov * D * D), 1.0
-    fref, a0, g0 = oracle(xref)
-    A, G = [a0], [g0]
-    gram = np.array([[float(g0 @ g0)]])   # maintained incrementally
-    best = (fref, xref.copy())
+    def cut_dot(f1, f2):
+        tot = 0.0
+        for b in range(nov):
+            for s1, A in f1[b]:
+                for s2, B in f2[b]:
+                    tot += s1 * s2 * float(np.sum((A.T @ B) ** 2))
+        return tot
+
+    def cut_dot_C(f, Cs):
+        tot = 0.0
+        for b in range(nov):
+            for s1, A in f[b]:
+                tot += s1 * float(np.sum(A * (Cs[b] @ A)))
+        return tot
+
+    Cs = [np.zeros((D, D)) for _ in range(nov)]
+    tau = 1.0
+    fref, a0, f0 = oracle(Cs)
+    A, F = [a0], [f0]
+    gram = np.array([[cut_dot(f0, f0)]])
+    best = (fref, [c.copy() for c in Cs])
     for _ in range(iters - 1):
         m = len(A)
-        b = np.array([A[i] + float(G[i] @ xref) for i in range(m)])
+        b = np.array([A[i] + cut_dot_C(F[i], Cs) for i in range(m)])
         mu = np.full(m, 1.0 / m)
         eta = 1.0 / (1.0 + tau * float(np.max(np.abs(gram))))
         for _ in range(250):
             grad = b + tau * (gram @ mu)
             mu = mu * np.exp(-eta * (grad - grad @ mu))
             mu /= mu.sum()
-        g = sum(w_ * Gi for w_, Gi in zip(mu, G))
-        xnew = xref + tau * g
-        fnew, an, gn = oracle(xnew)
+        Cnew = [c.copy() for c in Cs]
+        for i in range(m):
+            if mu[i] < 1e-12:
+                continue
+            for bb in range(nov):
+                for s1, Af in F[i][bb]:
+                    Cnew[bb] += (tau * mu[i] * s1) * (Af @ Af.T)
+        fnew, an, fn = oracle(Cnew)
         A.append(an)
-        G.append(gn)
-        row = np.array([float(gn @ Gi) for Gi in G])
-        gram = np.block([[gram, row[:-1, None]], [row[None, :-1],
-                                                  np.array([[row[-1]]])]])
-        if len(A) > 40:                    # cut vectors are large at
-            A, G = A[-40:], G[-40:]        # big D; cap the bundle
+        F.append(fn)
+        row = np.array([cut_dot(fn, Fi) for Fi in F])
+        gram = np.block([[gram, row[:-1, None]],
+                         [row[None, :-1], np.array([[row[-1]]])]])
+        if len(A) > 40:
+            A, F = A[-40:], F[-40:]
             gram = gram[-40:, -40:]
         if fnew > fref:
-            xref, fref, tau = xnew, fnew, min(tau * 1.4, 50.0)
+            Cs, fref, tau = Cnew, fnew, min(tau * 1.4, 50.0)
         else:
             tau = max(tau * 0.6, 1e-3)
         if fref > best[0]:
-            best = (fref, xref.copy())
-    return unflat(best[1])
+            best = (fref, [c.copy() for c in Cs])
+    return best[1]
 
 
 def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
@@ -2457,13 +2491,15 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
     eps = np.ones(len(cs_terms))
 
     def assemble(eps_v):
+        from scipy import sparse
         acc = [np.zeros(dim) for _ in range(nw)]
         for k, (c, _, _) in enumerate(cs_terms):
             for w, wt, dv in sides[k][0]:
                 acc[w] -= c * eps_v[k] * wt * dv
             for w, wt, dv in sides[k][1]:
                 acc[w] -= c / eps_v[k] * wt * dv
-        return [base[w] + np.diag(acc[w]) for w in range(nw)]
+        return [(base[w] + sparse.diags(acc[w])).tocsr()
+                for w in range(nw)]
 
     # the naive balance update eps* = sqrt(<R>/<L>) is NOT an ascent step
     # (it optimizes against the current minimizers; lambda_min then
@@ -2475,7 +2511,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         mats = assemble(eps)
         tot, p2 = 0.0, []
         for M in mats:
-            lam0, v = _ground_vec(M)
+            lam0, v = _ground_vec(M.toarray() if M.shape[0] < 512 else M)
             tot += lam0
             p2.append(v ** 2)
         if tot > best_tot:
@@ -2487,7 +2523,8 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
             eps[k] = min(20.0, max(0.05, eps[k] ** 0.7 * bal ** 0.3))
     if cs_rounds:
         mats = assemble(eps)
-        tot = sum(np.linalg.eigvalsh(M)[0] for M in mats)
+        tot = sum(_ground_vec(M.toarray() if M.shape[0] < 512 else M)[0]
+                  for M in mats)
         if tot < best_tot:
             eps, mats = best_eps, assemble(best_eps)
     else:
@@ -2496,13 +2533,17 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         D = 4 ** (ell - 1)
         Cs = _window_multipliers(mats, D, correction_iters)
         IE = np.eye(4 ** ell // D)
+        dense = []
         for w in range(nw):
-            M = mats[w]
+            M = mats[w].toarray()
             if w > 0:
                 M = M + np.kron(Cs[w - 1], IE)
             if w < nw - 1:
                 M = M - np.kron(IE, Cs[w])
-            mats[w] = M
+            dense.append(M)
+        mats = dense
+    else:
+        mats = [M.toarray() for M in mats]
     for M in mats:
         c = eigen_bracket(M)
         lower += c.value - c.err
