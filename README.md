@@ -70,3 +70,8 @@ Requirements: `numpy`, `scipy`, `mpmath` (tests only). Run the suite with
 From [VISION.md](VISION.md): the first useful contribution is an attack — a
 rewrite whose claimed bound fails to compose, filed as an issue with a
 counterexample.
+
+## License
+
+[AGPL-3.0](LICENSE). Strong copyleft, network use included: improvements to
+the rewrite library stay in the commons, which is the flywheel working.
