@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Case: the hydrogen molecule, bracketed from raw integrals</title>
+<style>
+  :root { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472; --blue:#1D6FA5;
+    --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0; --panel-ink:#333C46; }
+  @media (prefers-color-scheme: dark) { :root { --paper:#14181D; --ink:#E6E4DE;
+    --muted:#9AA3AD; --blue:#3E8CC2; --rust:#C97A52; --hairline:#2A313A;
+    --panel:#1B2129; --panel-ink:#C7CBD1; } }
+  :root[data-theme="dark"] { --paper:#14181D; --ink:#E6E4DE; --muted:#9AA3AD;
+    --blue:#3E8CC2; --rust:#C97A52; --hairline:#2A313A; --panel:#1B2129;
+    --panel-ink:#C7CBD1; }
+  :root[data-theme="light"] { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472;
+    --blue:#1D6FA5; --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0;
+    --panel-ink:#333C46; }
+  html { background: var(--paper); }
+  body { margin:0; padding:0 1.25rem; color:var(--ink); background:var(--paper);
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-size:1.05rem; line-height:1.6; }
+  main { max-width:44rem; margin:0 auto; padding:3.5rem 0 5rem; }
+  h1 { font-size:2.1rem; line-height:1.15; margin:0.3rem 0 0.6rem;
+    letter-spacing:-0.01em; text-wrap:balance; }
+  h2 { font-size:1.35rem; margin:2.6rem 0 0.7rem; }
+  .eyebrow { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    font-size:0.72rem; text-transform:uppercase; letter-spacing:0.14em;
+    color:var(--muted); margin:0; }
+  .eyebrow a { color: var(--blue); text-decoration: none; }
+  .dek { font-size:1.18rem; color:var(--muted); margin:0 0 1.8rem; }
+  pre { background:var(--panel); padding:1rem 1.1rem; border-radius:4px;
+    overflow-x:auto; font-size:0.78rem; line-height:1.5; max-height:32rem;
+    overflow-y:auto;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  code { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    font-size:0.88em; background:var(--panel); padding:0.05em 0.3em;
+    border-radius:3px; }
+  figure { margin:1.6rem 0; padding:1.2rem 1rem 0.9rem; background:var(--panel);
+    border-radius:4px; overflow-x:auto; }
+  figure svg { display:block; margin:0 auto; max-width:100%; height:auto; }
+  figcaption { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    font-size:0.82rem; color:var(--muted); margin-top:0.8rem; line-height:1.5; }
+  .board-ink { stroke:var(--panel-ink); } .board-text { fill:var(--panel-ink);
+    font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; }
+  .blue-ink { stroke:var(--blue); } .blue-fill { fill:var(--blue); }
+  .rust-ink { stroke:var(--rust); } .rust-fill { fill:var(--rust); }
+  li { margin-bottom:0.5rem; }
+</style>
+<main>
+<p class="eyebrow"><a href="../index.html">sufficit</a> · certified case</p>
+<h1>H₂ from scratch: a bond with error bars of ±1.5·10⁻¹³</h1>
+<p class="dek">Gaussian integrals in closed form, second quantization, and a two-sided bracket — the entire pipeline is in the module, and the dissociation limit is predicted by an independent calculation it must agree with.</p>
+<h2>The theory, a priori</h2><p>The upper bound is the variational theorem: any trial state's energy is a ceiling on the truth. The lower bound is a feasibility proof: <code>H − c·I</code> admits a Cholesky factorization exactly when the ground energy is at least <code>c</code>, and bisection turns that yes/no question into a floor. Both bounds carry explicit floating-point margins. At large separation, monopole cancellation is exact for s-orbitals, so the molecule must dissociate to exactly two isolated atoms — computed separately, giving the a&nbsp;priori line the curve must meet.</p>
+<h2>The code (rendered from the module, not copied)</h2><pre>def hydrogen_atom_energy():
+    """&lt;phi|T + V|phi&gt; for a single STO-3G hydrogen atom (the
+    dissociation reference), from the same closed forms."""
+    prims = _sto3g_h()
+    e = s = 0.0
+    for a, ca in prims:
+        for b, cb in prims:
+            p = a + b
+            s += ca * cb * (math.pi / p) ** 1.5
+            e += ca * cb * (3 * a * b / p * (math.pi / p) ** 1.5
+                            - 2 * math.pi / p)
+    return e / s
+
+
+def h2_energy_bracket(R: float) -&gt; Certified:
+    """Certified two-sided bracket on the H2/STO-3G total ground energy
+    (hartree) at bond length R bohr — over all particle-number sectors."""
+    c = eigen_bracket(sto3g_h2_hamiltonian(R))
+    return replace(c, provenance=(f"h2-sto3g-bracket R={R:g} "
+                                  + c.provenance[0],))
+
+
+def eigen_bracket(H: np.ndarray, tol: float = None,
+                  fp32: bool = False) -&gt; Certified:
+    """Certified bracket on lambda_min(H), H Hermitian: value +- err
+    contains the true ground energy. Raises if tol is given and the
+    achieved width exceeds it. fp32=True runs the Cholesky feasibility
+    proofs in float32 (optionally on GPU via use_gpu) with rigor kept
+    honest by two additional carried terms: the MEASURED casting error
+    ||H - fl32(H)||_F (computed exactly in f64, a posteriori — no
+    assumption) and Higham-style margins at fp32 eps. Pads land at
+    ~1e-4-scale — negligible against mHa brackets."""
+    H = np.asarray(H)
+    n = len(H)
+    if n &lt; 64:                              # dense: exact vector, and no
+        _, V = np.linalg.eigh(H)            # Lanczos k &gt;= N warnings on
+        v = V[:, 0]                         # tiny sector matrices
+    else:
+        from scipy.sparse.linalg import eigsh
+        try:
+            _, V = eigsh(H, k=1, which="SA")
+            v = V[:, 0]
+        except Exception:                   # heuristic source; bracket
+            v = np.ones(n)                  # stays valid, just looser
+    v = v / np.linalg.norm(v)
+    up = float(np.real(v.conj() @ (H @ v)))     # variational theorem
+
+    if fp32:
+        H32 = H.astype(np.float32)
+        cast_err = float(np.linalg.norm(H - H32.astype(np.float64)))
+        eps_w = float(np.finfo(np.float32).eps)
+        if _GPU["on"]:
+            import cupy as xp
+            Hw_, eye_w = xp.asarray(H32), xp.eye(n, dtype=xp.float32)
+        else:
+            xp, Hw_, eye_w = np, H32, np.eye(n, dtype=np.float32)
+
+        def psd(c):
+            # CuPy's non-PSD behaviour varies by version: exception OR
+            # NaNs. Belt and braces — any doubt counts as failure, which
+            # only loosens the bound (the safe direction).
+            try:
+                L = xp.linalg.cholesky(Hw_ - np.float32(c) * eye_w)
+                return bool(xp.isfinite(L).all())
+            except Exception:
+                return False
+    else:
+        cast_err, eps_w = 0.0, float(np.finfo(np.float64).eps)
+
+        def psd(c):
+            try:
+                np.linalg.cholesky(H - c * np.eye(n))
+                return True
+            except np.linalg.LinAlgError:
+                return False
+
+    d = np.real(np.diag(H))
+    gersh = float(np.min(d - (np.sum(np.abs(H), axis=1) - np.abs(d))))
+    r = float(np.linalg.norm(H @ v - up * v))
+    lo = up - 2 * r - max(1e-12, 4 * eps_w) * (1 + abs(up))
+    if not psd(lo):
+        # Gershgorin IS a certificate by itself — no Cholesky proof
+        # needed (and for exactly-degenerate cases H - gersh*I is
+        # singular, so demanding one would wrongly fail)
+        lo = gersh
+    hi = up
+    floor = max(1e-13, 0.25 * eps_w) * (1 + abs(up))
+    for _ in range(60):
+        if hi - lo &lt;= floor:
+            break
+        c = 0.5 * (lo + hi)
+        if psd(c):
+            lo = c
+        else:
+            hi = c
+    # carry the FP margins: the Rayleigh quotient's evaluation error
+    # (f64) and Cholesky's backward-stability slack at the WORKING eps
+    # (success proves PSD of H - cI + E, ||E|| &lt;~ n eps ||H||, Higham),
+    # plus the measured fp32 casting error when applicable
+    norm1 = float(np.linalg.norm(H, 1))
+    up = up + 8 * (n + 2) * np.finfo(np.float64).eps * (norm1 + abs(up))
+    lo = lo - 8 * (n + 2) * eps_w * (norm1 + abs(up)) - cast_err
+    value, err = 0.5 * (up + lo), 0.5 * (up - lo)
+    if tol is not None and err &gt; tol:
+        raise ValueError(f"bracket width {err:.3g} exceeds tol={tol:.3g} "
+                         "(floating-point floor)")
+    return Certified(value, err, Tier.RIGOROUS,
+                     (f"eigen-bracket variational-upper cholesky-lower "
+                      f"width={2 * err:.3g} +fp",))
+</pre>
+<h2>The certification, executed and drawn</h2><figure><svg viewBox="0 0 640 340" role="img" aria-label="Certified
+potential energy curve of the hydrogen molecule">
+<line x1="58" y1="278.0" x2="624" y2="278.0" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="281.5" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">-1.15</text><line x1="58" y1="174.0" x2="624" y2="174.0" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="177.5" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">-1.05</text><line x1="58" y1="70.0" x2="624" y2="70.0" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="73.5" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">-0.95</text><text x="85.0" y="322" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">1 bohr</text><text x="219.7" y="322" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">2 bohr</text><text x="354.5" y="322" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">3 bohr</text><text x="489.2" y="322" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">4 bohr</text><text x="624.0" y="322" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">5 bohr</text>
+<line x1="58" y1="52.5" x2="624"
+      y2="52.5" class="rust-ink" stroke-width="1.4"
+      stroke-dasharray="5 4" opacity="0.8"/>
+<text x="620" y="46.5" text-anchor="end"
+      class="board-text" font-size="10.5" fill="var(--rust)">two isolated
+ H atoms (computed independently)</text>
+<path d="M 58.0 77.9 L 85.0 204.2 L 111.9 253.8 L 138.9 264.8 L 165.8 256.0 L 192.8 237.3 L 219.7 214.1 L 246.7 189.3 L 273.6 165.2 L 300.6 142.8 L 327.5 123.2 L 354.5 106.6 L 381.4 93.0 L 408.4 82.4 L 435.3 74.2 L 462.3 68.0 L 489.2 63.5 L 516.2 60.3 L 543.1 57.9 L 570.1 56.3 L 597.0 55.1 L 624.0 54.3" fill="none" class="blue-ink" stroke-width="2.2"/>
+<circle cx="138.9" cy="264.8" r="5"
+        class="blue-fill"/>
+<text x="138.9" y="284.8"
+      text-anchor="middle" class="board-text" font-size="10.5">equilibrium</text>
+<text x="64" y="32" class="board-text" font-size="11">
+total energy (hartree)</text></svg><figcaption>The certified potential curve (bracket widths ~10⁻¹³ hartree — about ten orders of magnitude thinner than this line). The dashed asymptote is not a fit: it is an independent calculation the curve is required to approach.</figcaption></figure>
+<h2>Verified in this run</h2><ul><li>Maximum bracket width over the curve: <strong>3.2e-13</strong> hartree — versus chemical accuracy at 1.6·10⁻³.</li><li>Dissociation vs two isolated atoms: <strong>6.1e-14</strong> hartree difference at R = 50.</li><li>Equilibrium bracket: <strong>-1.137275944 ± 1e-13</strong> at R = 1.4 bohr (published FCI/STO-3G ≈ −1.13727 at 1.4).</li></ul>
+</main>

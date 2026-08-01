@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Case: the hierarchy knob on hydrogen chains</title>
+<style>
+  :root { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472; --blue:#1D6FA5;
+    --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0; --panel-ink:#333C46; }
+  @media (prefers-color-scheme: dark) { :root { --paper:#14181D; --ink:#E6E4DE;
+    --muted:#9AA3AD; --blue:#3E8CC2; --rust:#C97A52; --hairline:#2A313A;
+    --panel:#1B2129; --panel-ink:#C7CBD1; } }
+  :root[data-theme="dark"] { --paper:#14181D; --ink:#E6E4DE; --muted:#9AA3AD;
+    --blue:#3E8CC2; --rust:#C97A52; --hairline:#2A313A; --panel:#1B2129;
+    --panel-ink:#C7CBD1; }
+  :root[data-theme="light"] { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472;
+    --blue:#1D6FA5; --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0;
+    --panel-ink:#333C46; }
+  html { background: var(--paper); }
+  body { margin:0; padding:0 1.25rem; color:var(--ink); background:var(--paper);
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-size:1.05rem; line-height:1.6; }
+  main { max-width:44rem; margin:0 auto; padding:3.5rem 0 5rem; }
+  h1 { font-size:2.1rem; line-height:1.15; margin:0.3rem 0 0.6rem;
+    letter-spacing:-0.01em; text-wrap:balance; }
+  h2 { font-size:1.35rem; margin:2.6rem 0 0.7rem; }
+  .eyebrow { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    font-size:0.72rem; text-transform:uppercase; letter-spacing:0.14em;
+    color:var(--muted); margin:0; }
+  .eyebrow a { color: var(--blue); text-decoration: none; }
+  .dek { font-size:1.18rem; color:var(--muted); margin:0 0 1.8rem; }
+  pre { background:var(--panel); padding:1rem 1.1rem; border-radius:4px;
+    overflow-x:auto; font-size:0.78rem; line-height:1.5; max-height:32rem;
+    overflow-y:auto;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  code { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    font-size:0.88em; background:var(--panel); padding:0.05em 0.3em;
+    border-radius:3px; }
+  figure { margin:1.6rem 0; padding:1.2rem 1rem 0.9rem; background:var(--panel);
+    border-radius:4px; overflow-x:auto; }
+  figure svg { display:block; margin:0 auto; max-width:100%; height:auto; }
+  figcaption { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    font-size:0.82rem; color:var(--muted); margin-top:0.8rem; line-height:1.5; }
+  .board-ink { stroke:var(--panel-ink); } .board-text { fill:var(--panel-ink);
+    font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; }
+  .blue-ink { stroke:var(--blue); } .blue-fill { fill:var(--blue); }
+  .rust-ink { stroke:var(--rust); } .rust-fill { fill:var(--rust); }
+  li { margin-bottom:0.5rem; }
+</style>
+<main>
+<p class="eyebrow"><a href="../index.html">sufficit</a> · certified case</p>
+<h1>Pay for precision: the window-length ladder, measured</h1>
+<p class="dek">The certified bracket on a hydrogen chain tightens roughly 2× for every unit of window length ℓ, at cost 4<sup>ℓ</sup> — independent of how long the chain is.</p>
+<h2>The theory, a priori</h2><p>Slide a window of ℓ atoms along the chain; weight each interaction by the reciprocal of how many windows contain it, so the windows sum to exactly the whole Hamiltonian; then the true energy is at least the sum of certified window floors. Long-range Coulomb terms are absorbed exactly via a charge-neutral rewrite and the operator inequality <code>g(nᵢ−1)(nⱼ−1) ⪰ −(g/2)[(nᵢ−1)² + (nⱼ−1)²]</code>; telescoping corrections on window overlaps — optimized by a proximal bundle, valid for any choice — tighten every window at once. The upper bound is a product of exactly-solved blocks. Cost depends on ℓ, never on chain length.</p>
+<h2>The orchestration (rendered from the module)</h2><pre>def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
+                    correction_iters: int = 60,
+                    cs_rounds: int = 2, fp32: bool = False) -&gt; Certified:
+    """Certified two-sided bracket on the ground energy of the n-atom
+    hydrogen chain (STO-3G, spacing d bohr), at window cost 4^ell.
+    correction_iters=0 disables the shared-multiplier bundle ascent."""
+    T, V, eri, _ = _h_chain_basis(n, d)
+    h_full = T + V.sum(0)
+
+    def mcount(lo, hi):
+        return min(lo, n - ell) - max(0, hi - ell + 1) + 1
+
+    nw = n - ell + 1
+    hW = [np.zeros((ell, ell)) for _ in range(nw)]
+    eriW = [np.zeros((ell, ell, ell, ell)) for _ in range(nw)]
+    linW = [np.zeros(ell) for _ in range(nw)]
+    quadW = [np.zeros(ell) for _ in range(nw)]
+    constW = [0.0] * nw
+    lower_const, penalty = 0.0, 0.0
+
+    cs_terms = []      # (coef, left pattern, right pattern): absorbed as
+                       # -coef*(eps*L + R/eps), eps tuned by the outer loop
+
+    def side_fits(modes):
+        atoms = [m[0] // 2 for m in modes]
+        return max(atoms) - min(atoms) &lt; ell
+
+    def windows_of(lo, hi):
+        return range(max(0, hi - ell + 1), min(lo, n - ell) + 1)
+
+    # one-electron terms
+    for i in range(n):
+        for j in range(n):
+            lo, hi = min(i, j), max(i, j)
+            if hi - lo &lt; ell:
+                hij = h_full[i, j]
+                if i == j:      # far attractions leave for the F pairs
+                    hij -= sum(V[c, i, i] for c in range(n)
+                               if abs(c - i) &gt;= ell)
+                m = mcount(lo, hi)
+                for w in windows_of(lo, hi):
+                    hW[w][i - w, j - w] += hij / m
+            elif i &lt; j:
+                # far hopping: h(a'a + h.c.) &gt;= -|h|(eps n_i + n_j/eps)
+                # per spin, eps tuned by the outer loop
+                for sp in range(2):
+                    cs_terms.append((abs(h_full[i, j]),
+                                     ((2 * i + sp, True),),
+                                     ((2 * j + sp, True),)))
+    # two-electron terms, enumerated exactly as the assembly does
+    for p in range(n):
+        for q in range(n):
+            for r in range(n):
+                for s2 in range(n):
+                    g = eri[p, r, q, s2]
+                    if abs(g) &lt; 1e-14:
+                        continue
+                    lo, hi = min(p, q, r, s2), max(p, q, r, s2)
+                    if hi - lo &lt; ell:
+                        m = mcount(lo, hi)
+                        for w in windows_of(lo, hi):
+                            eriW[w][p - w, r - w, q - w, s2 - w] += g / m
+                    elif p == r and q == s2 and abs(p - q) &gt;= ell:
+                        pass    # the direct far pair, handled below
+                    elif (r, s2, p, q) &lt; (p, q, r, s2):
+                        pass    # h.c. partner: processed once, below
+                    else:
+                        # Cauchy-Schwarz absorption: split the term's modes
+                        # at its largest atom gap; Z-strings vanish in XX',
+                        # which for distinct modes is a pure occupation
+                        # product (creation -&gt; n, annihilation -&gt; 1-n; the
+                        # reverse for Y'Y). |g| only — no sign bookkeeping.
+                        atoms = sorted({p, q, r, s2})
+                        gaps = [atoms[k + 1] - atoms[k]
+                                for k in range(len(atoms) - 1)]
+                        cut = atoms[int(np.argmax(gaps))]
+                        ok = True
+                        for sa in range(2):
+                            for sb in range(2):
+                                modes = [(2 * p + sa, True),
+                                         (2 * q + sb, True),
+                                         (2 * s2 + sb, False),
+                                         (2 * r + sa, False)]
+                                if len({m_[0] for m_ in modes}) &lt; 4:
+                                    ok = False
+                                    break
+                                left = [m_ for m_ in modes
+                                        if m_[0] // 2 &lt;= cut]
+                                right = [m_ for m_ in modes
+                                         if m_[0] // 2 &gt; cut]
+                                # XX': keep creation as n, annih as 1-n;
+                                # Y'Y: the reverse
+                                lp = tuple((so, occ) for so, occ in left)
+                                rp = tuple((so, not occ) for so, occ in right)
+                                ok = side_fits(lp) and side_fits(rp)
+                                if not ok:
+                                    break
+                                cs_terms.append((abs(g) / 2, lp, rp))
+                            if not ok:
+                                break
+                        if not ok:
+                            penalty += 2 * abs(g)
+    # far pairs: exact neutral decomposition + operator AM-GM
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j - i &lt; ell:     # near enuc goes to windows
+                m = mcount(i, j)
+                for w in windows_of(i, j):
+                    constW[w] += 1.0 / (d * (j - i)) / m
+                continue
+            g = eri[i, i, j, j]
+            vi, vj = V[j, i, i], V[i, j, j]
+            lower_const += 1.0 / (d * (j - i)) - g
+            for site, linc in ((i, vi + g), (j, vj + g)):
+                m = mcount(site, site)
+                for w in windows_of(site, site):
+                    linW[w][site - w] += linc / m
+                    quadW[w][site - w] += g / 2 / m
+    lower = lower_const - penalty
+    base = [_window_operator(hW[w], eriW[w], linW[w], quadW[w], constW[w])
+            for w in range(nw)]
+    # balanced-eps outer loop: every eps is a valid committed inequality,
+    # so the loop is pure quality. Absorptions are diagonal, so rebuilds
+    # are base + diagonal vector. Optimal eps* = sqrt(&lt;R&gt;/&lt;L&gt;) turns the
+    # cost into the true CS expectation bound 2 c sqrt(&lt;L&gt;&lt;R&gt;).
+    dim, nq = 4 ** ell, 2 * ell
+    ndiag = [((np.arange(dim) &gt;&gt; (nq - 1 - q)) &amp; 1).astype(float)
+             for q in range(nq)]
+
+    def side_data(modes):
+        atoms = [m // 2 for m, _ in modes]
+        lo, hi = min(atoms), max(atoms)
+        m = mcount(lo, hi)
+        out = []
+        for w in windows_of(lo, hi):
+            dv = np.ones(dim)
+            for so, occ in modes:
+                dv = dv * (ndiag[so - 2 * w] if occ
+                           else 1.0 - ndiag[so - 2 * w])
+            out.append((w, 1.0 / m, dv))
+        return out
+
+    sides = [(side_data(L), side_data(R)) for _, L, R in cs_terms]
+    eps = np.ones(len(cs_terms))
+
+    def assemble(eps_v):
+        from scipy import sparse
+        acc = [np.zeros(dim) for _ in range(nw)]
+        for k, (c, _, _) in enumerate(cs_terms):
+            for w, wt, dv in sides[k][0]:
+                acc[w] -= c * eps_v[k] * wt * dv
+            for w, wt, dv in sides[k][1]:
+                acc[w] -= c / eps_v[k] * wt * dv
+        return [(base[w] + sparse.diags(acc[w])).tocsr()
+                for w in range(nw)]
+
+    # the naive balance update eps* = sqrt(&lt;R&gt;/&lt;L&gt;) is NOT an ascent step
+    # (it optimizes against the current minimizers; lambda_min then
+    # re-minimizes and can drop — measured). Damped updates plus
+    # best-by-measured-total tracking make the loop monotone-safe: the
+    # eps=1 start is included, so it can never end worse than it began.
+    best_eps, best_tot = eps.copy(), -math.inf
+    for _ in range(cs_rounds):
+        mats = assemble(eps)
+        tot, p2 = 0.0, []
+        for M in mats:
+            lam0, v = _sectored_ground(M)
+            tot += lam0
+            p2.append(v ** 2)
+        if tot &gt; best_tot:
+            best_tot, best_eps = tot, eps.copy()
+        for k in range(len(cs_terms)):
+            eL = sum(wt * float(p2[w] @ dv) for w, wt, dv in sides[k][0])
+            eR = sum(wt * float(p2[w] @ dv) for w, wt, dv in sides[k][1])
+            bal = math.sqrt((eR + 1e-9) / (eL + 1e-9))
+            eps[k] = min(20.0, max(0.05, eps[k] ** 0.7 * bal ** 0.3))
+    if cs_rounds:
+        mats = assemble(eps)
+        tot = sum(_sectored_ground(M)[0] for M in mats)
+        if tot &lt; best_tot:
+            eps, mats = best_eps, assemble(best_eps)
+    else:
+        mats = assemble(eps)
+    if correction_iters and nw &gt; 1:
+        from scipy import sparse as sp
+        D = 4 ** (ell - 1)
+        Cs = _window_multipliers(mats, D, correction_iters)
+        IE = sp.identity(4 ** ell // D, format="csr")
+        out = []
+        for w in range(nw):
+            M = mats[w]
+            if w &gt; 0:
+                M = M + sp.kron(sp.csr_matrix(Cs[w - 1]), IE, format="csr")
+            if w &lt; nw - 1:
+                M = M - sp.kron(IE, sp.csr_matrix(Cs[w]), format="csr")
+            out.append(M.tocsr())
+        mats = out
+    for M in mats:
+        lo, _up = _eigen_bracket_sectored(M, fp32=fp32)
+        lower += lo
+
+    # upper: product of exactly solved blocks, cross energy by exact
+    # factorization of block-diagonal spin-orbital 1-RDMs
+    from scipy.sparse.linalg import eigsh
+    sizes = [ell] * (n // ell)
+    if n % ell:
+        sizes.append(n % ell)
+    blocks, start = [], 0
+    for size in sizes:
+        blocks.append(list(range(start, start + size)))
+        start += size
+    blk = {i: bi for bi, b in enumerate(blocks) for i in b}
+    upper = 0.0
+    gammas = {}
+    for bi, b in enumerate(blocks):
+        idx = np.ix_(b, b)
+        h_own = T[idx] + sum(V[c][idx] for c in b)
+        eri_b = eri[np.ix_(b, b, b, b)]
+        enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj &gt; ii)
+        Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b,
+                               dense=False)
+        _, Vec = eigsh(Hb, k=1, which="SA")
+        v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
+        e = float(v @ (Hb @ v))
+        upper += e + 8 * (Hb.shape[0] + 2) * np.finfo(float).eps \
+            * (float(np.abs(Hb).sum(axis=0).max()) + abs(e))
+        ann = _jw_ann(2 * len(b))
+        gam = np.zeros((2 * len(b), 2 * len(b)))
+        for P in range(2 * len(b)):
+            for R in range(2 * len(b)):
+                gam[P, R] = float(v @ (ann[P].T @ (ann[R] @ v)))
+        gammas[bi] = gam
+    # cross one-electron: block density in the field of other nuclei,
+    # plus kinetic/attraction cross matrix elements vanish (&lt;a'a&gt; = 0)
+    for bi, b in enumerate(blocks):
+        gam = gammas[bi]
+        for c in range(n):
+            if blk[c] == bi:
+                continue
+            for ii, p in enumerate(b):
+                for jj, r in enumerate(b):
+                    upper += V[c, p, r] * (gam[2 * ii, 2 * jj]
+                                           + gam[2 * ii + 1, 2 * jj + 1])
+        for other in range(bi + 1, len(blocks)):
+            upper += sum(1.0 / (d * abs(jj - ii))
+                         for ii in b for jj in blocks[other])
+    # cross two-electron by exact product-state factorization
+    for p in range(n):
+        for q in range(n):
+            if blk[p] == blk[q]:
+                continue
+            for r in range(n):
+                for s2 in range(n):
+                    g = eri[p, r, q, s2]
+                    if abs(g) &lt; 1e-14:
+                        continue
+                    if blk[r] == blk[p] and blk[s2] == blk[q]:
+                        gA, gB = gammas[blk[p]], gammas[blk[q]]
+                        ip, ir = blocks[blk[p]].index(p), \
+                            blocks[blk[p]].index(r)
+                        iq, is2 = blocks[blk[q]].index(q), \
+                            blocks[blk[q]].index(s2)
+                        dA = gA[2 * ip, 2 * ir] + gA[2 * ip + 1, 2 * ir + 1]
+                        dB = gB[2 * iq, 2 * is2] + gB[2 * iq + 1, 2 * is2 + 1]
+                        upper += 0.5 * g * dA * dB
+                    if blk[s2] == blk[p] and blk[r] == blk[q]:
+                        gA, gB = gammas[blk[p]], gammas[blk[q]]
+                        ip, is2 = blocks[blk[p]].index(p), \
+                            blocks[blk[p]].index(s2)
+                        iq, ir = blocks[blk[q]].index(q), \
+                            blocks[blk[q]].index(r)
+                        for sp in range(2):
+                            upper -= 0.5 * g \
+                                * gA[2 * ip + sp, 2 * is2 + sp] \
+                                * gB[2 * iq + sp, 2 * ir + sp]
+    return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
+                     Tier.RIGOROUS,
+                     (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
+                      f"iters={correction_iters} block-product-upper",))
+</pre>
+<h2>The certification, executed and drawn</h2><figure><svg viewBox="0 0 640 320" role="img" aria-label="Certified
+bracket width per atom versus window length, log scale">
+<line x1="58" y1="256.9" x2="624" y2="256.9" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="260.4" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">50</text><line x1="58" y1="197.5" x2="624" y2="197.5" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="201.0" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">100</text><line x1="58" y1="138.1" x2="624" y2="138.1" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="141.6" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">200</text><line x1="58" y1="78.7" x2="624" y2="78.7" class="board-ink" opacity="0.25" stroke-width="1"/><text x="50" y="82.2" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">400</text><text x="123.3" y="302" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">ℓ = 3</text><text x="341.0" y="302" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">ℓ = 4</text><text x="558.7" y="302" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">ℓ = 5</text>
+<path d="M 123.3 121.3 L 341.0 207.8 L 558.7 234.3" fill="none" class="blue-ink" stroke-width="2" opacity="0.85"/><circle cx="123.3" cy="121.3" r="5" class="blue-fill"/><text x="123.3" y="111.3" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--blue)">243</text><circle cx="341.0" cy="207.8" r="5" class="blue-fill"/><text x="341.0" y="197.8" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--blue)">89</text><circle cx="558.7" cy="234.3" r="5" class="blue-fill"/><text x="558.7" y="224.3" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--blue)">65</text><path d="M 123.3 66.4 L 341.0 129.2 L 558.7 183.7" fill="none" class="rust-ink" stroke-width="2" opacity="0.85"/><circle cx="123.3" cy="66.4" r="5" class="rust-fill"/><text x="123.3" y="56.4" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--rust)">462</text><circle cx="341.0" cy="129.2" r="5" class="rust-fill"/><text x="341.0" y="119.2" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--rust)">222</text><circle cx="558.7" cy="183.7" r="5" class="rust-fill"/><text x="558.7" y="173.7" text-anchor="middle" class="board-text" font-size="10.5" fill="var(--rust)">117</text>
+<text x="64" y="20" class="board-text" font-size="11">
+certified width, mHa per atom (log scale)</text></svg><figcaption>Blue: H₆ (every point checked against exact diagonalization in this run). Rust: H₁₀ — a 2²⁰-dimensional problem with no exact answer to compare against; none is needed. A separate recorded run extends H₁₀ to ℓ=7 (16,384-dimensional windows, tamed by particle-number sectors) at 55 mHa/atom; it is excluded here only to keep this page regenerable in seconds.</figcaption></figure>
+<h2>Verified in this run</h2><ul><li>H₆ containment vs exact: <strong>3/3</strong> at every ℓ.</li><li>Widths halve, roughly, per unit ℓ — the grudging rate of a <em>critical</em> chain; gapped systems tighten exponentially faster.</li></ul>
+</main>
