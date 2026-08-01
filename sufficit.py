@@ -1453,12 +1453,16 @@ def eigen_bracket(H: np.ndarray, tol: float = None) -> Certified:
     achieved width exceeds it."""
     H = np.asarray(H)
     n = len(H)
-    from scipy.sparse.linalg import eigsh
-    try:
-        _, V = eigsh(H, k=1, which="SA")
-        v = V[:, 0]
-    except Exception:                       # heuristic source; bracket
-        v = np.ones(n)                      # stays valid, just looser
+    if n < 64:                              # dense: exact vector, and no
+        _, V = np.linalg.eigh(H)            # Lanczos k >= N warnings on
+        v = V[:, 0]                         # tiny sector matrices
+    else:
+        from scipy.sparse.linalg import eigsh
+        try:
+            _, V = eigsh(H, k=1, which="SA")
+            v = V[:, 0]
+        except Exception:                   # heuristic source; bracket
+            v = np.ones(n)                  # stays valid, just looser
     v = v / np.linalg.norm(v)
     up = float(np.real(v.conj() @ (H @ v)))     # variational theorem
 
