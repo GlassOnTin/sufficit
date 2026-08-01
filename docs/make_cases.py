@@ -399,6 +399,302 @@ butterfly apply cost ÷ plain low-rank cost (matched certified accuracy)</text>
         ])
 
 
+# ======================================================================
+_SUP = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def pow10(v):
+    return "10" + str(int(round(math.log10(v)))).translate(_SUP)
+
+
+def ising_case():
+    import test_sufficit as suite     # the suite's exact transfer matrix
+    betas = np.linspace(0.005, 0.084, 12)
+    rows = {"logZ": [], "corr": []}
+    for bJ in betas:
+        tz = suite._ising_torus_logZ_density_tm(10, float(bJ))
+        tc = suite._ising_torus_bond_corr_tm(10, float(bJ))
+        cz = sf.ising2d_logZ_density(float(bJ))
+        cc = sf.ising2d_bond_correlation(float(bJ))
+        rows["logZ"].append((cz.err, abs(cz.value - tz)))
+        rows["corr"].append((cc.err, abs(cc.value - tc)))
+    contained = sum(a <= e for r in rows.values() for e, a in r)
+    refused = 0
+    for fn in (sf.ising2d_logZ_density, sf.ising2d_bond_correlation):
+        try:
+            fn(0.1)
+        except ValueError:
+            refused += 1
+    c0 = sf.ising2d_logZ_density(0.0)
+    zero_ok = abs(c0.value - math.log(2.0)) <= c0.err
+
+    floor = 2e-16
+    ax = Axes((0.0, 0.097), (floor, 2.0), h=360, logy=True)
+    parts = []
+    for key, cls in (("logZ", "blue"), ("corr", "rust")):
+        errs = [e for e, _ in rows[key]]
+        parts.append(f'<path d="{ax.path(betas, errs)}" fill="none" '
+                     f'class="{cls}-ink" stroke-width="2"/>')
+        parts += [f'<circle cx="{ax.X(b):.1f}" '
+                  f'cy="{ax.Y(max(a, floor)):.1f}" r="3.5" '
+                  f'class="{cls}-fill" opacity="0.75"/>'
+                  for b, (_, a) in zip(betas, rows[key])]
+    svg = f'''<svg viewBox="0 0 640 360" role="img" aria-label="Certified
+error bound versus measured deviation across the high-temperature region">
+{ax.grid((1e-15, 1e-12, 1e-9, 1e-6, 1e-3, 1.0), (0.02, 0.04, 0.06, 0.08),
+         xfmt=lambda v: f"βJ = {v:g}", yfmt=pow10)}
+<line x1="{ax.X(0.086):.1f}" y1="{ax.mt}" x2="{ax.X(0.086):.1f}"
+      y2="{360 - ax.mb}" class="board-ink" stroke-dasharray="4 4"
+      stroke-width="1.4" opacity="0.7"/>
+<text x="{ax.X(0.086) - 6:.1f}" y="{360 - ax.mb - 10}" text-anchor="end"
+      class="board-text" font-size="10.5" opacity="0.85">refuses beyond here</text>
+{"".join(parts)}
+<text x="{ax.ml + 10}" y="{ax.mt + 12}" class="board-text"
+      font-size="10.5" fill="var(--blue)">free energy: certified bound
+ (line), measured error (dots)</text>
+<text x="{ax.ml + 10}" y="{ax.mt + 28}" class="board-text"
+      font-size="10.5" fill="var(--rust)">bond correlation
+ ⟨s₀s₁⟩</text></svg>'''
+
+    return page(
+        "Case: the 2D Ising model, certified by cluster expansions",
+        "certified case",
+        "A validity region with a wall the certificate refuses to cross",
+        "Free energy and correlations of the 2D Ising model at high "
+        "temperature, with floating point carried in interval "
+        "arithmetic — checked against the exact transfer matrix at "
+        "every point, and refusing where the expansion's own "
+        "convergence proof gives out.",
+        [
+            "<h2>The theory, a priori</h2>"
+            "<p>The high-temperature expansion rewrites the Ising "
+            "partition function as a gas of polymers (closed loops on "
+            "the lattice) with activity <code>t = tanh βJ</code>. The "
+            "Kotecký–Preiss criterion gives a computable radius inside "
+            "which the cluster series converges, with a geometric tail "
+            "bound at truncation order L = 12; local observables come "
+            "from pinned polymers with an Eulerian-path counting bound. "
+            "Every coefficient and every tail is evaluated in outward-"
+            "rounded interval arithmetic, so the floating point is part "
+            "of the certificate. Outside the proven radius the functions "
+            "raise — the wall at βJ ≈ 0.086 is the certificate's, not "
+            "nature's (the true critical point sits at βJ ≈ 0.4407).</p>",
+            code_section(sf.ising2d_logZ_density,
+                         sf.ising2d_bond_correlation),
+            "<h2>The certification, executed and drawn</h2>"
+            f"<figure>{svg}<figcaption>Lines: the certified error bound. "
+            "Dots: the measured deviation from the exact 10×10 transfer "
+            "matrix (the suite's own truth generator, itself validated "
+            "against 2¹⁶-state exhaustive enumeration). The bound must "
+            "sit above every dot; both climb as the expansion approaches "
+            "its convergence wall. Dots on the floor are at the double-"
+            "precision limit.</figcaption></figure>",
+            "<h2>Verified in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/{2 * len(betas)}"
+            "</strong> (both quantities, every temperature).</li>"
+            f"<li>Refusal at βJ = 0.1: <strong>{refused}/2</strong> "
+            "functions raised rather than extrapolate.</li>"
+            f"<li>Zero-coupling limit: log Z = log 2 "
+            f"{'contained' if zero_ok else 'NOT CONTAINED'} with width "
+            f"{c0.err:.1e}.</li></ul>",
+        ])
+
+
+# ======================================================================
+def spectral_case():
+    E, a = (0.9, 1.9), (1.0, 0.7)
+    sigma = 0.35
+    ts = np.arange(1, 17)
+    C = a[0] * np.exp(-E[0] * ts) + a[1] * np.exp(-E[1] * ts)
+
+    def truth(w):
+        return sum(ai * math.exp(-(w - Ei) ** 2 / (2 * sigma**2))
+                   / (sigma * math.sqrt(2 * math.pi))
+                   for ai, Ei in zip(a, E))
+
+    ws = np.linspace(0.4, 2.4, 41)
+    vals, errs, exact = [], [], []
+    for w in ws:
+        c = sf.smeared_spectral(C, float(w), sigma)
+        vals.append(c.value)
+        errs.append(c.err)
+        exact.append(truth(float(w)))
+    vals, errs, exact = map(np.array, (vals, errs, exact))
+    contained = int(np.sum(np.abs(vals - exact) <= errs))
+    res_errs = [sf.smeared_spectral(C, 1.0, s).err for s in (0.6, 0.4, 0.25)]
+
+    ax = Axes((0.4, 2.4), (0.0, 1.35 * float(exact.max())), h=340)
+    ups, lows = vals + errs, np.maximum(vals - errs, 0.0)
+    band = (ax.path(ws, ups) + " L "
+            + " L ".join(f"{ax.X(w):.1f} {ax.Y(l):.1f}"
+                         for w, l in zip(ws[::-1], lows[::-1])) + " Z")
+    peaks = "".join(
+        f'<line x1="{ax.X(Ei):.1f}" y1="{ax.mt}" x2="{ax.X(Ei):.1f}" '
+        f'y2="{340 - ax.mb}" class="board-ink" stroke-dasharray="3 4" '
+        f'stroke-width="1.2" opacity="0.55"/>'
+        f'<text x="{ax.X(Ei):.1f}" y="{ax.mt - 4}" text-anchor="middle" '
+        f'class="board-text" font-size="10.5" opacity="0.8">peak at '
+        f'{Ei:g}</text>' for Ei in E)
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Certified
+band around the smeared spectral density, resolving two peaks">
+<clipPath id="plot"><rect x="{ax.ml}" y="{ax.mt}"
+  width="{640 - ax.ml - ax.mr}" height="{340 - ax.mt - ax.mb}"/></clipPath>
+{ax.grid((0.3, 0.6, 0.9, 1.2), (0.5, 1.0, 1.5, 2.0),
+         xfmt=lambda v: f"ω = {v:g}", yfmt=lambda v: f"{v:g}")}
+{peaks}
+<g clip-path="url(#plot)">
+<path d="{band}" fill="var(--blue)" opacity="0.16" stroke="none"/>
+<path d="{ax.path(ws, ups)}" fill="none" class="rust-ink" stroke-width="1.8"/>
+<path d="{ax.path(ws, lows)}" fill="none" class="blue-ink" stroke-width="1.8"/>
+<path d="{ax.path(ws, exact)}" fill="none" class="board-ink"
+      stroke-width="1.6" stroke-dasharray="5 4"/></g></svg>'''
+
+    return page(
+        "Case: smeared spectral functions with resolution as part of "
+        "the query",
+        "certified case",
+        "Two peaks from sixteen numbers — and the price of sharpness",
+        "A Gaussian-smeared spectral density reconstructed from 16 "
+        "Euclidean correlator values, with a certified band at every "
+        "frequency. Ask for sharper resolution and the certificate "
+        "honestly charges you more error.",
+        [
+            "<h2>The theory, a priori</h2>"
+            "<p>The data determine the spectral density ρ only through "
+            "exponential moments C(t) = ∫e^(−ωt) ρ(ω) dω — inverting "
+            "that is ill-posed. The Hansen–Lupo–Tantalo move: don't "
+            "invert; reconstruct the <em>smearing kernel</em> as a sum "
+            "of the exponentials you have. The certificate is a "
+            "posteriori and immune to how the coefficients were found: "
+            "a rigorous sup bound c on the weighted kernel deviation "
+            "(dense grid + per-cell Lipschitz + analytic tail) turns "
+            "positivity of ρ into |value − truth| ≤ c·C(1). One declared "
+            "physical assumption: ρ ≥ 0, stamped into the provenance.</p>",
+            code_section(sf.smeared_spectral, sf._hlt_solve),
+            "<h2>The certification, executed and drawn</h2>"
+            f"<figure>{svg}<figcaption>The certified band (rust upper, "
+            "blue lower) around the smeared two-peak density at "
+            "σ = 0.35, swept over 41 frequencies. Dashed: the exact "
+            "smeared truth, computable here because the test density is "
+            "synthetic — the band was built without it. The first peak "
+            "is certified two-sidedly; at the second the lower bound "
+            "has already fallen to zero, and past ω ≈ 2 the band runs "
+            "off the top of the plot: sixteen exponentials genuinely "
+            "cannot say more, and the certificate says so.</figcaption>"
+            "</figure>",
+            "<h2>Verified in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/{len(ws)}</strong> "
+            "frequencies.</li>"
+            "<li>Resolution costs error, monotonically: certified err at "
+            f"ω = 1 is <strong>{res_errs[0]:.3f} → {res_errs[1]:.3f} → "
+            f"{res_errs[2]:.3f}</strong> for σ = 0.6 → 0.4 → 0.25.</li>"
+            "<li>The certificate never used the truth: it is c·C(1) "
+            "from the data and the kernel sup bound alone.</li></ul>",
+        ])
+
+
+# ======================================================================
+def mz_case():
+    from scipy.linalg import expm
+    rng = np.random.default_rng(21)
+    A = np.zeros((10, 10))
+    A[:2, :2] = [[-0.3, 0.2], [-0.2, -0.4]]
+    A[:2, 2:] = 0.15 * rng.standard_normal((2, 8))
+    A[2:, :2] = 0.15 * rng.standard_normal((8, 2))
+    A[2:, 2:] = -6.0 * np.eye(8) + 0.3 * rng.standard_normal((8, 8))
+    x0 = np.concatenate([[1.0, -0.5], np.zeros(8)])
+
+    Ts = np.linspace(0.25, 20.0, 45)
+    pred, errs, exact = [], [], []
+    for T in Ts:
+        c = sf.mz_closure_linear(A, 2, x0, float(T))
+        pred.append(c.value)
+        errs.append(c.err)
+        exact.append((expm(A * float(T)) @ x0)[:2])
+    pred, errs, exact = np.array(pred), np.array(errs), np.array(exact)
+    contained = int(np.sum(np.linalg.norm(pred - exact, axis=1) <= errs))
+
+    stiff = A.copy()
+    stiff[2:, 2:] *= 2.0
+    e_base = sf.mz_closure_linear(A, 2, x0, 5.0).err
+    e_stiff = sf.mz_closure_linear(stiff, 2, x0, 5.0).err
+    nogap = np.diag([-1.0, -1.0, 0.1, -1.0])
+    try:
+        sf.mz_closure_linear(nogap, 2, np.array([1.0, 0, 0, 0]), 1.0)
+        refused = False
+    except ValueError:
+        refused = True
+
+    lo = float((pred.min(axis=1) - errs).min())
+    hi = float((pred.max(axis=1) + errs).max())
+    pad = 0.06 * (hi - lo)
+    ax = Axes((0.0, 20.0), (lo - pad, hi + pad), h=340)
+    parts = []
+    for i, cls in ((0, "blue"), (1, "rust")):
+        ups, lows = pred[:, i] + errs, pred[:, i] - errs
+        band = (ax.path(Ts, ups) + " L "
+                + " L ".join(f"{ax.X(t):.1f} {ax.Y(l):.1f}"
+                             for t, l in zip(Ts[::-1], lows[::-1])) + " Z")
+        parts.append(
+            f'<path d="{band}" fill="var(--{cls})" opacity="0.13" '
+            f'stroke="none"/>'
+            f'<path d="{ax.path(Ts, pred[:, i])}" fill="none" '
+            f'class="{cls}-ink" stroke-width="2"/>'
+            f'<path d="{ax.path(Ts, exact[:, i])}" fill="none" '
+            f'class="board-ink" stroke-width="1.5" stroke-dasharray="5 4"/>')
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Certified
+tubes around the reduced-model trajectories of both slow variables">
+{ax.grid((-0.5, 0.0, 0.5, 1.0), (5, 10, 15, 20), xfmt=lambda v: f"T = {v:g}")}
+{"".join(parts)}
+<text x="{ax.X(2.2):.1f}" y="{ax.Y(float(pred[4, 0])) - 12:.1f}"
+      class="board-text" font-size="10.5" fill="var(--blue)">x₁ closure ±
+ certified tube</text>
+<text x="{ax.X(2.2):.1f}" y="{ax.Y(float(pred[4, 1])) + 20:.1f}"
+      class="board-text" font-size="10.5" fill="var(--rust)">x₂</text></svg>'''
+
+    return page(
+        "Case: Mori-Zwanzig closures with a gap-priced certificate",
+        "certified case",
+        "Forget the fast variables — and pay exactly what the gap "
+        "charges",
+        "A 10-dimensional slow-fast system reduced to its 2 slow "
+        "coordinates by the Markovian closure. The certified tube "
+        "comes from the fast sector's spectral gap; no gap, no "
+        "certificate — the function refuses.",
+        [
+            "<h2>The theory, a priori</h2>"
+            "<p>Projecting a linear system onto slow observables leaves "
+            "an exact memory term K(s) = A₁₂e^(A₂₂s)A₂₁. If the fast "
+            "sector is dissipative — log-norm of A₂₂ strictly negative — "
+            "the kernel decays at the gap μ, and dropping the memory "
+            "(the Markovian closure A₁₁ − A₁₂A₂₂⁻¹A₂₁) costs an error a "
+            "Grönwall argument bounds with computable constants: block "
+            "norms, log-norms, and 1/μ² — the certificate is priced by "
+            "the physics that justifies the reduction. A fast initial "
+            "transient adds its own decaying term. Without a gap the "
+            "rewrite refuses: no decay proof, no closure.</p>",
+            code_section(sf._lognorm, sf.mz_closure_linear),
+            "<h2>The certification, executed and drawn</h2>"
+            f"<figure>{svg}<figcaption>Both slow coordinates: closure "
+            "prediction (solid) inside its certified tube (shaded, "
+            "half-width the joint 2-norm bound), exact 10-dimensional "
+            "propagation dashed — computed only to check containment. "
+            "The tube is thin — half-width "
+            f"{errs[0]:.3f} at T = {Ts[0]:g}, saturating at "
+            f"{errs[-1]:.3f} by T = 20 because the reduced model is "
+            "itself dissipative.</figcaption></figure>",
+            "<h2>Verified in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/{len(Ts)}</strong> "
+            "horizons out to T = 20.</li>"
+            "<li>The gap prices the certificate: doubling the fast "
+            f"sector's stiffness tightens the bound <strong>"
+            f"{e_base / e_stiff:.1f}×</strong> at T = 5.</li>"
+            f"<li>No-gap system: <strong>{'refused' if refused else 'NOT REFUSED'}"
+            "</strong> (an undamped fast mode means the memory kernel "
+            "never certifiably decays).</li></ul>",
+        ])
+
+
 STYLE = '''<style>
   :root { --paper:#F7F8F7; --ink:#1A2028; --muted:#5A6472; --blue:#1D6FA5;
     --rust:#B4552D; --hairline:#D9DDDC; --panel:#EEF1F0; --panel-ink:#333C46; }
@@ -449,6 +745,9 @@ CASES = {
     "h2-bracket.html": h2_case,
     "hchain-ladder.html": ladder_case,
     "butterfly-crossover.html": butterfly_case,
+    "ising-cluster.html": ising_case,
+    "smeared-spectral.html": spectral_case,
+    "mz-closure.html": mz_case,
 }
 
 if __name__ == "__main__":
