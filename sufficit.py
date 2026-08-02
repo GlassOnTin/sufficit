@@ -1142,14 +1142,19 @@ def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
     fail_p = 2*erfc(z/sqrt(2)).
 
     The certificate also exports its sensitivity: the value is the
-    linear map g.C, so any error in the correlator reaches the answer
-    through at most |g| — an exact operator norm, hence RIGOROUS
-    whatever the tier of the value's own bound. This is the datum a
-    composed plan needs to decide how much data noise it can afford."""
+    linear map g.C, so a correlator error delta moves the value by at
+    most |g|*|delta| — and it also moves the kernel-mismatch bill,
+    which is anchored at the true C(1), by up to c*delta(1).
+    Cauchy–Schwarz folds both into the one constant sqrt(c^2 + |g|^2):
+    an exact norm, hence RIGOROUS whatever the tier of the value's own
+    bound, and valid because both densities are nonnegative (already
+    assumed). This is the datum a composed plan needs to decide how
+    much correlator error it can afford."""
     N = len(C)
     g, c = _hlt_solve(N, omega, sigma)
     value = float(g @ C[1:])
-    sens = Sensitivity(float(np.linalg.norm(g)), Tier.RIGOROUS, "correlator")
+    sens = Sensitivity(_up(math.hypot(c, float(np.linalg.norm(g)))),
+                       Tier.RIGOROUS, "correlator")
     if cov is None:
         return Certified(value, c * float(C[0]), Tier.RIGOROUS,
                          (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
@@ -4461,8 +4466,8 @@ def smeared_spectral_dispatch(measure: Callable, cov1: Callable,
     reconstruction cannot resolve; it shrinks only by buying more
     correlator times N. The statistics bill z*amp/sqrt(m) is what the
     noise obscures; it shrinks only by buying more samples m -- and
-    amp is the sensitivity the certificate exports, because data error
-    reaches the answer through the norm of g. One tolerance must cover
+    amp is the noise's reach into the answer, measured through the
+    same g whose norm the certificate exports. One tolerance must cover
     both. For each rung N of the declared ladder the smearing bill is
     what it is, the leftover budget goes to statistics, and the sample
     count follows in closed form from the 1/sqrt(m) law -- the
@@ -4571,3 +4576,116 @@ def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
                  lambda nk: float(nk[0]) ** 3 + nk[1], run, beyond)
     return plan("gs-flux", tol, [rw], jump=False,
                 context=f"c={c:g} A={A:g} rho={rho:g}")
+
+
+def pole_correlator(A: float, rho: float, E0: float, dE: float,
+                    K: int, N: int) -> Certified:
+    """A declared spectral model, truncated where you can afford to.
+    The model is an infinite tower of poles: weight A*rho^k at energy
+    E0 + k*dE, k = 0, 1, 2, ... Its Euclidean correlator is
+    C(t) = sum_k A rho^k exp(-(E0 + k dE) t). Keep the first K poles
+    and the dropped tail at each time is itself a geometric series --
+    exp(-E_k t) with E_k linear in k IS geometric in k -- so the
+    truncation error is not estimated, it is summed in closed form.
+    value is the truncated correlator on the grid t = 1..N; err is
+    the 2-norm of the exact tail over that grid, which is the norm
+    the smearing certificate's exported sensitivity converts."""
+    if not (0.0 < rho < 1.0 and dE >= 0.0):
+        raise ValueError("the pole tower must converge: 0 < rho < 1 "
+                         "and dE >= 0")
+    ts = np.arange(1, N + 1, dtype=float)
+    ks = np.arange(K, dtype=float)[:, None]
+    C = (A * rho ** ks * np.exp(-(E0 + dE * ks) * ts)).sum(axis=0)
+    q = rho * np.exp(-dE * ts)
+    tail = A * np.exp(-E0 * ts) * q ** K / (1.0 - q)
+    # the formula is exact in real arithmetic; the 1e-12 pad covers
+    # its float evaluation, which can round a few ulps below
+    return Certified(C, _up(float(np.linalg.norm(tail)) * (1 + 1e-12)),
+                     Tier.RIGOROUS,
+                     (f"pole-model K={K} A={A:g} rho={rho:g} E0={E0:g} "
+                      f"dE={dE:g} exact geometric tail",))
+
+
+def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
+                               A: float, rho: float, E0: float,
+                               dE: float, omega: float, sigma: float,
+                               tol: float, Ns=(8, 12, 16),
+                               K_max: int = 64, m_max: int = 1 << 20,
+                               z: float = 5.0) -> Certified:
+    """A three-stage chain, with the last stage repricing the first.
+    The query: the smeared spectral value of the full declared pole
+    tower -- infinitely many states, so no finite correlator ever
+    holds them all. Three bills against one tolerance. The model
+    bill: truncate the tower at K poles, tail priced exactly by
+    pole_correlator. The statistics bill: measure the truncated
+    correlator m times through a noisy channel. The smearing bill:
+    what the N-point kernel cannot resolve. The exchange rate between
+    model error and answer error is the smearing certificate's
+    exported sensitivity, and that constant depends on N -- a
+    different kernel is a different linear functional with a
+    different norm. So K is not a constant of the problem: every rung
+    of the resolution ladder reprices the model stage before it, and
+    the same tail that fits one rung's budget can be over or under
+    another's. That midstream repricing is what makes this a chain
+    rather than three independent budgets.
+
+    Per rung the split is closed-form. C(1) of the model is a
+    geometric sum, so the smearing bill needs no pilot; a tenth of
+    the leftover prices the model tail, which is exponentially cheap,
+    so K grows only logarithmically; the rest buys samples by the
+    1/sqrt(m) law, aimed at 80% to absorb wobble. sample(C, m) must
+    return the m-sample noisy mean of the exact correlator C; cov1(N)
+    the single-sample covariance. Each rung costs N*m + K; the
+    planner runs the cheapest promise; the chained certificate --
+    model tail converted by Certified.through -- is the referee."""
+    C1 = A * math.exp(-E0) / (1.0 - rho * math.exp(-dE))
+    rungs = []
+    for N in Ns:
+        g, c = _hlt_solve(N, omega, sigma)
+        S = math.hypot(c, float(np.linalg.norm(g)))
+        V = np.asarray(cov1(N), float)
+        amp = c * math.sqrt(float(V[0, 0])) \
+            + math.sqrt(float(g @ V[1:, 1:] @ g))
+        slack = tol - c * C1
+        if slack <= 0:
+            continue
+        K = next((K for K in range(1, K_max + 1)
+                  if S * pole_correlator(A, rho, E0, dE, K, N).err
+                  <= 0.1 * slack), None)
+        if K is None:
+            continue
+        left = slack - S * pole_correlator(A, rho, E0, dE, K, N).err
+        m = max(1, math.ceil((z * amp / (0.8 * left)) ** 2))
+        if m <= m_max:
+            rungs.append((N, m, K))
+    rungs.sort(key=lambda k: k[0] * k[1] + k[2])
+
+    def run(nmk):
+        N, m, K = nmk
+        prof = pole_correlator(A, rho, E0, dE, K, N)
+        C = np.asarray(sample(prof.value, m), float)
+        cov = np.asarray(cov1(N), float) / m
+        cert = smeared_spectral(C, omega, sigma, cov=cov, z=z)
+        out = cert.through(prof)
+        g, c = _hlt_solve(N, omega, sigma)
+        smear = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0])))
+        stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
+        note = (f"budget split at N={N} m={m} K={K}: smearing "
+                f"{smear:.3g} + statistics {stat:.3g} + model tail "
+                f"{out.sensitivity.bound * prof.err:.3g} against "
+                f"tol={tol:g}")
+        return replace(out, provenance=out.provenance + (note,))
+
+    def beyond():
+        cN = _hlt_solve(max(Ns), omega, sigma)[1]
+        return (f"the finest declared kernel (N={max(Ns)}) leaves a "
+                f"smearing bill of about c*C(1)={cN * C1:.3g}; the "
+                f"model is not the wall (its tail falls geometrically, "
+                f"K_max={K_max}); whatever tol remains buys statistics, "
+                f"capped at m_max={m_max}")
+
+    rw = Rewrite("model+hlt", tuple(rungs),
+                 lambda k: float(k[0]) * float(k[1]) + float(k[2]),
+                 run, beyond)
+    return plan("spectral-pipeline", tol, [rw], jump=False,
+                context=f"omega={omega:g} sigma={sigma:g}")

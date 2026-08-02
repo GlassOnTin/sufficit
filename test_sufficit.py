@@ -2117,21 +2117,25 @@ def test_sensitivity_composes_add_sub():
 
 
 def test_hlt_exports_sensitivity():
-    """The smeared value is the linear map g.C, so the certified
-    amplification of correlator error is exactly |g| -- and a
-    perturbation aligned with g must saturate it."""
+    """The smeared value is the linear map g.C, so correlator error
+    amplifies the value by at most |g| -- and it re-anchors the
+    kernel-mismatch bill c*C(1) too, so the exported constant is
+    sqrt(c^2 + |g|^2). A perturbation aligned with g must saturate
+    the |g| part and stay inside the export."""
     ts = np.arange(1, 17)
     C = np.exp(-0.9 * ts) + 0.7 * np.exp(-1.9 * ts)
     cert = sf.smeared_spectral(C, 1.0, 0.35)
-    g, _ = sf._hlt_solve(16, 1.0, 0.35)
+    g, c = sf._hlt_solve(16, 1.0, 0.35)
     assert cert.sensitivity.wrt == "correlator"
     assert cert.sensitivity.tier == sf.Tier.RIGOROUS
-    assert cert.sensitivity.bound == pytest.approx(np.linalg.norm(g))
+    assert cert.sensitivity.bound == pytest.approx(
+        math.hypot(c, np.linalg.norm(g)))
     delta = np.zeros(16)
     delta[1:] = g / np.linalg.norm(g) * 1e-6
     moved = sf.smeared_spectral(C + delta, 1.0, 0.35)
-    assert abs(moved.value - cert.value) == pytest.approx(
-        cert.sensitivity.bound * 1e-6, rel=1e-6)
+    shift = abs(moved.value - cert.value)
+    assert shift == pytest.approx(np.linalg.norm(g) * 1e-6, rel=1e-6)
+    assert shift <= cert.sensitivity.bound * 1e-6
 
 
 def _spectral_bench():
@@ -2334,3 +2338,125 @@ def test_gs_flux_pipeline_refuses():
     with pytest.raises(sf.Refusal, match="gs-flux") as exc:
         sf.gs_flux_dispatch(0.05)
     assert "profile is not the wall" in str(exc.value)
+
+
+def _pole_bench():
+    """Deterministic noisy channel for the three-stage pipeline: pole
+    tower A=1, rho=0.9, E0=0.9, dE=0.3, measured at 1% relative noise
+    with per-(N, m)-seeded draws so every run reproduces
+    byte-identically. Returns (sample, cov1, truth(omega, sigma))."""
+    A, rho, E0, dE, rel = 1.0, 0.9, 0.9, 0.3, 1e-2
+
+    def c_full(N):
+        ts = np.arange(1, N + 1, dtype=float)
+        return A * np.exp(-E0 * ts) / (1.0 - rho * np.exp(-dE * ts))
+
+    def cov1(N):
+        return np.diag((rel * c_full(N)) ** 2)
+
+    def sample(C, m):
+        N = len(C)
+        rng = np.random.default_rng(N * 1_000_003 + m)
+        return C + rng.standard_normal(N) * rel * c_full(N) / math.sqrt(m)
+
+    def truth(omega, sigma):
+        return sum(A * rho ** k * _gauss(omega - (E0 + dE * k), sigma)
+                   for k in range(6000))
+
+    return sample, cov1, truth
+
+
+def _pipe_split(cert):
+    """Parse (N, m, K) out of the pipeline's budget-split note."""
+    line = next(p for p in cert.provenance if p.startswith("budget split"))
+    m = re.match(r"budget split at N=(\d+) m=(\d+) K=(\d+)", line)
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def test_pole_correlator_tail_exact():
+    """The dropped tail is a geometric series, so the stated error is
+    a sum, not an estimate: brute-forcing the first 4000 dropped poles
+    must land within float dust of err, never above it."""
+    A, rho, E0, dE, K, N = 1.0, 0.9, 0.9, 0.3, 20, 12
+    prof = sf.pole_correlator(A, rho, E0, dE, K, N)
+    ts = np.arange(1, N + 1, dtype=float)
+    tail = sum(A * rho ** k * np.exp(-(E0 + dE * k) * ts)
+               for k in range(K, 4000))
+    num = float(np.linalg.norm(tail))
+    assert num <= prof.err <= num * (1 + 1e-9)
+    assert prof.tier == sf.Tier.RIGOROUS
+    # and the kept part is what it says it is
+    kept = sum(A * rho ** k * np.exp(-(E0 + dE * k) * ts)
+               for k in range(K))
+    assert np.allclose(prof.value, kept, rtol=0, atol=1e-15)
+
+
+def test_pipeline_three_stages_certified():
+    """The full stack, one certificate: pole model, noisy measurement,
+    smearing kernel, chained by Certified.through. Meets tol, contains
+    the 6000-pole truth, and the provenance carries every stage."""
+    sample, cov1, truth = _pole_bench()
+    cert = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9,
+                                         0.3, 1.0, 0.5, tol=0.5)
+    assert cert.err <= 0.5
+    assert abs(cert.value - truth(1.0, 0.5)) <= cert.err
+    assert cert.tier == sf.Tier.EMPIRICAL
+    stack = "\n".join(cert.provenance)
+    for stage in ("pole-model", "hlt-smeared", "through correlator",
+                  "budget split at N=", "plan spectral-pipeline"):
+        assert stage in stack
+    assert cert.sensitivity.wrt == "correlator"
+
+
+def test_pipeline_reprices_model_stage_midstream():
+    """Tightening the tolerance reprices all three bills, not just
+    statistics: the same kernel buys more poles AND more samples,
+    because the leftover slack that prices the model tail shrank."""
+    sample, cov1, _ = _pole_bench()
+    a = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                      1.0, 0.5, tol=0.5)
+    b = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                      1.0, 0.5, tol=0.24)
+    (Na, ma, Ka), (Nb, mb, Kb) = _pipe_split(a), _pipe_split(b)
+    assert Na == Nb == 12          # same kernel is the sweet spot
+    assert Kb > Ka and 25 <= Ka <= Kb <= 38
+    assert mb >= 10 * ma
+
+
+def test_pipeline_new_kernel_new_exchange_rate():
+    """Narrow the smearing and the planner buys a different kernel --
+    and the model stage is repriced through that kernel's own
+    sensitivity, so K changes with it."""
+    sample, cov1, truth = _pole_bench()
+    wide = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9,
+                                         0.3, 1.0, 0.5, tol=0.5)
+    narrow = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9,
+                                           0.3, 1.0, 0.4, tol=0.5)
+    (Nw, _, Kw), (Nn, _, Kn) = _pipe_split(wide), _pipe_split(narrow)
+    assert (Nw, Nn) == (12, 16)
+    assert Kn != Kw
+    assert abs(narrow.value - truth(1.0, 0.4)) <= narrow.err
+
+
+def test_pipeline_refuses_at_smearing_wall():
+    """Below the finest kernel's smearing bill the pipeline refuses,
+    and the receipt names the kernel -- not the model -- as the wall:
+    the tail falls geometrically, so poles are never the shortage."""
+    sample, cov1, _ = _pole_bench()
+    with pytest.raises(sf.Refusal, match="spectral-pipeline") as exc:
+        sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                      1.0, 0.5, tol=0.2)
+    assert "model is not the wall" in str(exc.value)
+    assert "smearing bill" in str(exc.value)
+
+
+def test_pipeline_trace_deterministic():
+    """Two identical pipeline runs give byte-identical provenance:
+    the seeded bench makes the data identical, and nothing about the
+    trace depends on timing."""
+    sample, cov1, _ = _pole_bench()
+    a = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                      1.0, 0.5, tol=0.5)
+    b = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                      1.0, 0.5, tol=0.5)
+    assert a.provenance == b.provenance

@@ -2127,6 +2127,96 @@ its own smearing bill, with the plan's chosen splits marked">
     except Exception as exc:                     # pragma: no cover
         pipeline = [f"<!-- pipeline section skipped: {esc(str(exc))} -->"]
 
+    # act three: three stages, the last repricing the first. Bench
+    # constants and seeds match the test suite, so the split lines
+    # are byte-identical to the checked ones.
+    pA, pRho, pE0, pdE, pRel = 1.0, 0.9, 0.9, 0.3, 1e-2
+
+    def p_full(N):
+        ts = np.arange(1, N + 1, dtype=float)
+        return pA * np.exp(-pE0 * ts) / (1.0 - pRho * np.exp(-pdE * ts))
+
+    def p_cov1(N):
+        return np.diag((pRel * p_full(N)) ** 2)
+
+    def p_sample(C, m):
+        rng = np.random.default_rng(len(C) * 1_000_003 + m)
+        return C + rng.standard_normal(len(C)) * pRel * p_full(len(C)) \
+            / math.sqrt(m)
+
+    def p_truth(omega, s):
+        return sum(pA * pRho ** k
+                   * math.exp(-(omega - (pE0 + pdE * k)) ** 2 / (2 * s * s))
+                   / (s * math.sqrt(2 * math.pi)) for k in range(6000))
+
+    def p_split(cert):
+        line = next(p for p in cert.provenance
+                    if p.startswith("budget split"))
+        m = re.match(r"budget split at N=(\d+) m=(\d+) K=(\d+)", line)
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+    p3 = {t: sf.spectral_pipeline_dispatch(p_sample, p_cov1, pA, pRho,
+                                           pE0, pdE, 1.0, 0.5, tol=t)
+          for t in (0.5, 0.24)}
+    p3n = sf.spectral_pipeline_dispatch(p_sample, p_cov1, pA, pRho,
+                                        pE0, pdE, 1.0, 0.4, tol=0.5)
+    try:
+        sf.spectral_pipeline_dispatch(p_sample, p_cov1, pA, pRho, pE0,
+                                      pdE, 1.0, 0.5, tol=0.2)
+        p3_refusal = None
+    except sf.Refusal as e:
+        p3_refusal = e
+    (_, mA, KA), (_, mB, KB) = p_split(p3[0.5]), p_split(p3[0.24])
+    Nn, mN, KN = p_split(p3n)
+    p3_contained = sum(
+        abs(c.value - p_truth(1.0, s)) <= c.err
+        for c, s in ((p3[0.5], 0.5), (p3[0.24], 0.5), (p3n, 0.4)))
+    p3_stack = "\n".join(esc(p) for p in p3[0.24].provenance)
+    deeper = [
+        "<h2>Three bills, one budget</h2>"
+        "<p>The chain gets deeper, and something new happens in the "
+        "middle. The query: the smeared spectral value of a declared "
+        "pole tower — weight A&#183;&#961;<sup>k</sup> at energy "
+        "E&#8320; + k&#183;dE, infinitely many states, so no finite "
+        "correlator ever holds them all. Three stages answer it: a "
+        "model stage truncates the tower at K poles and certifies the "
+        "dropped tail exactly (the tail is a geometric series — it is "
+        "summed, not estimated); a measurement stage averages m noisy "
+        "samples of the truncated correlator; the smearing stage "
+        "converts correlator into answer through the kernel. Three "
+        "bills, one tolerance.</p>"
+        "<p>The new thing: the exchange rate between the model bill "
+        "and the answer is the smearing certificate's exported "
+        "sensitivity, and that constant belongs to the <em>kernel</em> "
+        "— a different N is a different linear functional with a "
+        "different norm. So K is not a constant of the problem. Every "
+        "rung of the resolution ladder reprices the model stage "
+        "before it, and the plan's chosen K moves when either the "
+        "budget or the kernel moves. That midstream repricing is what "
+        "makes this a chain rather than three independent "
+        "budgets.</p>",
+        code_section(sf.pole_correlator, sf.spectral_pipeline_dispatch),
+        "<h2>The chain's result</h2>"
+        "<p>The tol = 0.24 certificate, its provenance stack verbatim "
+        "— the model's exact tail, the smearing certificate, the "
+        "conversion, the three-way split, the plan trace:</p>"
+        f"<pre>{p3_stack}</pre>"
+        "<ul>"
+        f"<li>Containment: <strong>{p3_contained}/3</strong> chained "
+        "certificates contain the 6000-pole truth.</li>"
+        "<li>Tightening the budget repriced all three bills at once: "
+        f"tol 0.5 &#8594; 0.24 bought K = {KA} &#8594; {KB} poles "
+        f"and m = {mA} &#8594; {mB} samples through the same N = 12 "
+        "kernel.</li>"
+        "<li>A new kernel is a new exchange rate: asked the sharper "
+        f"question &#963; = 0.4, the plan bought N = {Nn} — and the "
+        f"model stage repriced through that kernel's own constant, "
+        f"K = {KA} &#8594; {KN}.</li>"
+        "<li>Past the finest kernel the refusal names the smearing "
+        "bill — not the model — as the wall: <code>"
+        f"{esc(str(p3_refusal)[-150:])}</code></li></ul>",
+    ]
+
     return page(
         "Case: the composed plan",
         "certified case",
@@ -2170,9 +2260,11 @@ its own smearing bill, with the plan's chosen splits marked">
             "<p>The datum that makes the formula possible is new to "
             "the IR. A certificate now exports its "
             "<em>sensitivity</em>: the smeared value is the linear map "
-            "g&#183;C, so any error in the data reaches the answer "
-            "through at most the norm of g — an exact operator norm, "
-            "rigorous whatever the tier of the value's own bound. That "
+            "g&#183;C, so data error moves the value through at most "
+            "the norm of g — and re-anchors the smearing bill too, "
+            "which Cauchy&#8211;Schwarz folds into the one exact "
+            "constant &#8730;(c&#178;+&#8214;g&#8214;&#178;), rigorous "
+            "whatever the tier of the value's own bound. That "
             "one number prices the statistics stage in advance. And as "
             "everywhere on this site, the prices only order the "
             "attempts: the certificate of the run that executes is the "
@@ -2199,6 +2291,7 @@ its own smearing bill, with the plan's chosen splits marked">
             "<p>The three certificates' split lines and plan traces, "
             f"verbatim:</p><pre>{traces}</pre>",
             *pipeline,
+            *deeper,
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/3</strong> "
             "certificates contain the exact smeared truth — computable "
@@ -2216,18 +2309,19 @@ its own smearing bill, with the plan's chosen splits marked">
             "tolerance.</li>"
             "<li>The sensitivity field composes through the IR's own "
             "arithmetic: the difference of the smeared values at the "
-            "two peaks carries bound &#8214;g&#8321;&#8214; + "
-            f"&#8214;g&#8322;&#8214; = {diff.sensitivity.bound:.3g} "
+            "two peaks carries the sum of the two exported constants, "
+            f"{diff.sensitivity.bound:.3g} "
             f"w.r.t. “{diff.sensitivity.wrt}”, still "
             "RIGOROUS.</li>"
             "<li>Below every rung's smearing bill the plan refuses "
             "before spending a single sample: "
             f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
-            "<li>What this is not, yet: both plans on this page are "
-            "two stages wired by hand. Deeper chains — each stage's "
-            "sensitivity reweighting the next stage's budget — and a "
-            "general pipeline combinator are the remaining "
-            "debt.</li></ul>",
+            "<li>What this is not, yet: every chain on this page is "
+            "wired by hand inside its own front door. The three-stage "
+            "chain shows the shape a general pipeline combinator must "
+            "have — stages that export sensitivities, budgets split "
+            "by marginal cost, a planner refereeing rungs — but that "
+            "combinator is the remaining debt.</li></ul>",
         ])
 
 

@@ -22,11 +22,12 @@
   proved by hand. The search half is growing: a planner that selects and
   escalates among competing rewrites by declared cost with the
   certificate as referee, a composed plan that splits one error budget
-  between two stages priced by an exported sensitivity, and a first
-  two-rewrite pipeline — a certified profile feeding the equilibrium
-  solve, its error converted through the solve's exported Lipschitz
-  bound. Deeper chains and a general pipeline combinator are the
-  remaining debt.</p>
+  between two stages priced by an exported sensitivity, and pipelines
+  of different rewrites chained by exported sensitivities — two stages
+  for the equilibrium solve, three for the smeared spectral value,
+  where each resolution rung reprices the model stage before it. A
+  general pipeline combinator is the remaining debt: every chain is
+  still wired by hand inside its own front door.</p>
   <ul>
     <li><a href="explainer.html">The illustrated tour</a> — start here</li>
     <li>Certified cases — the idea, the program rendered from the

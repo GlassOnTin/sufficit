@@ -7,14 +7,15 @@ and proved by hand, one per problem — and the search half is growing: a
 planner that selects and escalates among competing rewrites by declared
 cost with the certificate as referee, a composed plan that splits one
 error budget between two stages priced by a sensitivity the certificate
-exports, and a first two-rewrite pipeline — a certified profile feeding
-the equilibrium solve, its error converted through the solve's exported
-Lipschitz bound. Deeper chains and a general pipeline combinator are
-the remaining debt.
+exports, and pipelines of different rewrites chained by exported
+sensitivities — two stages for the equilibrium solve, three for the
+smeared spectral value, where each resolution rung reprices the model
+stage before it. A general pipeline combinator is the remaining debt:
+every chain is still wired by hand inside its own front door.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 136 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 142 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
