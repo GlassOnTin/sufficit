@@ -56,6 +56,22 @@ class Certified:
         return self._combine(other, self.value * other.value, err, "mul")
 
 
+def _bitcount(a):
+    """np.bitwise_count, with a SWAR popcount fallback so the module
+    runs on numpy 1.26 (bitwise_count arrived in numpy 2.0)."""
+    if hasattr(np, "bitwise_count"):
+        return np.bitwise_count(a)
+    x = np.asarray(a).astype(np.uint64)
+    m1 = np.uint64(0x5555555555555555)
+    m2 = np.uint64(0x3333333333333333)
+    m4 = np.uint64(0x0F0F0F0F0F0F0F0F)
+    x = x - ((x >> np.uint64(1)) & m1)
+    x = (x & m2) + ((x >> np.uint64(2)) & m2)
+    x = (x + (x >> np.uint64(4))) & m4
+    return ((x * np.uint64(0x0101010101010101))
+            >> np.uint64(56)).astype(np.int64)
+
+
 def _dn(x):
     return math.nextafter(x, -math.inf)
 
@@ -2246,7 +2262,7 @@ def _fermion_assemble(nq, terms):
             ok = ok & (bit == (0 if dag else 1))
             if p > 0:
                 mask = ((1 << p) - 1) << (nq - p)
-                sign = sign * (1.0 - 2.0 * (np.bitwise_count(
+                sign = sign * (1.0 - 2.0 * (_bitcount(
                     (cur & mask).astype(np.uint64)).astype(np.int64) & 1))
             cur = cur ^ (1 << bitpos)
         idx = np.nonzero(ok)[0]

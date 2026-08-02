@@ -365,8 +365,8 @@ def _ising_torus_logZ_density_tm(m, betaJ):
     and 2^12-state matrices would slow the suite 10x."""
     s = np.arange(2 ** m, dtype=np.uint64)
     rot = (s >> np.uint64(1)) | ((s & np.uint64(1)) << np.uint64(m - 1))
-    intra = m - 2 * np.bitwise_count(s ^ rot).astype(float)
-    inter = m - 2 * np.bitwise_count(s[:, None] ^ s[None, :]).astype(float)
+    intra = m - 2 * sf._bitcount(s ^ rot).astype(float)
+    inter = m - 2 * sf._bitcount(s[:, None] ^ s[None, :]).astype(float)
     A = np.exp(betaJ * intra)[:, None] * np.exp(betaJ * inter)
     return math.log(np.trace(np.linalg.matrix_power(A, m))) / (m * m)
 
@@ -448,8 +448,8 @@ def _ising_torus_bond_corr_tm(m, betaJ):
     spin-product insertion in the row transfer matrix."""
     s = np.arange(2 ** m, dtype=np.uint64)
     rot = (s >> np.uint64(1)) | ((s & np.uint64(1)) << np.uint64(m - 1))
-    intra = m - 2 * np.bitwise_count(s ^ rot).astype(float)
-    inter = m - 2 * np.bitwise_count(s[:, None] ^ s[None, :]).astype(float)
+    intra = m - 2 * sf._bitcount(s ^ rot).astype(float)
+    inter = m - 2 * sf._bitcount(s[:, None] ^ s[None, :]).astype(float)
     A = np.exp(betaJ * intra)[:, None] * np.exp(betaJ * inter)
     Am = np.linalg.matrix_power(A, m)
     ins = (1 - 2 * (s & np.uint64(1)).astype(float)) \
@@ -582,7 +582,7 @@ def test_gaussian_laplace_formula():
     direct numerical integration."""
     w = np.linspace(0, 60, 4_000_001)
     for omega, sigma, tau in ((1.0, 0.4, 3.0), (2.0, 0.2, 0.0), (0.6, 0.5, 14.0)):
-        num = np.trapezoid(np.exp(-tau * w)
+        num = getattr(np, 'trapezoid', np.trapz)(np.exp(-tau * w)
                            * np.exp(-(w - omega) ** 2 / (2 * sigma ** 2))
                            / (sigma * math.sqrt(2 * math.pi)), w)
         # rel limited by the trapezoid reference itself, not the formula
