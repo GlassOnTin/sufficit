@@ -62,7 +62,7 @@ long pole).
 | Breaking wave on a sea wall (SPH) | delivered impulse certified; raw peak refused (no asymptotic range); a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
 | Tokamak equilibrium (Grad–Shafranov via FEniCSx) | guaranteed energy-norm bound within 1.6× of the true error; implicit coupling certified by a contraction factor | Prager–Synge with rectangle-exact constants — guaranteed, not estimated; refuses past the contraction limit |
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
-| The planner (first compiler slice) | one question at three tolerances → three algorithms; model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts, certificates arbitrate; refusal returns a structured receipt with every rung priced |
+| The planner (first compiler slice) | one question at three tolerances → three algorithms; model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts, certificates arbitrate; every rung logs predicted cost, measured cost, and measured error — the receipt audits the cost model |
 
 ## How it stays honest
 

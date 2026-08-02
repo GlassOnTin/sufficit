@@ -1651,9 +1651,15 @@ def compiler_case():
         c = sf.heisenberg_energy_dispatch(N, tol=tol)
         trace = c.provenance[-1]
         chosen = trace.split("chose ")[1].split(" ")[0]
-        cost = float(trace.split("predicted ")[1].split(")")[0])
+        cost = float(trace.split("predicted ")[1].split(",")[0])
         sweep.append((tol, chosen, cost, c))
     extreme = sf.heisenberg_energy_dispatch(N, tol=1e-9)
+    # the trace logs (predicted, measured) per rung; pull the pair that
+    # audits the cost model at this N: window@9 against the chosen dense
+    et = extreme.provenance[-1]
+    m9 = re.search(r"window@9 \(([^,]+), ([^)]+)\)", et)
+    md = re.search(r"measured ([^)]+)\)", et)
+    w9s, ds = (m9.group(2) if m9 else "?"), (md.group(1) if md else "?")
     headline = [sweep[0][3], sweep[3][3], extreme]
     contained = sum(abs(c.value - truth) <= c.err for c in headline)
 
@@ -1747,7 +1753,10 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "relaxation gap, so the dense 1024-dimensional bracket — "
             "exact, and priced 2<sup>N</sup> — wins the competition. "
             "The wall belongs to this 10-site chain; on a 10⁶-site "
-            "chain there is no dense column to flee to."
+            "chain there is no dense column to flee to. And chosen is "
+            "not optimal: the y-axis is the cheapest plan found among "
+            "the declared rewrites, not the cheapest possible "
+            "algorithm — the planner's claim stops at its library."
             "</figcaption></figure>"
             "<p>Three of the plan traces, verbatim from the "
             f"certificates' provenance:</p><pre>{traces}</pre>",
@@ -1765,6 +1774,18 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "</li>"
             "<li>An impossible question refuses with a receipt: "
             f"<code>{esc(str(receipt)[:160])}&hellip;</code></li>"
+            "<li>The receipt audits its own cost model: every rung in "
+            "the traces above carries a (predicted, measured) pair — "
+            f"window@9 measured <strong>{esc(w9s)}</strong> against "
+            f"dense's <strong>{esc(ds)}</strong>, under a model that "
+            "priced them 512 against 1024. And compare window@2 "
+            "across the traces: the same rung, priced 4 every time, "
+            "measures orders of magnitude cheaper once its "
+            "corrections are cached. Cost is state-dependent; the "
+            "predictions are "
+            "not; only logging both exposes it. These pairs, kept in "
+            "every run, are the calibration data for better cost "
+            "models.</li>"
             "<li>What this is not, yet: the plan space is single-knob "
             "ladders per query. Composed pipelines that split one "
             "error budget across several rewrites are the remaining "

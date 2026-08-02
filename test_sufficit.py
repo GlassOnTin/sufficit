@@ -1955,7 +1955,7 @@ def test_planner_escalation_monotone():
     for tol in (0.2, 0.05, 0.02):
         c = sf.heisenberg_energy_dispatch(40, tol=tol, ell_max=8)
         assert c.err <= tol * 39
-        costs.append(float(re.search(r"predicted (\S+)\)",
+        costs.append(float(re.search(r"predicted (\S+?)[,)]",
                                      c.provenance[-1]).group(1)))
     assert costs == sorted(costs)
 
@@ -1995,9 +1995,12 @@ def test_planner_refuses_with_receipts():
         sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
                                       ell_max=6)
     e = ei.value
-    knobs = [k for _, k, _, _ in e.tried]
+    knobs = [k for _, k, _, _, _ in e.tried]
     assert knobs == sorted(knobs) and len(knobs) >= 2
-    assert all(isinstance(v, float) for _, _, _, v in e.tried)
+    assert all(isinstance(v, float) for *_, v in e.tried)
+    # the receipt carries measured cost beside predicted cost, so the
+    # cost models are auditable and every run calibrates them
+    assert all(s >= 0.0 for _, _, _, s, _ in e.tried)
     assert "ell=7" in e.next_price
     assert e.tol == pytest.approx(1e-12 * 39)
 
@@ -2036,8 +2039,8 @@ def test_lr_refusal_structured():
     with pytest.raises(sf.Refusal, match="lr-dispatch") as ei:
         sf.tfi_quench_dispatch(50, 25, 3.0, tol=1e-6, max_dim=256)
     e = ei.value
-    assert [k for _, k, _, _ in e.tried] == [1, 2, 3]
-    assert all(isinstance(v, float) for _, _, _, v in e.tried)
+    assert [k for _, k, _, _, _ in e.tried] == [1, 2, 3]
+    assert all(isinstance(v, float) for *_, v in e.tried)
     assert "dim 512" in e.next_price
 
 
@@ -2047,5 +2050,5 @@ def test_gc_refusal_structured():
     with pytest.raises(sf.Refusal, match="plasma-dispatch") as ei:
         sf.gc_drift_dispatch(0.02, tol=1e-9)
     e = ei.value
-    assert [k for _, k, _, _ in e.tried] == [0, 1]
+    assert [k for _, k, _, _, _ in e.tried] == [0, 1]
     assert "kinetic" in e.next_price

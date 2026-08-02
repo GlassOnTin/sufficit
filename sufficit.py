@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import heapq
 import math
+import time
 from dataclasses import dataclass, replace
 from enum import IntEnum
 from typing import Any, Callable, Tuple
@@ -4105,22 +4106,25 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
 
 class Refusal(ValueError):
     """A refusal is a receipt, not an apology. It records every rung
-    the planner ran, what each was predicted to cost, what each
-    actually measured, and the price of the cheapest thing it did not
-    try. It subclasses ValueError so every existing caller that
-    catches ValueError keeps working."""
+    the planner ran, what each was predicted to cost, what it actually
+    cost, what it measured, and the price of the cheapest thing it did
+    not try. The measured cost sits beside the predicted cost so the
+    cost models are auditable the same way the brackets made the
+    physics auditable. It subclasses ValueError so every existing
+    caller that catches ValueError keeps working."""
 
     def __init__(self, slug, tol, tried, next_price, context=""):
         self.slug, self.tol, self.context = slug, tol, context
-        self.tried = tried              # (rewrite, knob, cost, verdict)
+        self.tried = tried    # (rewrite, knob, predicted, secs, verdict)
         self.next_price = next_price
         at = f" at {context}" if context else ""
         meas = ", ".join(
-            f"({k}, {v:.3g})" if isinstance(v, float) else f"({k}, {v})"
-            for _, k, _, v in tried) or "none"
+            (f"({k}, {v:.3g}, {s:.2g}s)" if isinstance(v, float)
+             else f"({k}, {v}, {s:.2g}s)")
+            for _, k, _, s, v in tried) or "none"
         super().__init__(
             f"{slug}: no rung within budget certifies tol={tol:g}{at}; "
-            f"measured (knob, err): {meas}; {next_price}")
+            f"measured (knob, err, cost): {meas}; {next_price}")
 
 
 @dataclass(frozen=True)
@@ -4185,7 +4189,10 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
     measures badly is dethroned the moment its next rung gets
     expensive. Cost models decide only the order of attempts;
     certificates decide what is true. When every ladder is exhausted,
-    the planner refuses with the full receipt."""
+    the planner refuses with the full receipt. Every rung's predicted
+    and measured cost is logged, in the trace and in the receipt: the
+    cost models are auditable, and every run is calibration data for
+    better ones."""
     frontier = []
     state = []
     for i, rw in enumerate(rewrites):
@@ -4201,18 +4208,23 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
             remaining.pop(0)          # rungs the jump skipped are gone
         if remaining:
             remaining.pop(0)
+        t0 = time.perf_counter()
         try:
             c = rw.run(knob)
         except ValueError as exc:
-            tried.append((rw.name, knob, cost, f"raised: {exc}"))
+            tried.append((rw.name, knob, cost, time.perf_counter() - t0,
+                          f"raised: {exc}"))
             c = None
         if c is not None:
-            tried.append((rw.name, knob, cost, c.err))
+            tried.append((rw.name, knob, cost, time.perf_counter() - t0,
+                          c.err))
             if c.err <= tol:
                 rejected = ", ".join(
-                    f"{n}@{k}" for n, k, _, _ in tried[:-1]) or "none"
+                    f"{n}@{k} ({p:g}, {s:.2g}s)"
+                    for n, k, p, s, _ in tried[:-1]) or "none"
                 trace = (f"plan {slug}: tol={tol:g}; chose "
-                         f"{rw.name}@{knob} (predicted {cost:g}); tried "
+                         f"{rw.name}@{knob} (predicted {cost:g}, "
+                         f"measured {tried[-1][3]:.2g}s); tried "
                          f"{len(tried)} rungs; rejected {rejected}")
                 return replace(c, provenance=c.provenance + (trace,))
             meas[i].append((knob, c.err))
