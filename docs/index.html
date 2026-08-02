@@ -20,11 +20,13 @@
   question, and the tolerance — get an algorithm and a certificate.</em></p>
   <p class="sub">The certificates are real, each from a rewrite built and
   proved by hand. The search half is growing: a planner that selects and
-  escalates among competing rewrites by declared cost, with the
-  certificate as referee, and a first composed plan that splits one error
-  budget between two stages — smearing and statistics — priced by a
-  sensitivity the certificate exports. Splitting a budget across
-  pipelines of different rewrites is the remaining debt.</p>
+  escalates among competing rewrites by declared cost with the
+  certificate as referee, a composed plan that splits one error budget
+  between two stages priced by an exported sensitivity, and a first
+  two-rewrite pipeline — a certified profile feeding the equilibrium
+  solve, its error converted through the solve's exported Lipschitz
+  bound. Deeper chains and a general pipeline combinator are the
+  remaining debt.</p>
   <ul>
     <li><a href="explainer.html">The illustrated tour</a> — start here</li>
     <li>Certified cases — the idea, the program rendered from the

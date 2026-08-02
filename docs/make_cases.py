@@ -2069,6 +2069,62 @@ its own smearing bill, with the plan's chosen splits marked">
 
     traces = "\n\n".join(esc(c.provenance[-2]) + "\n" + esc(c.provenance[-1])
                          for _, _, _, c in sweep)
+
+    # act two: two DIFFERENT rewrites under one budget -- the certified
+    # profile feeding the equilibrium solve through its exported
+    # sensitivity (skipped gracefully when FEniCSx is absent locally;
+    # CI always has it)
+    try:
+        pipe_a = sf.gs_flux_dispatch(0.5)
+        pipe_b = sf.gs_flux_dispatch(0.2)
+        try:
+            sf.gs_flux_dispatch(0.05)
+            pipe_refusal = None
+        except sf.Refusal as e:
+            pipe_refusal = e
+        pipe_agree = abs(pipe_a.value - pipe_b.value) \
+            <= pipe_a.err + pipe_b.err
+        pipe_stack = "\n".join(esc(p) for p in pipe_b.provenance)
+        pipeline = [
+            "<h2>Two rewrites, one budget</h2>"
+            "<p>The split above lived inside one rewrite family. The "
+            "debt this page named at the bottom — pipelines of "
+            "<em>different</em> rewrites — comes due here. The query: "
+            "the total poloidal flux of a "
+            '<a href="gs-equilibrium.html">tokamak equilibrium</a> '
+            "whose current profile is a declared infinite Legendre "
+            "series, a source no solve ever sees exactly. Two "
+            "rewrites answer together: one truncates the series and "
+            "certifies the dropped tail by orthogonality; the other "
+            "solves the equilibrium and certifies its discretization. "
+            "The solve's exported sensitivity is the exchange rate "
+            "between their two currencies: total error = solve error "
+            "+ sensitivity &#215; tail. The chain rule that does the "
+            "conversion is now an IR verb — "
+            "<code>Certified.through</code> — and the tier of the "
+            "result is the weakest claim anywhere in the chain.</p>",
+            code_section(sf.Certified.through, sf.legendre_source_profile,
+                         sf.gs_flux_dispatch),
+            "<h2>The pipeline's result</h2>"
+            "<p>The tol = 0.2 certificate, its full provenance stack "
+            "verbatim — two rewrites' certificates, the conversion, "
+            f"the plan trace:</p><pre>{pipe_stack}</pre>"
+            "<ul>"
+            f"<li>Both pipeline answers certify their tolerance "
+            f"(err {pipe_a.err:.3g} &#8804; 0.5, {pipe_b.err:.3g} "
+            "&#8804; 0.2), stay RIGOROUS through the chain, and agree "
+            "within their joint error &#8212; two rungs bounding the "
+            "same full-series flux: <strong>"
+            f"{'yes' if pipe_agree else 'NO'}</strong>.</li>"
+            "<li>The tighter budget bought both a finer mesh and a "
+            "longer profile: (n, k) = (8, 2) &#8594; (16, 4).</li>"
+            "<li>Asked past the declared mesh ladder, the refusal "
+            "names the mesh — not the profile — as the wall: "
+            f"<code>{esc(str(pipe_refusal)[-120:])}</code></li></ul>",
+        ]
+    except Exception as exc:                     # pragma: no cover
+        pipeline = [f"<!-- pipeline section skipped: {esc(str(exc))} -->"]
+
     return page(
         "Case: the composed plan",
         "certified case",
@@ -2140,6 +2196,7 @@ its own smearing bill, with the plan's chosen splits marked">
             "m.</figcaption></figure>"
             "<p>The three certificates' split lines and plan traces, "
             f"verbatim:</p><pre>{traces}</pre>",
+            *pipeline,
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/3</strong> "
             "certificates contain the exact smeared truth — computable "
@@ -2164,10 +2221,10 @@ its own smearing bill, with the plan's chosen splits marked">
             "<li>Below every rung's smearing bill the plan refuses "
             "before spending a single sample: "
             f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
-            "<li>What this is not, yet: the budget splits across two "
-            "stages of one rewrite family. Splitting across pipelines "
-            "of different rewrites — where each stage's sensitivity "
-            "reweights the next stage's budget — is the remaining "
+            "<li>What this is not, yet: both plans on this page are "
+            "two stages wired by hand. Deeper chains — each stage's "
+            "sensitivity reweighting the next stage's budget — and a "
+            "general pipeline combinator are the remaining "
             "debt.</li></ul>",
         ])
 

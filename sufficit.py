@@ -79,6 +79,30 @@ class Certified:
                          min(1.0, self.fail_p + other.fail_p),
                          sensitivity=s)
 
+    def through(self, inp: "Certified") -> "Certified":
+        """The chain rule for certificates. This value was computed
+        from an approximate input that carries its own certificate;
+        if this certificate exports a sensitivity to that input, the
+        input's error converts to output error at the exported rate:
+        err grows by bound * inp.err, the tier is the weakest of the
+        three claims involved (this bound, the input's, and the
+        sensitivity's), and fail_p accumulates by union bound. The
+        caller vouches that inp certifies the very input the
+        sensitivity names, in the norm the sensitivity is stated in.
+        Refuses -- rather than guesses -- when no sensitivity is
+        exported."""
+        if self.sensitivity is None:
+            raise ValueError("no exported sensitivity: cannot convert "
+                             "input error to output error")
+        s = self.sensitivity
+        return Certified(self.value, self.err + s.bound * inp.err,
+                         min(self.tier, inp.tier, s.tier),
+                         inp.provenance + self.provenance
+                         + (f"through {s.wrt}: err += {s.bound:.3g} * "
+                            f"{inp.err:.3g}",),
+                         min(1.0, self.fail_p + inp.fail_p),
+                         sensitivity=s)
+
     def __add__(self, other: "Certified") -> "Certified":
         return self._combine(other, self.value + other.value,
                              self.err + other.err, "add")
@@ -4028,7 +4052,32 @@ def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
 # polynomial equilibrium supplies an exact solution for the tests.
 
 
-def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree, dg0=0.0):
+def legendre_source_profile(A: float, rho: float, k: int) -> Certified:
+    """A declared current-profile correction for the Grad-Shafranov
+    source: g(R) = sum over j of A rho^j P_j((R - R0)/W), Legendre
+    polynomials on the GS rectangle (R0, W, H = 3, 1, 1). The model
+    is the full series; a computation can only afford its first k
+    terms. Orthogonality prices the truncation exactly: the dropped
+    tail has L2(Omega) norm squared sum_{j>=k} A^2 rho^{2j} * 2HW *
+    2/(2j+1) <= 2HW * (2/(2k+1)) * A^2 rho^{2k} / (1 - rho^2), a
+    rigorous bound in exact arithmetic. The value is the coefficient
+    vector, the err is the tail bound -- the entry ticket for a
+    composed plan that feeds this profile into the equilibrium
+    solve and converts this err through the solve's exported
+    sensitivity."""
+    if not 0.0 < rho < 1.0:
+        raise ValueError("rho must lie in (0, 1) for a summable tail")
+    W, H = 1.0, 1.0
+    coeffs = np.array([A * rho ** j for j in range(k)])
+    tail = _up(math.sqrt(2 * H * W * (2.0 / (2 * k + 1))
+                         * (A * rho ** k) ** 2 / (1 - rho * rho)))
+    return Certified(coeffs, tail, Tier.RIGOROUS,
+                     (f"legendre-profile k={k} A={A:g} rho={rho:g} "
+                      "orthogonal tail bound",))
+
+
+def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree, dg0=0.0,
+              source_coeffs=()):
     from mpi4py import MPI
     from dolfinx import mesh as dmesh, fem
     from dolfinx.fem.petsc import LinearProblem
@@ -4043,6 +4092,18 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree, dg0=0.0):
     psi_ex = a_c * (R ** 2 - R0 ** 2) ** 2 + b_c * R ** 2 * Z ** 2 \
         + d_c * Z ** 2
     g0 = -((8 * a_c + 2 * b_c) * R ** 2 + 2 * d_c) + dg0  # -Delta* psi_ex
+    if len(source_coeffs):
+        # Legendre recurrence built symbolically in UFL:
+        # (j+1) P_{j+1} = (2j+1) x P_j - j P_{j-1}
+        xhat = (R - R0) / W
+        p0, p1 = 1.0, xhat
+        gp = source_coeffs[0] * p0
+        if len(source_coeffs) > 1:
+            gp = gp + source_coeffs[1] * p1
+        for j in range(1, len(source_coeffs) - 1):
+            p0, p1 = p1, ((2 * j + 1) * xhat * p1 - j * p0) / (j + 1)
+            gp = gp + source_coeffs[j + 1] * p1
+        g0 = g0 + gp
     kappa = 1.0 / R
 
     V = fem.functionspace(msh, ("Lagrange", degree))
@@ -4104,7 +4165,8 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree, dg0=0.0):
 
 
 def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
-                             degree: int = 1, dg0: float = 0.0) -> dict:
+                             degree: int = 1, dg0: float = 0.0,
+                             source_coeffs=()) -> dict:
     """Fixed-boundary Grad-Shafranov on the rectangle
     [R0-W, R0+W] x [-H, H] with the Solov'ev source plus an implicit
     coupling c*psi, solved by FEniCSx (untrusted) and certified by the
@@ -4112,7 +4174,9 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
     energy-norm bound and a Certified value of the total poloidal
     flux content, integral of psi over the domain. Refuses when the
     coupling exceeds the contraction limit. dg0 adds a constant to the
-    source profile — a uniform current-density offset.
+    source profile — a uniform current-density offset — and
+    source_coeffs adds a Legendre profile in (R - R0)/W, the shape
+    legendre_source_profile certifies.
 
     The flux also exports its sensitivity to that source: subtracting
     the weak forms of two coupled solutions with the same boundary
@@ -4136,7 +4200,8 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
             f"source c*psi is not certifiably contractive on this domain "
             f"(limit c < {0.95 * Rmin * lam1 / Rmax:.2f})")
     flux, osc, err_meas, Qh, uh, msh = _gs_solve(n, c, R0, W, H, a_c, b_c,
-                                                 d_c, degree, dg0)
+                                                 d_c, degree, dg0,
+                                                 source_coeffs)
     eta = flux + math.sqrt(Rmax / lam1) * osc
     energy_bound = _up(eta / (1.0 - theta))
     # |Q(u) - Q(u_h)| <= ||1|| ||u - u_h|| <= sqrt(|Omega| Rmax/lam1) |||e|||
@@ -4148,6 +4213,8 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
     Q = Certified(Qh, q_err, Tier.RIGOROUS,
                   (f"gs-equilibrium n={n} c={c:g}"
                    + (f" dg0={dg0:g}" if dg0 else "")
+                   + (f" profile-k={len(source_coeffs)}"
+                      if len(source_coeffs) else "")
                    + f" prager-synge flux+osc "
                    f"({flux:.3g}+{osc:.3g}) rectangle-exact lam1, "
                    f"contraction theta={theta:.2f}; assembly and solver "
@@ -4419,3 +4486,60 @@ def smeared_spectral_dispatch(measure: Callable, cov1: Callable,
                  lambda k: float(k[0]) * float(k[1]), run, beyond)
     return plan("smeared-spectral", tol, [rw], jump=False,
                 context=f"omega={omega:g} sigma={sigma:g}")
+
+
+def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
+                     rho: float = 0.5, meshes=(8, 16, 32),
+                     k_max: int = 12) -> Certified:
+    """The first pipeline of two different rewrites under one budget.
+    The query: total poloidal flux of the coupled equilibrium whose
+    current profile is the full declared Legendre series -- a source
+    no solve ever sees exactly. Two rewrites answer it together:
+    legendre_source_profile truncates the series at k terms and
+    certifies the dropped tail; gs_equilibrium_certified solves on a
+    mesh of n cells and certifies its own discretization. The solve's
+    exported sensitivity is the exchange rate between them: total
+    error = solve error + sensitivity * tail. One tolerance pays both,
+    so per mesh rung the leftover budget prices the truncation --
+    and because the tail curve is known in advance (orthogonality,
+    no solve needed), k follows by lookup, while the mesh bill is
+    only predicted (first-order decay from a pilot) and must be
+    re-certified by the run. Each rung costs n^3 + k; the planner
+    runs the cheapest promise; the composed certificate -- chained by
+    Certified.through, tier the weakest claim in the chain -- is the
+    referee."""
+    pilot_prof = legendre_source_profile(A, rho, 2)
+    r0 = gs_equilibrium_certified(n=meshes[0], c=c,
+                                  source_coeffs=tuple(pilot_prof.value))
+    S = r0["Q"].sensitivity.bound
+    e0 = r0["Q"].err
+
+    rungs = []
+    for n in meshes:
+        slack = tol - e0 * meshes[0] / n     # first-order mesh guess
+        if slack <= 0:
+            continue
+        k = next((k for k in range(1, k_max + 1)
+                  if S * legendre_source_profile(A, rho, k).err
+                  <= 0.8 * slack), None)
+        if k is not None:
+            rungs.append((n, k))
+
+    def run(nk):
+        n, k = nk
+        prof = legendre_source_profile(A, rho, k)
+        r = gs_equilibrium_certified(n=n, c=c,
+                                     source_coeffs=tuple(prof.value))
+        return r["Q"].through(prof)
+
+    def beyond():
+        floor = S * legendre_source_profile(A, rho, k_max).err
+        return (f"the finest declared mesh n={max(meshes)} predicts a "
+                f"solve bill near {e0 * meshes[0] / max(meshes):.2g}; "
+                f"the profile is not the wall (k_max={k_max} leaves "
+                f"{floor:.2g} of converted tail)")
+
+    rw = Rewrite("profile+mesh", tuple(rungs),
+                 lambda nk: float(nk[0]) ** 3 + nk[1], run, beyond)
+    return plan("gs-flux", tol, [rw], jump=False,
+                context=f"c={c:g} A={A:g} rho={rho:g}")

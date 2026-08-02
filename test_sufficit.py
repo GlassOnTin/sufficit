@@ -2231,3 +2231,83 @@ def test_gs_sensitivity_contains_perturbation():
     assert moved >= 0.2 * s * delta_l2   # deterministic LU solve
     assert "dg0=0.5" in pert["Q"].provenance[0]
     assert "dg0" not in base["Q"].provenance[0]
+
+
+def test_certified_through_chain_rule():
+    """through() is the chain rule for certificates: err grows at the
+    exported rate, the tier is the weakest of the three claims, fail_p
+    is a union bound, and a certificate without a sensitivity refuses
+    to guess."""
+    up = sf.Certified(2.0, 0.25, sf.Tier.RIGOROUS, ("up",), fail_p=0.01)
+    down = sf.Certified(5.0, 0.1, sf.Tier.RIGOROUS, ("down",),
+                        fail_p=0.02,
+                        sensitivity=sf.Sensitivity(3.0, sf.Tier.EMPIRICAL,
+                                                   "input"))
+    c = down.through(up)
+    assert c.value == 5.0
+    assert c.err == pytest.approx(0.1 + 3.0 * 0.25)
+    assert c.tier == sf.Tier.EMPIRICAL       # the sensitivity's tier
+    assert c.fail_p == pytest.approx(0.03)
+    assert c.provenance == ("up", "down",
+                            "through input: err += 3 * 0.25")
+    bare = sf.Certified(5.0, 0.1, sf.Tier.RIGOROUS, ("d",))
+    with pytest.raises(ValueError, match="sensitivity"):
+        bare.through(up)
+
+
+def test_legendre_profile_tail_bound():
+    """The truncation certificate must dominate the numerically
+    integrated L2 norm of the dropped tail, and not by much (measured
+    1.04x at k=3)."""
+    from numpy.polynomial import legendre as L
+    A, rho, k = 0.4, 0.5, 3
+    xs = np.linspace(-1, 1, 20001)
+    tail = sum(A * rho ** j * L.Legendre.basis(j)(xs)
+               for j in range(k, 40))
+    num = math.sqrt(2.0 * np.trapezoid(tail ** 2, xs))
+    prof = sf.legendre_source_profile(A, rho, k)
+    assert prof.tier == sf.Tier.RIGOROUS
+    assert len(prof.value) == k
+    assert num <= prof.err <= 1.2 * num
+    with pytest.raises(ValueError, match="rho"):
+        sf.legendre_source_profile(A, 1.0, k)
+
+
+def test_gs_source_coeffs_matches_dg0():
+    """P_0 = 1, so a one-term Legendre profile must reproduce the
+    constant-offset knob exactly."""
+    pytest.importorskip("dolfinx")
+    a = sf.gs_equilibrium_certified(n=8, c=1.0, dg0=0.5)
+    b = sf.gs_equilibrium_certified(n=8, c=1.0, source_coeffs=(0.5,))
+    assert b["Q"].value == pytest.approx(a["Q"].value, abs=1e-12)
+    assert "profile-k=1" in b["Q"].provenance[0]
+
+
+def test_gs_flux_pipeline_certified():
+    """Two different rewrites under one budget: the profile truncation
+    and the equilibrium solve, chained by the solve's exported
+    sensitivity. Both dispatch answers certify their tolerance, agree
+    within their joint error (they bound the same full-series flux),
+    stay RIGOROUS through the chain, and a tighter budget buys both a
+    finer mesh and a longer profile."""
+    pytest.importorskip("dolfinx")
+    a = sf.gs_flux_dispatch(0.5)
+    b = sf.gs_flux_dispatch(0.2)
+    assert a.err <= 0.5 and b.err <= 0.2
+    assert a.tier == sf.Tier.RIGOROUS and b.tier == sf.Tier.RIGOROUS
+    assert abs(a.value - b.value) <= a.err + b.err
+    assert any(p.startswith("legendre-profile") for p in a.provenance)
+    assert any(p.startswith("through source:") for p in a.provenance)
+    assert a.provenance[-1].startswith("plan gs-flux:")
+    assert "(8, 2)" in a.provenance[-1]
+    assert "(16, 4)" in b.provenance[-1]
+
+
+def test_gs_flux_pipeline_refuses():
+    """Below the finest declared mesh's predicted bill the pipeline
+    refuses, and the receipt names the mesh -- not the profile -- as
+    the wall."""
+    pytest.importorskip("dolfinx")
+    with pytest.raises(sf.Refusal, match="gs-flux") as exc:
+        sf.gs_flux_dispatch(0.05)
+    assert "profile is not the wall" in str(exc.value)
