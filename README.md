@@ -1,21 +1,22 @@
 # sufficit
 
-*A query compiler for physics: declare the model, the question, and the error
-you can tolerate; the system searches for the compression, the algorithm, and
-the certificate.*
+A query compiler for physics. Declare the model, the question, and the
+error you can tolerate. The system searches for a cheap computation that
+answers the question and proves how wrong it could be.
 
-Working research code. One module of certified rewrites
-([`sufficit.py`](sufficit.py)), one test suite in which every claimed bound is
-checked against brute force, exact solutions, or independent constructions
-([`test_sufficit.py`](test_sufficit.py) — 100 checks, several of which exist to
-commemorate a mistake). **The certificate is the product**: every answer ships
-as `value ± err` where the `±` is a theorem (or carries a printed failure
-probability), never a hope.
+Working research code: one module of certified rewrites
+([`sufficit.py`](sufficit.py)) and one test suite
+([`test_sufficit.py`](test_sufficit.py), 100 checks) in which every claimed
+bound is verified against brute force, exact solutions, or independent
+constructions. Every answer carries a value, an error bound, a tier, and
+the provenance of the bound. The bound is the product.
 
 New here? Start with the
-**[illustrated tour](https://glassontin.github.io/sufficit/)**, then
-[VISION.md](VISION.md) (the founding argument) and
-[TARGETS.md](TARGETS.md) (where it should earn its keep).
+**[tour](https://glassontin.github.io/sufficit/)**, then
+[VISION.md](VISION.md), the founding argument, and [TARGETS.md](TARGETS.md),
+the nine target domains. All nine now have entry rewrites, each with a
+[case page](https://glassontin.github.io/sufficit/) that regenerates from a
+fresh run on every push.
 
 ## Two answers with receipts
 
@@ -26,56 +27,57 @@ import sufficit as sf
 c = sf.h2_energy_bracket(1.4)          # bond length in bohr
 print(c.value, c.err)                  # -1.137275944 +/- 1.5e-13 hartree
 
-# A Heisenberg chain with 4^2000 quantum states — bracketed in ~4 seconds,
-# because window cost is independent of chain length
+# A Heisenberg chain with 4^2000 quantum states, bracketed in ~4 seconds,
+# because window cost does not depend on chain length
 h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4566, -0.4221]
 ```
 
-Requirements: `numpy`, `scipy`, `mpmath` (tests only), `cvxpy-base`+`scs` (SOS search only — certificates never trust the solver). Run the suite with
-`pytest test_sufficit.py` (~1 minute).
+Requirements: `numpy` and `scipy`; `mpmath` for the tests; `cvxpy-base`
+and `scs` only for the SOS search, whose result is re-proven exactly.
+Run the suite with `pytest test_sufficit.py` (about two minutes).
 
-## Measured highlights
+## Measured results
 
 | Problem | Result | Guarantee |
 |---|---|---|
-| N-body sums, 50k bodies (FMM rediscovered) | 64× fewer ops | pointwise ≤ requested ε |
-| Black-box kernels (certified H-matrix + butterfly) | amortized applies, per-block rewrite competition | holds for every future input; `fail_p = 1e-10`, printed |
-| 2D Ising at high temperature | free energy + correlations, FP error carried by intervals | refuses outside its proven validity region |
-| Helmholtz scattering (certified far field) | Neumann depth chosen from your ε | per-angle certified; refuses strong scattering |
-| H₂ from scratch (McMurchie–Davidson, s+p) | −1.137275944 ± 1.5e-13 Ha; 5.000 mHa polarization gain proven strictly | two-sided bracket over all particle sectors |
-| Hydrogen chains, up to 2²⁰ states (H₁₀, ℓ=7) | 55 mHa/atom bracket | rigorous both sides — no exact answer exists, none needed |
-| TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s (Lieb–Robinson cone) | a-posteriori boundary-commutator certificate; refuses when the light cone outruns the budget |
-| Guiding-center drift (plasma hierarchy) | first ASYMPTOTIC-tier certificate: exponent proven, constant measured on a cheap large-ε ladder, extrapolated down | refuses when the measured constant contradicts the claimed order |
-| Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001] — sharp to the fixed-point witness | Gram identity + PSD proven in exact rational arithmetic; SDP solver used for search only |
-| Gravitational-wave surrogates | any parameter in ~0.3 ms, mismatch calibrated to machine precision on the demo family | distribution-free conformal bound, fail_p = 1/(n_cal+1) printed; refuses outside hull or above the detector's ε |
-| Smeared spectral functions (HLT mold) | resolution is part of the query | error bounded by the data itself; degrades honestly to statistics |
-| Mori–Zwanzig closures | certified linear tier + conformal empirical tier | gap-dependent bound, or distribution-free `fail_p = 1/(n+1)` |
+| N-body sums, 50k bodies | 64× fewer operations | pointwise within the requested ε |
+| Black-box kernels (H-matrix + butterfly) | amortized applies, per-block competition | holds for every future input; failure odds 10⁻¹⁰, stated |
+| 2D Ising at high temperature | free energy and correlations, floating point carried in intervals | refuses outside the proven convergence region |
+| Helmholtz scattering | solver depth chosen from the requested ε | per-angle certified; refuses strong scattering |
+| H₂ from scratch (McMurchie–Davidson, s+p) | −1.137275944 ± 1.5·10⁻¹³ Ha | two-sided bracket over all particle sectors |
+| Hydrogen chains up to 2²⁰ states | 55 mHa/atom bracket at ℓ=7 | rigorous on both sides; no exact answer exists, none needed |
+| Smeared spectral functions (HLT) | resolution is part of the query | error bounded by the data; degrades to statistics when the data are noisy |
+| Mori–Zwanzig closures | certified linear tier and conformal empirical tier | gap-dependent bound, or distribution-free fail_p = 1/(n+1) |
+| TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | boundary commutator measured inside the cone; refuses when the light cone outruns the budget |
+| Guiding-center drift (plasma hierarchy) | the first ASYMPTOTIC-tier certificate | exponent proven, constant measured on a cheap large-ε ladder; refuses when the data contradict the exponent |
+| Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
+| Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
 
 ## How it stays honest
 
-- **Guess freely, check strictly.** Optimizers, sketches, and bundles are never
-  trusted; certificates are issued a posteriori by checks that cannot be argued
-  with (variational theorem, Cholesky feasibility, probe bounds with stated
-  odds). A bad guess costs tightness, never truth.
-- **Tiers are declared.** `RIGOROUS` / `ASYMPTOTIC` / `EMPIRICAL` travel in the
-  type and degrade to the weakest input. An empirical certificate honestly
-  declared beats a rigorous one falsely implied.
-- **Refusal is an answer.** Outside a proven validity region (cluster-expansion
-  radius, weak-scattering norm, spectral gap), functions raise instead of
-  extrapolating.
-- **Negative results are kept as tests**, so they are never expensively
-  re-learned: directional demodulation is unitarily vacuous (σ-values
-  identical, proven and pinned); the textbook ε-rebalancing rule is not an
-  ascent step (measured −5 mHa/atom); Lanczos warm starts bias cuts (measured
-  66→87 mHa/atom).
+- **The check does not care how the guess was found.** Optimizers,
+  sketches, and SDP solvers propose. Certificates come from the
+  variational theorem, Cholesky feasibility, probe bounds with stated
+  odds, or exact rational arithmetic. A bad guess costs tightness, never
+  truth.
+- **Three tiers, declared.** RIGOROUS: the bound is proven. ASYMPTOTIC:
+  the exponent is proven and the constant is measured. EMPIRICAL: the
+  guarantee is statistical and the failure probability is printed.
+  Composition keeps the weakest tier.
+- **Refusal is an answer.** Outside a proven validity region the
+  functions raise, and the error message prices the next option.
+- **Failures are kept as tests**, so a lesson is never bought twice: a
+  demodulation that provably changed nothing, a rebalancing rule that
+  measured 5 mHa worse, a warm start that loosened certificates from 66
+  to 87 mHa.
 
 ## Contributing
 
-From [VISION.md](VISION.md): the first useful contribution is an attack — a
-rewrite whose claimed bound fails to compose, filed as an issue with a
-counterexample.
+From [VISION.md](VISION.md): the most useful first contribution is an
+attack. Find a rewrite whose claimed bound fails to compose, and file it
+as an issue with a counterexample.
 
 ## License
 
-[AGPL-3.0](LICENSE). Strong copyleft, network use included: improvements to
-the rewrite library stay in the commons, which is the flywheel working.
+[AGPL-3.0](LICENSE). Strong copyleft, network use included: improvements
+to the rewrite library stay in the commons.

@@ -73,15 +73,6 @@
     border-left: 2px solid var(--rust); font-size: 1.12rem; color: var(--ink);
   }
   blockquote footer { font-size: 0.85rem; color: var(--muted); margin-top: 0.4rem; font-style: normal; }
-  table { border-collapse: collapse; width: 100%; margin: 1.4rem 0; font-size: 0.93rem; }
-  th {
-    text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--muted); font-weight: 600; padding: 0.45rem 0.8rem 0.45rem 0;
-    border-bottom: 1px solid var(--ink);
-  }
-  td { padding: 0.5rem 0.8rem 0.5rem 0; border-bottom: 1px solid var(--hairline); vertical-align: top; }
-  td.n { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .table-wrap { overflow-x: auto; }
   .legend { display: flex; gap: 1.4rem; font-size: 0.78rem; color: var(--muted); margin: 0 0 0.4rem 0.2rem; }
   .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 0.45em; vertical-align: -1px; }
   .legend .s-h6::before { background: var(--blue); }
@@ -100,25 +91,22 @@
 <main>
   <p class="eyebrow">Sufficit &nbsp;·&nbsp; from the Latin <em>sufficere</em>, “it suffices”</p>
   <h1>A computer that knows how much it doesn’t need to know</h1>
-  <p class="dek">An illustrated tour of a small research code that answers physics
-  questions with proofs attached — and is honest about what it cannot do.</p>
+  <p class="dek">A tour of a small research code that answers physics questions
+  with proofs attached, and says plainly what it cannot do.</p>
 
-  <p>Ask a supercomputer for tomorrow’s temperature and it will happily churn
-  through billions of numbers overnight to hand you one: 23°. Nearly everything
-  it computed was detail nobody asked about. This is not a flaw in one weather
-  model — it is the standard shape of scientific computing. We simulate
-  <em>everything</em>, then ask a question whose answer would fit on a postage
-  stamp.</p>
+  <p>Ask a supercomputer for tomorrow’s temperature and it computes billions of
+  numbers overnight to give you one: 23°. Almost everything it computed was
+  detail nobody asked about. That is the standard shape of scientific
+  computing: simulate everything, then ask a question whose answer fits on a
+  postage stamp.</p>
 
-  <h2><span class="lecture-no">Part 1</span>Most of the work is wasted — famously</h2>
-  <p>The interesting thing is what happens when someone notices. Every decade or
-  so, a scientist realizes that in their particular field, the map from “full
-  simulation” to “the number I wanted” throws almost everything away — and
-  finds coordinates where the throwing-away is done <em>first</em>. The fast
-  multipole method turned gravity calculations from quadratic to linear cost by
-  noticing that a distant cluster of stars pulls on you almost exactly like one
-  fat star. Each such discovery costs years of a brilliant career, and the trick
-  usually stays locked inside one community’s software.</p>
+  <h2><span class="lecture-no">Part 1</span>Most of the work is wasted</h2>
+  <p>Every decade or so, someone notices that in their field the map from full
+  simulation to final answer throws almost everything away, and finds
+  coordinates where the throwing-away happens first. The fast multipole method
+  made gravity sums linear instead of quadratic: a distant cluster of stars
+  pulls on you almost exactly like one heavy point. A discovery like that
+  costs years, and it usually stays locked inside one community’s software.</p>
 
   <figure>
     <svg viewBox="0 0 560 190" role="img" aria-label="A funnel from a huge cloud of simulated detail down to one small answer">
@@ -143,28 +131,25 @@
       <text x="487" y="100" text-anchor="middle" class="board-text" font-size="20" font-weight="600">23°</text>
     </svg>
     <figcaption>Fig. 1 — The shape of the problem. The simulation lives on the
-    left; the question lives on the right. Sufficit’s bet is that a compiler can
-    find the narrow neck automatically.</figcaption>
+    left. The question lives on the right. The bet is that a compiler can find
+    the narrow neck automatically.</figcaption>
   </figure>
 
-  <p>Sufficit treats that discovery process as a compilation problem. You declare
-  three things — the physical model, the question, and the error you can
-  tolerate — and the system searches for a cheap computation that answers the
-  question <em>and proves how wrong it could be</em>. That last clause is the
-  whole project.</p>
+  <p>Sufficit treats the discovery as a compilation problem. You declare three
+  things: the physical model, the question, and the error you can tolerate.
+  The system searches for a cheap computation that answers the question and
+  proves how wrong it could be. The proof is the product.</p>
 
   <h2><span class="lecture-no">Part 2</span>An answer with a receipt</h2>
-  <p>Every result in Sufficit is a little package: a value, an error bar, and the
-  paper trail of how that error bar was earned. The crucial point is what kind
-  of thing the error bar is. It is not a statistical hunch, not a “typically
-  accurate to…” from the manual. It is a theorem: <em>the true answer lies
-  within this interval</em>. When two certified numbers are added, their error
-  bars add. When one passes through a well-behaved function, the bar stretches
-  by a known factor. Errors propagate through programs the way units do —
-  mechanically, with no judgment calls.</p>
+  <p>Every result is a value, an error bound, and a record of how the bound was
+  earned. The bound is not a hunch. It is a statement of fact: the true answer
+  lies inside this interval. Certified numbers compose. Add two of them and
+  the bounds add. Pass one through a well-behaved function and the bound
+  stretches by a known factor. Errors move through a program the way units
+  do, mechanically.</p>
 
-  <p>The most satisfying form this takes is the <em>bracket</em>: squeeze the
-  truth from both sides at once.</p>
+  <p>The best form this takes is the bracket: squeeze the truth from both
+  sides at once.</p>
 
   <figure>
     <svg viewBox="0 0 560 130" role="img" aria-label="A number line with the true answer pinched between a certified lower bound and a certified upper bound">
@@ -185,21 +170,22 @@
       </g>
     </svg>
     <figcaption>Fig. 2 — A bracket. The upper bound comes from a guessed
-    wavefunction (any guess gives a valid ceiling — that’s a theorem from 1926).
-    The lower bound comes from a different kind of proof entirely. The truth has
-    nowhere to hide.</figcaption>
+    wavefunction; any guess gives a valid ceiling, by the variational theorem.
+    The lower bound comes from a different proof entirely. The truth has
+    nowhere to go.</figcaption>
   </figure>
 
-  <p>For the hydrogen molecule, computed from scratch — the electron integrals,
-  the quantum mechanics, everything — the bracket comes out to
-  <code>−1.137275944&nbsp;±&nbsp;0.00000000000015</code> hartree. The width of
-  that interval is ten billion times smaller than the precision chemists call
-  “chemical accuracy.” And it is a promise, not an estimate.</p>
+  <p>For the hydrogen molecule, computed from scratch, the bracket is
+  <code>−1.137275944&nbsp;±&nbsp;0.00000000000015</code> hartree. The interval
+  is ten billion times narrower than what chemists call chemical accuracy,
+  and it is a guarantee, not an estimate.</p>
 
   <h2><span class="lecture-no">Part 3</span>Guess freely, check strictly</h2>
-  <p>Here is the engineering trick that makes the whole thing practical, and it
-  is worth stating as a slogan: <em>it does not matter how you find an answer;
-  it matters how you check it.</em></p>
+  <p>One rule makes the whole thing practical: it does not matter how you find
+  an answer; it matters how you check it. Optimizers, randomized sketches, and
+  greedy searches produce the guesses, and none of them is trusted. The
+  certificate comes from a check that does not care where the guess came
+  from.</p>
 
   <figure>
     <svg viewBox="0 0 560 150" role="img" aria-label="Two lanes: a messy guessing lane feeding into a strict checking gate that stamps a certificate">
@@ -218,32 +204,26 @@
         <text x="412" y="97" text-anchor="middle" opacity="0.65" font-size="10">value ± proof</text>
       </g>
     </svg>
-    <figcaption>Fig. 3 — Separation of church and state. Optimizers, heuristics,
-    and randomness live in the top lane and can be as sloppy as they like. The
-    certificate is issued in the bottom lane and never depends on how the guess
-    was produced. A bad guess costs tightness, never truth.</figcaption>
+    <figcaption>Fig. 3 — The two lanes. The top lane can be as sloppy as it
+    likes. The certificate is issued in the bottom lane. A bad guess costs
+    tightness, never truth.</figcaption>
   </figure>
 
-  <p>Three examples of checks that cannot be argued with. To prove an energy
-  ceiling, plug <em>any</em> trial state into the energy formula — the
-  variational theorem guarantees the true ground energy is below it. To prove a
-  floor, ask a yes/no question the matrix cannot lie about: “is <code>H − c·I</code>
-  positive?” — a Cholesky factorization either completes or it doesn’t, and each
-  answer moves a bisection one step. And when a check itself needs to gamble
-  (random probing of a matrix too big to look at entry by entry), the odds of
-  being fooled are computed and printed on the certificate:
-  <code>fail_p&nbsp;=&nbsp;10⁻¹⁰</code>. Not hidden. Printed.</p>
-
-  <p>This separation is why the code is full of cheerfully disreputable
-  machinery — subgradient bundles, randomized sketches, greedy searches — none
-  of which is ever trusted. The moment an optimizer finishes, its work is
-  re-derived through a check that would have caught it lying.</p>
+  <p>Three checks that cannot be argued with. Plug any trial state into the
+  energy formula and the true ground energy is below the result. Ask whether
+  <code>H − c·I</code> has a Cholesky factorization; it either completes or it
+  does not, and each answer moves a bisection one step. And when a check must
+  gamble, because the matrix is too large to inspect entry by entry, the odds
+  of being fooled are computed and printed on the certificate:
+  <code>fail_p&nbsp;=&nbsp;10⁻¹⁰</code>.</p>
 
   <h2><span class="lecture-no">Part 4</span>Big things from small windows</h2>
-  <p>The deepest trick is how a laptop puts rigorous bounds on systems that are,
-  by any direct accounting, impossibly large. A chain of 2000 hydrogen atoms has
-  4<sup>2000</sup> quantum states — a number with more digits than there are
-  atoms in the universe. Sufficit brackets its energy anyway, in seconds. How?</p>
+  <p>A chain of 2000 hydrogen atoms has 4<sup>2000</sup> quantum states, a
+  number with more digits than there are atoms in the universe. Sufficit
+  brackets its energy in a few seconds. The reason is locality. Slide a small
+  window along the chain and weight each interaction by the number of windows
+  that contain it. The windows then add up to exactly the whole system, and
+  the true energy is at least the sum of the certified window minima.</p>
 
   <figure>
     <svg viewBox="0 0 560 170" role="img" aria-label="A chain of atoms covered by overlapping sliding windows, with correction terms passed between neighboring windows">
@@ -267,34 +247,26 @@
       </g>
       <path d="M 243 26 C 243 34 243 34 243 38" class="rust-ink" fill="none" stroke-width="1.4"/>
     </svg>
-    <figcaption>Fig. 4 — The window bound. Slide a small window along the chain;
-    bound each window’s energy exactly; weight the windows so their sum
-    reconstructs the full system with nothing missed and nothing counted twice.
-    The rust-colored “bribes” (±C) are corrections added to one window and
-    subtracted from its neighbor — the total is untouched, but each window can be
-    made individually fairer, and the machine optimizes the bribes.</figcaption>
+    <figcaption>Fig. 4 — The window bound. The corrections in rust are added to
+    one window and subtracted from its neighbor, so the total is untouched. An
+    optimizer picks them to make every window individually tighter, and the
+    bound is valid whatever it picked.</figcaption>
   </figure>
 
-  <p>The energy of the whole is at least the sum of the windows’ certified
-  floors — that inequality is exact, and each window is small enough to handle
-  honestly. The cost depends on the window size, <em>not the chain length</em>.
-  A 20-atom chain and a 2000-atom chain cost the same. What you lose is
-  tightness: the windows cannot see correlations longer than themselves, and the
-  certificate is wide by exactly the amount of physics that escapes. Which
-  brings us to the knob.</p>
+  <p>The cost depends on the window size, not the chain length. A 20-atom
+  chain and a 2000-atom chain cost the same. What you lose is tightness: a
+  window cannot see correlations longer than itself, and the certificate
+  widens by exactly the physics that escapes.</p>
 
-  <h2><span class="lecture-no">Part 5</span>The knob: pay for precision</h2>
-  <p>Everything in Sufficit is built around one economic principle: <em>cost
-  should scale with the precision of the question, not the sharpness of the
-  formalism.</em> Want a rough answer? Cheap. Want a tight one? Turn the knob —
-  here, the window length ℓ — and pay 4<sup>ℓ</sup> for it. Below are real
-  measurements: the certified bracket width for hydrogen chains, in
-  milli-hartree per atom, as the window grows.</p>
+  <h2><span class="lecture-no">Part 5</span>Pay for precision</h2>
+  <p>Cost should scale with the precision of the question. The knob here is
+  the window length ℓ. Each unit of ℓ costs a factor of four in computer time
+  and buys roughly a factor of two in certified width. The chart shows
+  measurements, not projections.</p>
 
   <figure>
     <div class="legend"><span class="s-h6">H₆ chain (checked against exact answer)</span><span class="s-h10">H₁₀ chain (2²⁰ states — no exact answer exists)</span></div>
     <svg id="ladder" viewBox="0 0 560 240" role="img" aria-label="Chart: certified bracket width in milli-hartree per atom versus window length, for H6 and H10 chains. Width roughly halves with each unit of window length.">
-      <!-- log scale y: 40..600 mHa mapped to y=200..30 -->
       <g class="board-ink" opacity="0.35" stroke-width="1">
         <line x1="70" y1="46.6" x2="530" y2="46.6"/>
         <line x1="70" y1="104.4" x2="530" y2="104.4"/>
@@ -313,7 +285,6 @@
         <text x="440" y="228" text-anchor="middle">ℓ = 6</text>
         <text x="510" y="228" text-anchor="middle">ℓ = 7</text>
       </g>
-      <!-- y(v) = 200 - 83.5 * log10(v/65); H6: 244->152.5? compute: log10(244/65)=0.5745 => y=152.0... precomputed below -->
       <g fill="none" stroke-width="2">
         <path class="blue-ink" d="M 140 152.1 L 240 188.6 L 340 199.4" opacity="0.85"/>
         <path class="rust-ink" d="M 140 127.6 L 240 155.5 L 340 178.4 L 510 206.1" opacity="0.85"/>
@@ -336,99 +307,173 @@
         <text x="340" y="192" text-anchor="middle" fill="var(--blue)">65</text>
       </g>
     </svg>
-    <figcaption>Fig. 5 — The hierarchy knob, measured. Each unit of ℓ roughly
-    halves the certified width. Where an exact answer exists (H₆), it always
-    falls inside the bracket — that is checked by machine, every time the test
-    suite runs. The window at ℓ=7 holds 16,384 quantum states and is tamed by a
-    symmetry: particle number splits it into blocks no bigger than 1,225.</figcaption>
+    <figcaption>Fig. 5 — The knob, measured. Where an exact answer exists
+    (H₆) it falls inside the bracket every time the test suite runs. The ℓ=7
+    window holds 16,384 states; a symmetry, particle number, splits it into
+    blocks no larger than 1,225.</figcaption>
   </figure>
 
-  <p>One honest footnote a chart won’t tell you: how fast the knob pays off
-  depends on the physics. Systems with an energy gap forget their surroundings
-  exponentially fast, so the bracket collapses quickly. Critical systems — poised
-  at a phase transition, correlations reaching everywhere — give up their
-  precision grudgingly, a factor of two per turn. The chains above are the hard,
-  grudging kind. The certificate doesn’t hide this; it <em>is</em> this.</p>
+  <p>How fast the knob pays depends on the physics. Systems with an energy gap
+  forget their surroundings exponentially fast, and the bracket collapses
+  quickly. Critical systems give up a factor of two per turn. These chains
+  are the critical kind, and the certificate reports exactly that.</p>
 
-  <h2><span class="lecture-no">Part 6</span>On not fooling yourself</h2>
+  <h2><span class="lecture-no">Part 6</span>Three kinds of honesty</h2>
+  <p>Not every honest answer is a theorem. Each certificate carries a tier
+  that says what kind of statement it is, and when certified numbers combine,
+  the result keeps the weakest tier in the chain. Arithmetic never upgrades a
+  guarantee.</p>
+
+  <figure>
+    <svg viewBox="0 0 560 210" role="img" aria-label="The three certificate tiers: rigorous, asymptotic, empirical, and the rule that composition keeps the weakest">
+      <g fill="none" stroke-width="1.6">
+        <rect x="24" y="22" width="126" height="34" rx="17" class="blue-ink"/>
+        <rect x="24" y="80" width="126" height="34" rx="17" class="board-ink"/>
+        <rect x="24" y="138" width="126" height="34" rx="17" class="rust-ink"/>
+      </g>
+      <g class="board-text" font-size="12" font-weight="600">
+        <text x="87" y="43" text-anchor="middle" fill="var(--blue)">RIGOROUS</text>
+        <text x="87" y="101" text-anchor="middle">ASYMPTOTIC</text>
+        <text x="87" y="159" text-anchor="middle" fill="var(--rust)">EMPIRICAL</text>
+      </g>
+      <g class="board-text" font-size="12">
+        <text x="172" y="39">|value − truth| ≤ err.  Proven.</text>
+        <text x="172" y="97">err = η · C · ε<tspan font-size="9" dy="-4">k</tspan><tspan dy="4">.</tspan>  The exponent k is proven;</text>
+        <text x="172" y="113">the constant C is measured; the safety η is declared.</text>
+        <text x="172" y="155">P(error &gt; err) ≤ fail_p.  The odds are printed,</text>
+        <text x="172" y="171">and the sampling assumption is stated.</text>
+      </g>
+      <line x1="24" y1="188" x2="536" y2="188" class="board-ink" opacity="0.4" stroke-width="1"/>
+      <text x="280" y="205" text-anchor="middle" class="board-text" font-size="11" opacity="0.75">
+        combined answers keep the weakest tier of their inputs</text>
+    </svg>
+    <figcaption>Fig. 6 — The three tiers. All three have shipped: the energy
+    brackets are rigorous, the plasma hierarchy is asymptotic, and the
+    waveform surrogates are empirical with the failure probability printed.
+    </figcaption>
+  </figure>
+
+  <h2><span class="lecture-no">Part 7</span>Refusal is an answer</h2>
+  <p>Some questions have no affordable certificate, and the honest output is a
+  refusal that says why. The refusals are specific. The cluster expansion
+  refuses beyond the radius where its convergence is proven. The light-cone
+  simulation refuses when the excitation front outruns the largest affordable
+  cone, and its error message prices the next one.</p>
+
+  <figure>
+    <svg viewBox="0 0 560 150" role="img" aria-label="A temperature axis: a certified region ending at a proof wall, and the true phase transition much farther along">
+      <line x1="40" y1="90" x2="530" y2="90" class="board-ink" stroke-width="1.4"/>
+      <rect x="40" y="70" width="94" height="40" class="blue-fill" opacity="0.18"/>
+      <line x1="134" y1="56" x2="134" y2="118" class="blue-ink" stroke-width="1.6" stroke-dasharray="5 4"/>
+      <line x1="480" y1="56" x2="480" y2="118" class="rust-ink" stroke-width="1.6"/>
+      <g class="board-text" font-size="11">
+        <text x="87" y="130" text-anchor="middle" fill="var(--blue)">certified</text>
+        <text x="134" y="46" text-anchor="middle" fill="var(--blue)">refuses here: βJ ≈ 0.086</text>
+        <text x="480" y="46" text-anchor="middle" fill="var(--rust)">the magnet actually changes phase here: βJ ≈ 0.44</text>
+        <text x="307" y="130" text-anchor="middle" opacity="0.6">no certificate claimed</text>
+        <text x="452" y="130" text-anchor="end" opacity="0.6" font-size="10">temperature falls →</text>
+      </g>
+    </svg>
+    <figcaption>Fig. 7 — The Ising wall, to scale. The certified region ends
+    where the convergence proof ends, five times short of the real phase
+    transition. The wall belongs to the proof, not to the physics, and the
+    refusal says so instead of extrapolating.</figcaption>
+  </figure>
+
+  <h2><span class="lecture-no">Part 8</span>On not fooling yourself</h2>
   <blockquote>
     “The first principle is that you must not fool yourself — and you are the
     easiest person to fool.”
     <footer>— R. P. Feynman</footer>
   </blockquote>
-  <p>A peculiarity of this codebase: its failures are kept, deliberately, as
-  permanent tests. Three exhibits from the museum:</p>
-  <p><strong>The demodulation that did nothing.</strong> A clever-looking trick
-  for high-frequency wave scattering — factor out the oscillation, compress
-  what remains — was implemented, measured, and found to change the results by
-  exactly zero. The reason is a two-line theorem: the trick is a rotation, and
-  rotations don’t change the quantities being compressed. The theorem now lives
-  in a test, so the idea can never be expensively re-discovered.</p>
-  <p><strong>The textbook update that made things worse.</strong> A standard
-  “optimal” rebalancing rule for error budgets degraded the bound when measured
-  — it optimizes against yesterday’s answer, and the system moves. The shipped
-  version is provably unable to end worse than it began; the measured optimum
-  turned out to be the starting point. That negative result is also a test.</p>
-  <p><strong>The warm start that poisoned the well.</strong> Reusing the previous
-  step’s answer to speed up an iterative solver — the most natural optimization
-  in the world — quietly biased its output and loosened the certificates by a
-  third. Measured, diagnosed, removed, and pinned in a comment at the scene of
-  the crime.</p>
-  <p>None of these could have corrupted a certificate — the checking lane doesn’t
-  care where guesses come from. But each would have wasted tightness or compute
-  forever if it hadn’t been caught by the habit of measuring everything.</p>
+  <p>The failures are kept, deliberately, as permanent tests. A clever
+  demodulation for wave scattering changed the results by exactly zero; the
+  two-line theorem that explains why is now a test, so the idea cannot be
+  expensively rediscovered. A textbook rebalancing rule made the bound worse
+  when measured; the shipped version provably cannot end worse than it
+  started. A warm start biased an iterative solver and loosened the
+  certificates by a third; it was measured, removed, and pinned in a comment.
+  None of these could have corrupted a certificate. Each would have wasted
+  computer time forever if it had not been measured.</p>
 
-  <h2><span class="lecture-no">Part 7</span>The scoreboard so far</h2>
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>Problem</th><th>Result</th><th>The guarantee</th></tr></thead>
-    <tbody>
-      <tr><td>Gravity-like sums, 50,000 bodies</td>
-          <td class="n">64× fewer operations</td>
-          <td>every answer within the requested ε</td></tr>
-      <tr><td>Any smooth interaction, given as a black box</td>
-          <td class="n">4× cheaper per use</td>
-          <td>holds for every future input; failure odds 10⁻¹⁰, printed</td></tr>
-      <tr><td>Magnet at high temperature (2D Ising)</td>
-          <td class="n">free energy + correlations</td>
-          <td>refuses to answer outside its proven validity region</td></tr>
-      <tr><td>Wave scattering, certified radar-style far field</td>
-          <td class="n">solver depth picked from your ε</td>
-          <td>per-angle certified; refuses strong scattering honestly</td></tr>
-      <tr><td>H₂ molecule, from raw integrals</td>
-          <td class="n">−1.137275944 ± 1.5·10⁻¹³ Ha</td>
-          <td>two-sided bracket; polarization gain of 5.000 mHa proven strictly</td></tr>
-      <tr><td>Hydrogen chain, 2²⁰ quantum states</td>
-          <td class="n">55 mHa/atom bracket</td>
-          <td>rigorous both sides; no exact answer exists to compare against — none needed</td></tr>
-      <tr><td>Spectral functions from simulation data</td>
-          <td class="n">resolution is part of the question</td>
-          <td>error bounded by the data itself; degrades honestly to statistics when data is noisy</td></tr>
-    </tbody>
-  </table>
-  </div>
+  <figure>
+    <svg viewBox="0 0 560 120" role="img" aria-label="Three kept failures, each pinned as a permanent test">
+      <g fill="none" stroke-width="1.4" class="board-ink">
+        <rect x="24" y="20" width="160" height="70" rx="4"/>
+        <rect x="200" y="20" width="160" height="70" rx="4"/>
+        <rect x="376" y="20" width="160" height="70" rx="4"/>
+      </g>
+      <g class="board-text" font-size="11" font-weight="600">
+        <text x="104" y="42" text-anchor="middle">the demodulation</text>
+        <text x="280" y="42" text-anchor="middle">the rebalancing rule</text>
+        <text x="456" y="42" text-anchor="middle">the warm start</text>
+      </g>
+      <g class="board-text" font-size="10.5" opacity="0.7">
+        <text x="104" y="60" text-anchor="middle">changed nothing:</text>
+        <text x="104" y="74" text-anchor="middle">a rotation, provably</text>
+        <text x="280" y="60" text-anchor="middle">made the bound worse:</text>
+        <text x="280" y="74" text-anchor="middle">−5 mHa, measured</text>
+        <text x="456" y="60" text-anchor="middle">biased the solver:</text>
+        <text x="456" y="74" text-anchor="middle">66 → 87 mHa, measured</text>
+      </g>
+      <text x="280" y="112" text-anchor="middle" class="board-text" font-size="11" opacity="0.75">
+        all three are permanent tests now</text>
+    </svg>
+    <figcaption>Fig. 8 — The kept failures. None could corrupt a certificate;
+    the checking lane does not care where guesses come from. They are pinned
+    so the lesson is never bought twice.</figcaption>
+  </figure>
 
-  <h2><span class="lecture-no">Part 8</span>Where this goes</h2>
-  <p>The near-term map is concrete. A machine with 96&nbsp;GB of memory unlocks
-  the next window size — and with it the community’s standard hard benchmark
-  for strongly-correlated matter, with two-sided certificates that don’t
-  currently exist in the literature. A consumer GPU unlocks the size after
-  that, through a pleasingly honest trick: run the proofs in fast low precision
-  and <em>carry the rounding error in the certificate</em>, where it turns out
-  to be ten thousand times smaller than anything it could obscure. Beyond that,
-  the bottleneck is mathematics again, which is as it should be.</p>
-  <p>The long game is the one the founding document states: every compression
-  discovered becomes a reusable, certified rewrite rule, so that an insight paid
-  for once — in any field — compounds everywhere, the way compiler
-  optimizations do. The fast multipole method was the existence proof that
-  physics answers are compressible. This project is the induction step.</p>
+  <h2><span class="lecture-no">Part 9</span>Nine domains, one method</h2>
+  <p>The target list names nine fields where tolerances are already part of
+  the culture: chemists state chemical accuracy, gravitational-wave detectors
+  state a mismatch, lattice theorists publish error budgets. All nine now
+  have entry rewrites, and each has a case page that regenerates from a fresh
+  run on every push: the idea, the program rendered from the module, and the
+  result of running it.</p>
+
+  <figure>
+    <svg viewBox="0 0 560 210" role="img" aria-label="Nine domain tiles, bordered by the tier of their entry certificate">
+      <g fill="none" stroke-width="1.6">
+        <rect x="24"  y="16" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="200" y="16" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="376" y="16" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="24"  y="80" width="160" height="46" rx="4" class="board-ink" stroke-dasharray="5 3"/>
+        <rect x="200" y="80" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="376" y="80" width="160" height="46" rx="4" class="rust-ink"/>
+        <rect x="24"  y="144" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="200" y="144" width="160" height="46" rx="4" class="blue-ink"/>
+        <rect x="376" y="144" width="160" height="46" rx="4" class="rust-ink"/>
+      </g>
+      <g class="board-text" font-size="11.5" text-anchor="middle">
+        <text x="104" y="36">wave scattering</text><text x="104" y="52" opacity="0.6" font-size="10">H-matrix, butterfly, RB</text>
+        <text x="280" y="36">chemistry &amp; materials</text><text x="280" y="52" opacity="0.6" font-size="10">two-sided energy brackets</text>
+        <text x="456" y="36">lattice field theory</text><text x="456" y="52" opacity="0.6" font-size="10">clusters, smeared spectra</text>
+        <text x="104" y="100">plasmas &amp; fusion</text><text x="104" y="116" opacity="0.6" font-size="10">guiding-center hierarchy</text>
+        <text x="280" y="100">nuclear &amp; dense matter</text><text x="280" y="116" opacity="0.6" font-size="10">eigenvector continuation</text>
+        <text x="456" y="100">molecular kinetics</text><text x="456" y="116" opacity="0.6" font-size="10">Mori–Zwanzig closures</text>
+        <text x="104" y="164">quantum dynamics</text><text x="104" y="180" opacity="0.6" font-size="10">measured light cones</text>
+        <text x="280" y="164">turbulence &amp; transport</text><text x="280" y="180" opacity="0.6" font-size="10">SOS bounds over ℚ</text>
+        <text x="456" y="164">gravitational waves</text><text x="456" y="180" opacity="0.6" font-size="10">conformal surrogates</text>
+      </g>
+      <g class="board-text" font-size="10" opacity="0.7" text-anchor="start">
+        <text x="24" y="205">border: tier of the entry certificate — solid blue rigorous, dashed asymptotic, rust empirical</text>
+      </g>
+    </svg>
+    <figcaption>Fig. 9 — The board. Every tile has a case page, linked from
+    the <a href="index.html">index</a>. The near map: a 96&nbsp;GB machine unlocks
+    the next window length; a consumer GPU unlocks the one after, by running
+    proofs in fast low precision and carrying the rounding error inside the
+    certificate.</figcaption>
+  </figure>
 
   <hr>
   <p style="color: var(--muted); font-size: 0.9rem;">Sufficit is a working
-  research code: one Python file of certified rewrites, one file of tests in
-  which every claimed bound is checked against brute force, exact solutions, or
-  independent constructions — 79 checks and counting, several of which exist to
-  commemorate a mistake.</p>
+  research code: one Python module of certified rewrites and one test suite
+  in which every claimed bound is checked against brute force, exact
+  solutions, or independent constructions. 100 checks, several of which exist
+  to record a mistake. Source on
+  <a href="https://github.com/GlassOnTin/sufficit">GitHub</a>, AGPL-3.0.</p>
 </main>
 
 <div id="tip"></div>
