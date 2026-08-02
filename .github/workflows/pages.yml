@@ -22,12 +22,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - run: pip install numpy scipy mpmath pytest cvxpy-base scs
-      - run: pytest test_sufficit.py -q
-      - run: python docs/make_cases.py
+      # FEniCSx has no PyPI wheels; install the same Debian-family
+      # packages the dev machine uses, via the FEniCS PPA, and run on
+      # the system python so apt packages are importable
+      - run: |
+          sudo add-apt-repository -y ppa:fenics-packages/fenics
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-dolfinx python3-matplotlib python3-mpmath \
+            python3-pytest python3-pip
+      - run: pip install --break-system-packages cvxpy-base scs
+      - run: python3 -m pytest test_sufficit.py -q
+      - run: python3 docs/make_cases.py
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
