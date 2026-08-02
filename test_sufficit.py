@@ -2264,7 +2264,7 @@ def test_legendre_profile_tail_bound():
     xs = np.linspace(-1, 1, 20001)
     tail = sum(A * rho ** j * L.Legendre.basis(j)(xs)
                for j in range(k, 40))
-    num = math.sqrt(2.0 * np.trapezoid(tail ** 2, xs))
+    num = math.sqrt(2.0 * getattr(np, 'trapezoid', np.trapz)(tail ** 2, xs))
     prof = sf.legendre_source_profile(A, rho, k)
     assert prof.tier == sf.Tier.RIGOROUS
     assert len(prof.value) == k
