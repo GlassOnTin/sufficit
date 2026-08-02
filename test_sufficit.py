@@ -2069,3 +2069,128 @@ def test_trace_deterministic_receipt_measured():
     assert a.provenance == b.provenance
     assert [r[:3] for r in a.receipt] == [r[:3] for r in b.receipt]
     assert all(isinstance(r[3], float) and r[3] >= 0 for r in a.receipt)
+
+
+def test_sensitivity_composes_add_sub():
+    """Sensitivities to the same input compose the way errors do:
+    bounds add, the weakest tier wins. A product has no global
+    Lipschitz constant, and different inputs share none, so both
+    honestly drop the claim -- None means no claim, never no
+    amplification."""
+    s1 = sf.Sensitivity(2.0, sf.Tier.RIGOROUS, "data")
+    s2 = sf.Sensitivity(3.0, sf.Tier.EMPIRICAL, "data")
+    a = sf.Certified(1.0, 0.1, sf.Tier.RIGOROUS, ("a",), sensitivity=s1)
+    b = sf.Certified(2.0, 0.2, sf.Tier.RIGOROUS, ("b",), sensitivity=s2)
+    assert (a + b).sensitivity == sf.Sensitivity(5.0, sf.Tier.EMPIRICAL,
+                                                 "data")
+    assert (a - b).sensitivity.bound == 5.0
+    assert (a * b).sensitivity is None
+    other = sf.Certified(2.0, 0.2, sf.Tier.RIGOROUS, ("c",),
+                         sensitivity=sf.Sensitivity(3.0, sf.Tier.RIGOROUS,
+                                                    "other"))
+    assert (a + other).sensitivity is None
+    bare = sf.Certified(2.0, 0.2, sf.Tier.RIGOROUS, ("d",))
+    assert (a + bare).sensitivity is None
+
+
+def test_hlt_exports_sensitivity():
+    """The smeared value is the linear map g.C, so the certified
+    amplification of correlator error is exactly |g| -- and a
+    perturbation aligned with g must saturate it."""
+    ts = np.arange(1, 17)
+    C = np.exp(-0.9 * ts) + 0.7 * np.exp(-1.9 * ts)
+    cert = sf.smeared_spectral(C, 1.0, 0.35)
+    g, _ = sf._hlt_solve(16, 1.0, 0.35)
+    assert cert.sensitivity.wrt == "correlator"
+    assert cert.sensitivity.tier == sf.Tier.RIGOROUS
+    assert cert.sensitivity.bound == pytest.approx(np.linalg.norm(g))
+    delta = np.zeros(16)
+    delta[1:] = g / np.linalg.norm(g) * 1e-6
+    moved = sf.smeared_spectral(C + delta, 1.0, 0.35)
+    assert abs(moved.value - cert.value) == pytest.approx(
+        cert.sensitivity.bound * 1e-6, rel=1e-6)
+
+
+def _spectral_bench():
+    """Deterministic synthetic lattice: two-peak spectral density,
+    means drawn with per-(N, m)-seeded noise at the declared cov1/m,
+    so every dispatch run reproduces byte-identically."""
+    E, a = (0.9, 1.9), (1.0, 0.7)
+    rel = 1e-2
+
+    def exact(N):
+        ts = np.arange(1, N + 1)
+        return a[0] * np.exp(-E[0] * ts) + a[1] * np.exp(-E[1] * ts)
+
+    def cov1(N):
+        return np.diag((rel * exact(N)) ** 2)
+
+    def measure(N, m):
+        rng = np.random.default_rng(N * 1_000_003 + m)
+        return exact(N) + rng.standard_normal(N) * rel * exact(N) \
+            / math.sqrt(m)
+
+    return measure, cov1, exact
+
+
+def test_composed_plan_meets_tol_and_contains():
+    """The composed plan pays both bills out of one tolerance: the
+    certificate meets tol, contains the exact smeared truth, shows the
+    budget split in its provenance, and still exports its
+    sensitivity."""
+    measure, cov1, _ = _spectral_bench()
+    truth = 1.0 * _gauss(1.0 - 0.9, 0.5) + 0.7 * _gauss(1.0 - 1.9, 0.5)
+    cert = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2)
+    assert cert.err <= 0.2
+    assert abs(cert.value - truth) <= cert.err
+    assert cert.tier == sf.Tier.EMPIRICAL
+    assert any(p.startswith("budget split at N=") for p in cert.provenance)
+    assert cert.provenance[-1].startswith("plan smeared-spectral:")
+    assert cert.sensitivity.wrt == "correlator"
+
+
+def test_composed_plan_buys_the_dear_kernel():
+    """At sigma=0.4 the coarse kernel qualifies only with an ocean of
+    samples (predicted cost ~1.7e6) while the fine one needs a few
+    hundred (~1e4): the split must buy resolution, not statistics."""
+    measure, cov1, _ = _spectral_bench()
+    cert = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.4, tol=0.2)
+    assert "chose hlt@(16," in cert.provenance[-1]
+    assert cert.err <= 0.2
+
+
+def test_composed_plan_tighter_tol_buys_samples():
+    """Tightening tol grows the statistics bill by the 1/sqrt(m) law:
+    the sample count in the split line must rise."""
+    measure, cov1, _ = _spectral_bench()
+    ms = []
+    for tol in (0.2, 0.12):
+        cert = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5,
+                                            tol=tol)
+        assert cert.err <= tol
+        line = next(p for p in cert.provenance
+                    if p.startswith("budget split"))
+        ms.append(int(re.search(r"m=(\d+)", line).group(1)))
+    assert ms[1] > ms[0]
+
+
+def test_composed_plan_refuses_past_the_kernel_wall():
+    """Below the best smearing bill no sample count helps: every rung
+    is skipped before it runs, and the refusal names the wall and the
+    price of statistics."""
+    measure, cov1, _ = _spectral_bench()
+    with pytest.raises(sf.Refusal, match="smeared-spectral") as exc:
+        sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.05)
+    assert "smearing bill" in str(exc.value)
+    assert "m_max" in str(exc.value)
+
+
+def test_composed_plan_trace_deterministic():
+    """Two identical dispatch runs must produce byte-identical
+    provenance, split line included -- the certificate describes the
+    data, the receipt describes the run."""
+    measure, cov1, _ = _spectral_bench()
+    a = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2)
+    b = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2)
+    assert a.provenance == b.provenance
+    assert [r[:3] for r in a.receipt] == [r[:3] for r in b.receipt]

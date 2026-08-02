@@ -1814,8 +1814,218 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "both exposes it. These pairs, kept in every run, are "
             "the calibration data for better cost models.</li>"
             "<li>What this is not, yet: the plan space is single-knob "
-            "ladders per query. Composed pipelines that split one "
-            "error budget across several rewrites are the remaining "
+            "ladders per query. The first composed plan — one error "
+            "budget split between two stages — now has "
+            '<a href="the-budget.html">its own page</a>; splitting a '
+            "budget across pipelines of different rewrites is the "
+            "remaining debt.</li></ul>",
+        ])
+
+
+# ======================================================================
+def budget_case():
+    omega, sigma, z, Ns = 1.0, 0.5, 5.0, (8, 12, 16)
+    E, a, rel = (0.9, 1.9), (1.0, 0.7), 1e-2
+
+    def exact(N):
+        ts = np.arange(1, N + 1)
+        return a[0] * np.exp(-E[0] * ts) + a[1] * np.exp(-E[1] * ts)
+
+    def cov1(N):
+        return np.diag((rel * exact(N)) ** 2)
+
+    def measure(N, m):
+        rng = np.random.default_rng(N * 1_000_003 + m)
+        return exact(N) + rng.standard_normal(N) * rel * exact(N) \
+            / math.sqrt(m)
+
+    truth = sum(ai * math.exp(-(omega - Ei) ** 2 / (2 * sigma**2))
+                / (sigma * math.sqrt(2 * math.pi)) for ai, Ei in zip(a, E))
+
+    # the ladder's economics, computed the way the dispatch computes them
+    C1 = float(exact(8)[0])
+    ladder = {}
+    for N in Ns:
+        g, c = sf._hlt_solve(N, omega, sigma)
+        V = cov1(N)
+        amp = c * math.sqrt(float(V[0, 0])) \
+            + math.sqrt(float(g @ V[1:, 1:] @ g))
+        ladder[N] = (c * C1, amp)      # (smearing bill, noise amplification)
+
+    def cost(N, tol):
+        bill, amp = ladder[N]
+        if tol <= bill:
+            return None
+        return N * max(1, math.ceil((z * amp / (0.8 * (tol - bill))) ** 2))
+
+    # one question, three tolerances: the split re-decides each time
+    sweep = []
+    for tol in (0.4, 0.2, 0.12):
+        cert = sf.smeared_spectral_dispatch(measure, cov1, omega, sigma,
+                                            tol, Ns=Ns)
+        split = next(p for p in cert.provenance
+                     if p.startswith("budget split"))
+        Nc, mc = (int(x) for x in re.findall(r"N=(\d+) m=(\d+)", split)[0])
+        sweep.append((tol, Nc, mc, cert))
+    contained = sum(abs(c.value - truth) <= c.err for _, _, _, c in sweep)
+
+    # at sigma=0.4 the coarse kernel qualifies only with an ocean of
+    # samples; the split buys resolution instead
+    hard = sf.smeared_spectral_dispatch(measure, cov1, omega, 0.4, 0.2,
+                                        Ns=Ns)
+    hsplit = next(p for p in hard.provenance if p.startswith("budget split"))
+    hN, hm = (int(x) for x in re.findall(r"N=(\d+) m=(\d+)", hsplit)[0])
+    hcost = float(hard.receipt[-1][2])
+    g8, c8 = sf._hlt_solve(8, omega, 0.4)
+    V8 = cov1(8)
+    amp8 = c8 * math.sqrt(float(V8[0, 0])) \
+        + math.sqrt(float(g8 @ V8[1:, 1:] @ g8))
+    m8 = math.ceil((z * amp8 / (0.8 * (0.2 - c8 * C1))) ** 2)
+
+    # the sensitivity field composes through the IR's own arithmetic
+    lo = sf.smeared_spectral(exact(16), E[0], sigma)
+    hi = sf.smeared_spectral(exact(16), E[1], sigma)
+    diff = lo - hi
+
+    # an impossible question: below every rung's smearing bill
+    try:
+        sf.smeared_spectral_dispatch(measure, cov1, omega, sigma, 0.05,
+                                     Ns=Ns)
+        refusal = None
+    except sf.Refusal as e:
+        refusal = e
+
+    # cost-of-the-split curves: each rung diverges at its own smearing
+    # bill; the plan walks the lower envelope
+    ax = Axes((0.088, 0.55), (60, 4e5), h=320, logx=True, logy=True)
+    wall = min(b for b, _ in ladder.values())
+    wx = ax.X(wall)
+    cls = {8: "rust-ink", 12: "board-ink", 16: "blue-ink"}
+    curves = []
+    for N in Ns:
+        grid = np.exp(np.linspace(math.log(ladder[N][0] * 1.001),
+                                  math.log(0.55), 160))
+        xs = [t for t in grid if cost(N, t)]
+        curves.append(f'<path d="{ax.path(xs, [cost(N, t) for t in xs])}" '
+                      f'fill="none" class="{cls[N]}" stroke-width="1.8" '
+                      f'opacity="0.85"/>')
+
+    def curve_x(N, y):
+        bill, amp = ladder[N]
+        return bill + z * amp / (0.8 * math.sqrt(y / N))
+
+    labels = (f'<text x="{ax.X(curve_x(12, 2.2e5)) - 5:.1f}" '
+              f'y="{ax.Y(2.2e5) + 3.5:.1f}" text-anchor="end" '
+              f'class="board-text" font-size="10.5">N=12</text>'
+              f'<text x="{ax.X(curve_x(8, 8e3)) + 5:.1f}" '
+              f'y="{ax.Y(8e3) + 3.5:.1f}" class="board-text" '
+              f'font-size="10.5" fill="var(--rust)">N=8</text>'
+              f'<text x="{ax.X(curve_x(16, 6e3)) + 5:.1f}" '
+              f'y="{ax.Y(6e3) + 3.5:.1f}" class="board-text" '
+              f'font-size="10.5" fill="var(--blue)">N=16</text>')
+    pts = "".join(
+        f'<circle cx="{ax.X(t):.1f}" cy="{ax.Y(c.receipt[-1][2]):.1f}" '
+        f'r="4.5" class="blue-fill"/>'
+        f'<text x="{ax.X(t) - 6:.1f}" y="{ax.Y(c.receipt[-1][2]) + 14:.1f}" '
+        f'text-anchor="end" class="board-text" font-size="10" '
+        f'opacity="0.85">m={m}</text>'
+        for t, N, m, c in sweep)
+    svg = f'''<svg viewBox="0 0 640 320" role="img" aria-label="Predicted
+cost of each resolution rung against tolerance, each curve diverging at
+its own smearing bill, with the plan's chosen splits marked">
+<clipPath id="bplot"><rect x="{ax.ml}" y="{ax.mt}"
+  width="{640 - ax.ml - ax.mr}" height="{320 - ax.mt - ax.mb}"/></clipPath>
+{ax.grid((1e2, 1e3, 1e4, 1e5), (0.1, 0.2, 0.4),
+         xfmt=lambda v: f"tol = {v:g}", yfmt=lambda v: f"{v:g}")}
+<rect x="{ax.ml}" y="{ax.mt}" width="{wx - ax.ml:.1f}"
+      height="{320 - ax.mt - ax.mb}" fill="var(--rust)" opacity="0.07"/>
+<line x1="{wx:.1f}" y1="{ax.mt}" x2="{wx:.1f}" y2="{320 - ax.mb}"
+      class="rust-ink" stroke-dasharray="4 4" stroke-width="1.4"/>
+<text x="{wx + 8:.1f}" y="{320 - ax.mb - 34}" class="board-text"
+      font-size="10.5" fill="var(--rust)">&#8592; below the best smearing
+ bill, no sample count helps</text>
+<g clip-path="url(#bplot)">{"".join(curves)}</g>
+{labels}{pts}
+<text x="{ax.ml + 10}" y="{320 - ax.mb - 10}" class="board-text"
+      font-size="10.5">predicted cost N&#183;m of each rung's split,
+ &#963; = {sigma:g}</text>
+</svg>'''
+
+    traces = "\n\n".join(esc(c.provenance[-2]) + "\n" + esc(c.provenance[-1])
+                         for _, _, _, c in sweep)
+    return page(
+        "Case: the composed plan",
+        "certified case",
+        "One budget, two bills",
+        "A smeared spectral value from noisy data owes a smearing bill "
+        "and a statistics bill, and one tolerance must pay both. The "
+        "first composed plan splits the budget by formula, prices the "
+        "statistics with a sensitivity the certificate exports, and "
+        "lets the certificate referee the result.",
+        [
+            "<h2>The idea</h2>"
+            "<p>The kernel reconstruction cannot resolve everything: "
+            "that costs c&#183;C(1), and only more correlator times N "
+            "reduce it. The noise obscures the rest: that costs "
+            "z&#183;amp/&#8730;m, and only more samples m reduce it. "
+            "Every page until now paid one bill per certificate; here "
+            "one tolerance must cover two, so something has to decide "
+            "the split. That decision is near-solved mathematics — the "
+            "same marginal-cost balancing multilevel Monte Carlo uses "
+            "for level allocation — and because the statistics stage "
+            "obeys a 1/&#8730;m law exactly, the split collapses to a "
+            "closed form per rung of the resolution ladder.</p>"
+            "<p>The datum that makes the formula possible is new to "
+            "the IR. A certificate now exports its "
+            "<em>sensitivity</em>: the smeared value is the linear map "
+            "g&#183;C, so any error in the data reaches the answer "
+            "through at most the norm of g — an exact operator norm, "
+            "rigorous whatever the tier of the value's own bound. That "
+            "one number prices the statistics stage before a single "
+            "sample is bought. And as everywhere on this site, the "
+            "prices only order the attempts: the certificate of the "
+            "run that executes is the referee, so a wrong pilot "
+            "estimate costs extra rungs, never truth.</p>",
+            code_section(sf.Sensitivity, sf.smeared_spectral_dispatch),
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>The economics of the split at "
+            "&#963; = 0.5. Each curve prices one resolution rung: its "
+            "sample bill N&#183;m explodes as the tolerance approaches "
+            "that rung's smearing bill, where no sample count helps. "
+            "The plan walks the lower envelope — dots mark the splits "
+            "it actually chose. At tol = 0.4 the coarse N = 8 kernel "
+            "wins by a nose; tightening the budget hands the race to "
+            "N = 12, whose smearing bill is smaller, at ever larger "
+            "m.</figcaption></figure>"
+            "<p>The three certificates' split lines and plan traces, "
+            f"verbatim:</p><pre>{traces}</pre>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/3</strong> "
+            "certificates contain the exact smeared truth — computable "
+            "because the density is synthetic; never used by the "
+            "plan.</li>"
+            "<li>Tighter tolerance buys samples by the 1/&#8730;m law: "
+            f"m = <strong>{sweep[0][2]} &#8594; {sweep[1][2]} &#8594; "
+            f"{sweep[2][2]}</strong> across the sweep.</li>"
+            "<li>The split buys resolution when statistics are dearer: "
+            f"at &#963; = 0.4 it chose N = {hN} with m = {hm} "
+            f"(predicted {hcost:g}); the coarse N = 8 kernel would "
+            f"have needed m = {m8} samples (predicted {8 * m8:.3g}), "
+            f"{8 * m8 / hcost:.0f}&#215; the price, for the same "
+            "tolerance.</li>"
+            "<li>The sensitivity field composes through the IR's own "
+            "arithmetic: the difference of the smeared values at the "
+            "two peaks carries bound &#8214;g&#8321;&#8214; + "
+            f"&#8214;g&#8322;&#8214; = {diff.sensitivity.bound:.3g} "
+            f"w.r.t. “{diff.sensitivity.wrt}”, still "
+            "RIGOROUS.</li>"
+            "<li>Below every rung's smearing bill the plan refuses "
+            "before spending a single sample: "
+            f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
+            "<li>What this is not, yet: the budget splits across two "
+            "stages of one rewrite family. Splitting across pipelines "
+            "of different rewrites — where each stage's sensitivity "
+            "reweights the next stage's budget — is the remaining "
             "debt.</li></ul>",
         ])
 
@@ -1835,6 +2045,7 @@ CASES = {
     "sph-wall.html": sph_case,
     "gs-equilibrium.html": gs_case,
     "the-compiler.html": compiler_case,
+    "the-budget.html": budget_case,
 }
 
 # pages needing tools CI does not have: generated locally, committed,

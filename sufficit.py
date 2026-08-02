@@ -5,7 +5,10 @@ distance to the true value (abs for scalars, 2-norm for vectors) and composes
 through rewrites the way derivatives compose through autodiff. Tiers degrade
 to the weakest input; provenance records which rewrites produced the bound;
 fail_p is the probability the bound is wrong (0 for deterministic rewrites),
-accumulating through composition by union bound.
+accumulating through composition by union bound. A rewrite that can also
+certify how hard its output leans on an input exports that as a tiered
+sensitivity -- the datum composed plans use to split one error budget
+across stages.
 
 The numpy-based rewrites carry exact-arithmetic bounds (declared in their
 docstrings); the scalar Phase 2 pipelines carry floating-point rounding
@@ -31,6 +34,21 @@ class Tier(IntEnum):
 
 
 @dataclass(frozen=True)
+class Sensitivity:
+    """How hard the output leans on one named input: a certified
+    Lipschitz bound |output moves| <= bound * |input moves| (2-norm on
+    vectors, matching err). This is the Jacobian-like datum forward
+    error propagation runs on — a rewrite that exports it lets a
+    composed plan price how much input error it can afford. The bound
+    is a claim like any other, so it carries a tier; when two
+    sensitivities to the same input compose, bounds add and the
+    weakest tier wins, the same rules err and tier already obey."""
+    bound: float
+    tier: Tier
+    wrt: str    # names the input; equal names mean the same input
+
+
+@dataclass(frozen=True)
 class Certified:
     value: Any                 # float or ndarray
     err: float                 # |value - true| (2-norm for vectors)
@@ -42,11 +60,24 @@ class Certified:
     # of the proof: provenance stays deterministic, timings live here,
     # and composition drops the receipt.
     receipt: Tuple = ()
+    # amplification of input error, when the rewrite can certify one.
+    # None is "no claim", never "no amplification".
+    sensitivity: Sensitivity = None
 
     def _combine(self, other: "Certified", value, err, note: str) -> "Certified":
+        s = None
+        if (note in ("add", "sub") and self.sensitivity and other.sensitivity
+                and self.sensitivity.wrt == other.sensitivity.wrt):
+            # |d(a+-b)| <= |da| + |db|; a product has no global
+            # Lipschitz constant, so mul drops the claim rather than
+            # fake one
+            s = Sensitivity(self.sensitivity.bound + other.sensitivity.bound,
+                            min(self.sensitivity.tier, other.sensitivity.tier),
+                            self.sensitivity.wrt)
         return Certified(value, err, min(self.tier, other.tier),
                          self.provenance + other.provenance + (note,),
-                         min(1.0, self.fail_p + other.fail_p))
+                         min(1.0, self.fail_p + other.fail_p),
+                         sensitivity=s)
 
     def __add__(self, other: "Certified") -> "Certified":
         return self._combine(other, self.value + other.value,
@@ -1084,20 +1115,29 @@ def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
     spectral densities are). Exact data: RIGOROUS with err = c*C(1).
     With covariance cov: adds z-sigma statistical error on the value and
     on C(1); tier degrades to EMPIRICAL (Gaussian-noise assumption) with
-    fail_p = 2*erfc(z/sqrt(2))."""
+    fail_p = 2*erfc(z/sqrt(2)).
+
+    The certificate also exports its sensitivity: the value is the
+    linear map g.C, so any error in the correlator reaches the answer
+    through at most |g| — an exact operator norm, hence RIGOROUS
+    whatever the tier of the value's own bound. This is the datum a
+    composed plan needs to decide how much data noise it can afford."""
     N = len(C)
     g, c = _hlt_solve(N, omega, sigma)
     value = float(g @ C[1:])
+    sens = Sensitivity(float(np.linalg.norm(g)), Tier.RIGOROUS, "correlator")
     if cov is None:
         return Certified(value, c * float(C[0]), Tier.RIGOROUS,
                          (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
-                          f"c={c:.3g} assumes rho>=0",))
+                          f"c={c:.3g} assumes rho>=0",),
+                         sensitivity=sens)
     stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
     err = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0]))) + stat
     return Certified(value, err, Tier.EMPIRICAL,
                      (f"hlt-smeared omega={omega:g} sigma={sigma:g} "
                       f"c={c:.3g} z={z:g} assumes rho>=0",),
-                     fail_p=2 * math.erfc(z / math.sqrt(2)))
+                     fail_p=2 * math.erfc(z / math.sqrt(2)),
+                     sensitivity=sens)
 
 
 # ------------------------------------------------------------- Phase 4:
@@ -4297,3 +4337,68 @@ def h_chain_energy_dispatch(n: int, tol: float, d: float = 1.8,
                  lambda ell: h_chain_bracket(n, d, ell), beyond)
     return plan("hchain-energy", tol_total, [rw], jump=jump,
                 context=f"n={n}")
+
+
+def smeared_spectral_dispatch(measure: Callable, cov1: Callable,
+                              omega: float, sigma: float, tol: float,
+                              Ns=(8, 12, 16), m_max: int = 1 << 20,
+                              z: float = 5.0) -> Certified:
+    """The first composed plan: one error budget, two bills to pay.
+    A smeared spectral value from noisy correlator data carries two
+    error streams. The smearing bill c*C(1) is what the kernel
+    reconstruction cannot resolve; it shrinks only by buying more
+    correlator times N. The statistics bill z*amp/sqrt(m) is what the
+    noise obscures; it shrinks only by buying more samples m -- and
+    amp is the sensitivity the certificate exports, because data error
+    reaches the answer through the norm of g. One tolerance must cover
+    both. For each rung N of the declared ladder the smearing bill is
+    what it is, the leftover budget goes to statistics, and the sample
+    count follows in closed form from the 1/sqrt(m) law -- the
+    marginal-cost balancing MLMC uses for level allocation, collapsed
+    to a formula because one stage is continuous. Each rung is priced
+    at N*m (measure an N-point correlator m times), the planner runs
+    the cheapest promise, and the certificate of the run decides -- a
+    wrong pilot estimate costs extra rungs, never truth.
+
+    measure(N, m) must return the m-sample mean correlator C(1..N);
+    cov1(N) the covariance of a single sample. The split aims at 80%
+    of the leftover budget so a wobbly pilot C(1) does not push the
+    first rung over."""
+    C1 = float(np.asarray(measure(Ns[0], 1), float)[0])
+    rungs = []
+    for N in Ns:
+        g, c = _hlt_solve(N, omega, sigma)
+        V = np.asarray(cov1(N), float)
+        amp = c * math.sqrt(float(V[0, 0])) \
+            + math.sqrt(float(g @ V[1:, 1:] @ g))
+        slack = tol - c * C1
+        if slack <= 0:
+            continue
+        m = max(1, math.ceil((z * amp / (0.8 * slack)) ** 2))
+        if m <= m_max:
+            rungs.append((N, m))
+    rungs.sort(key=lambda k: k[0] * k[1])
+
+    def run(k):
+        N, m = k
+        C = np.asarray(measure(N, m), float)
+        cov = np.asarray(cov1(N), float) / m
+        cert = smeared_spectral(C, omega, sigma, cov=cov, z=z)
+        g, c = _hlt_solve(N, omega, sigma)
+        smear = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0])))
+        stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
+        note = (f"budget split at N={N} m={m}: smearing {smear:.3g} + "
+                f"statistics {stat:.3g} against tol={tol:g}")
+        return replace(cert, provenance=cert.provenance + (note,))
+
+    def beyond():
+        cN = _hlt_solve(max(Ns), omega, sigma)[1]
+        return (f"the finest declared kernel (N={max(Ns)}) leaves a "
+                f"smearing bill of about c*C(1)={cN * C1:.3g}; whatever "
+                f"tol remains above it buys statistics at "
+                f"(z*amp/slack)^2 samples, capped at m_max={m_max}")
+
+    rw = Rewrite("hlt", tuple(rungs),
+                 lambda k: float(k[0]) * float(k[1]), run, beyond)
+    return plan("smeared-spectral", tol, [rw], jump=False,
+                context=f"omega={omega:g} sigma={sigma:g}")
