@@ -3,6 +3,7 @@ The source renders as the presentation (extracted live via inspect), the
 a priori theory is stated, and the certification is executed and drawn.
 Run from the repo root:  python3 docs/make_cases.py   (~2 minutes)
 """
+import functools
 import inspect
 import math
 import os
@@ -1704,6 +1705,75 @@ def compiler_case():
     except sf.Refusal as e:
         receipt = e
 
+    # the phase map: the staircase is one column of it. Same wiring as
+    # heisenberg_energy_dispatch, with bracket results memoized across
+    # cells so each (N, ell) rung is computed once for the whole map.
+    brk = functools.lru_cache(maxsize=None)(sf.heisenberg_chain_bracket)
+    map_Ns = (6, 8, 10, 12, 14, 16, 18, 20)
+    map_tols = (0.3, 0.1, 0.03, 0.01, 3e-3, 1e-3, 1e-4, 1e-8)
+
+    def cell(n, tol_bond):
+        ells = tuple(range(2, min(n - 1, 9) + 1))
+        rws = [sf.Rewrite("window", ells, lambda l: 2.0 ** l,
+                          lambda l: brk(n, l))]
+        if n <= 12:
+            rws.append(sf.Rewrite("dense", (n,), lambda _: 2.0 ** n,
+                                  lambda _: brk(n, n)))
+        try:
+            t = sf.plan("chain-energy", tol_bond * (n - 1),
+                        rws).provenance[-1]
+            name, knob = t.split("chose ")[1].split(" ")[0].split("@")
+            return name, int(knob)
+        except sf.Refusal:
+            return "refused", 0
+
+    grid = {(n, t): cell(n, t) for n in map_Ns for t in map_tols}
+    n_refused = sum(1 for v in grid.values() if v[0] == "refused")
+
+    ml, mt, cw, ch = 74, 30, 64, 27
+    MW = ml + cw * len(map_Ns) + 14
+    MH = mt + ch * len(map_tols) + 42
+    mcells = []
+    for j, t in enumerate(map_tols):
+        for i, n in enumerate(map_Ns):
+            x, y = ml + i * cw, mt + j * ch
+            name, knob = grid[(n, t)]
+            if name == "window":
+                fill = (f'fill="var(--blue)" '
+                        f'opacity="{0.10 + 0.07 * (knob - 2):.2f}"')
+                lab, lop = f"&#8467;={knob}", 0.9
+            elif name == "dense":
+                fill = 'fill="var(--rust)" opacity="0.30"'
+                lab, lop = "dense", 0.9
+            else:
+                fill = 'fill="none"'
+                lab, lop = "refused", 0.45
+            mcells.append(
+                f'<rect x="{x}" y="{y}" width="{cw - 2}" height="{ch - 2}" '
+                f'{fill}/>'
+                f'<text x="{x + (cw - 2) / 2:.1f}" y="{y + ch / 2 + 2:.1f}" '
+                f'text-anchor="middle" class="board-text" font-size="10" '
+                f'opacity="{lop}">{lab}</text>')
+    i10 = map_Ns.index(10)
+    map_svg = f'''<svg viewBox="0 0 {MW} {MH}" role="img" aria-label="Phase
+map of the chosen rewrite over chain length and tolerance, with window,
+dense, and refusal regions">
+{"".join(mcells)}
+<rect x="{ml + i10 * cw - 2}" y="{mt - 2}" width="{cw + 2}"
+      height="{ch * len(map_tols) + 2}" fill="none" class="board-ink"
+      stroke-dasharray="4 3" stroke-width="1.2"/>
+<text x="{ml + i10 * cw + cw / 2:.1f}" y="{mt - 9}" text-anchor="middle"
+      class="board-text" font-size="10" opacity="0.75">the staircase
+ above is this column</text>
+{"".join(f'<text x="{ml - 8}" y="{mt + j * ch + ch / 2 + 3:.1f}" text-anchor="end" class="board-text" font-size="10.5" opacity="0.7">{t:g}</text>' for j, t in enumerate(map_tols))}
+{"".join(f'<text x="{ml + i * cw + (cw - 2) / 2:.1f}" y="{MH - 26}" text-anchor="middle" class="board-text" font-size="10.5" opacity="0.7">{n}</text>' for i, n in enumerate(map_Ns))}
+<text x="{ml - 8}" y="{MH - 26}" text-anchor="end" class="board-text"
+      font-size="10.5" opacity="0.7">tol/bond</text>
+<text x="{ml + cw * len(map_Ns) / 2:.1f}" y="{MH - 8}"
+      text-anchor="middle" class="board-text" font-size="10.5"
+      opacity="0.7">chain length N</text>
+</svg>'''
+
     # staircase: tolerance on x, predicted cost of the chosen rung on y
     ax = Axes((1.5e-3, 0.5), (2.5, 2048), h=320, logx=True, logy=True)
     flip = next(i for i, s in enumerate(sweep) if s[1].startswith("dense"))
@@ -1789,6 +1859,28 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "the certificate's structured receipt — here is the "
             "tightest run's, one rung per line:</p>"
             f"<pre>{esc(receipt_lines)}</pre>",
+            "<h2>The phase map</h2>"
+            "<p>The staircase is one slice of a bigger object. Sweep "
+            "both knobs — chain length and tolerance — and the plan "
+            "traces assemble a phase map of the query: which rewrite "
+            "is cheapest-found where, and where the declared library "
+            "ends. This is what the compiler's answers look like in "
+            "bulk, and as the rewrite library grows it is the real "
+            "deliverable: not one certified number, but the certified "
+            "boundary of what each method can do.</p>"
+            f"<figure>{map_svg}<figcaption>Each cell is one full run "
+            "of the dispatch at that chain length N and per-bond "
+            "tolerance (window ladder capped at &#8467; = 9; bracket "
+            "results shared across cells, so each rung is computed "
+            "once). Blue: a window rung certifies, darker for longer "
+            "windows. Rust: the dense 2<sup>N</sup> bracket wins — a "
+            "column that ends at N = 12, where the matrix stops being "
+            "formable. Blank: every declared rung ran and none "
+            f"certified — {n_refused} of {len(grid)} cells here, each "
+            "refusing with a receipt. The blank region is the map's "
+            "most honest feature: its boundary is the certified price "
+            "wall of this library, and every rewrite added to the "
+            "module redraws it.</figcaption></figure>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/3</strong> "
             "planner-chosen brackets contain the exact "
@@ -1813,6 +1905,12 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "state-dependent; the predictions are not; only logging "
             "both exposes it. These pairs, kept in every run, are "
             "the calibration data for better cost models.</li>"
+            f"<li>The phase map ran {len(grid)} dispatches: "
+            f"<strong>{len(grid) - n_refused}</strong> certified "
+            f"cells, <strong>{n_refused}</strong> structured "
+            "refusals. A colored cell meets its tolerance by "
+            "construction — plan() returns only what a certificate "
+            "approves.</li>"
             "<li>What this is not, yet: the plan space is single-knob "
             "ladders per query. The first composed plan — one error "
             "budget split between two stages — now has "
