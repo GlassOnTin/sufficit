@@ -805,6 +805,47 @@ def sph_case():
                 f'up the wall; particles colored by pressure">'
                 + "".join(panels) + "</svg>")
 
+    # convergence-order figure, Basilisk convention: error against the
+    # finest run versus h on log axes, with slope guides
+    eJ = {n: abs(J(n) - J(48)) for n in (16, 24, 36)}
+    eP = {n: abs(peaks[n] - peaks[48]) for n in (16, 24, 36)}
+    ylo = 0.5 * min(min(eJ.values()), min(eP.values()))
+    yhi = 3.0 * max(max(eJ.values()), max(eP.values()))
+    axc = Axes((1 / 40, 1 / 14), (ylo, yhi), h=300, logx=True, logy=True)
+    guides = []
+    for p, lab in ((1, "slope 1"), (2, "slope 2")):
+        xs = (1 / 38, 1 / 15)
+        ys = [eJ[16] * (x * 16) ** p for x in xs]   # through the coarse rung
+        guides.append(
+            f'<path d="{axc.path(xs, ys)}" fill="none" class="board-ink" '
+            f'stroke-width="1" stroke-dasharray="3 3" opacity="0.55"/>'
+            f'<text x="{axc.X(xs[0]) - 6:.1f}" y="{axc.Y(ys[0]) + 4:.1f}" '
+            f'text-anchor="end" class="board-text" font-size="10" '
+            f'opacity="0.7">{lab}</text>')
+    pts = []
+    hsx = [1 / 16, 1 / 24, 1 / 36]
+    pts.append(f'<path d="{axc.path(hsx, [eJ[n] for n in (16, 24, 36)])}" '
+               f'fill="none" class="blue-ink" stroke-width="2"/>')
+    for n in (16, 24, 36):
+        pts.append(f'<circle cx="{axc.X(1 / n):.1f}" '
+                   f'cy="{axc.Y(max(eJ[n], 3e-3)):.1f}" r="5" '
+                   f'class="blue-fill"/>')
+        pts.append(f'<circle cx="{axc.X(1 / n):.1f}" '
+                   f'cy="{axc.Y(max(eP[n], 3e-3)):.1f}" r="5" fill="none" '
+                   f'class="rust-ink" stroke-width="2"/>')
+    svg_ord = f'''<svg viewBox="0 0 640 300" role="img" aria-label="Error
+against the finest run versus resolution: the impulse follows a slope near
+one, the peak has no slope at all">
+{axc.grid((3e-2, 1e-1, 3e-1), (1 / 16, 1 / 24, 1 / 36),
+          xfmt=lambda v: f"h = 1/{round(1 / v)}",
+          yfmt=lambda v: f"{v:g}")}
+{"".join(guides)}{"".join(pts)}
+<text x="{axc.ml + 10}" y="{axc.mt + 14}" class="board-text"
+      font-size="10.5" fill="var(--blue)">impulse error vs finest (filled)</text>
+<text x="{axc.ml + 10}" y="{axc.mt + 30}" class="board-text"
+      font-size="10.5" fill="var(--rust)">peak error vs finest (open)</text>
+</svg>'''
+
     # force traces at two resolutions
     ax = Axes((1.8, 4.6), (-0.02, 1.05 * max(peaks[24], peaks[36])), h=280)
     tr = []
@@ -871,7 +912,15 @@ against time at two resolutions: peaks scatter, areas agree better">
             "resolutions. The peaks disagree by half; the areas under "
             "the curves agree far better. That is the whole story of "
             "why the impulse is the certifiable query and the peak is "
-            "not.</figcaption></figure>",
+            "not.</figcaption></figure>"
+            f"<figure>{svg_ord}<figcaption>The convergence-order "
+            "figure, in the Basilisk convention: error against the "
+            "finest run, on log axes, with slope guides. The impulse "
+            "follows a slope near one; smooth-field SPH is formally "
+            "second order, and the shortfall is the impact and the "
+            "boundary treatment, stated rather than hidden. The peak "
+            "points fall on no slope at all, which is the refusal, "
+            "drawn.</figcaption></figure>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>Delivered impulse: <strong>{cJ.value:.3f} ± "
             f"{cJ.err:.3f}</strong> (measured order in the provenance; "
