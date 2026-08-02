@@ -2194,3 +2194,40 @@ def test_composed_plan_trace_deterministic():
     b = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2)
     assert a.provenance == b.provenance
     assert [r[:3] for r in a.receipt] == [r[:3] for r in b.receipt]
+
+
+def test_gs_exports_sensitivity():
+    """The contraction machinery repriced as a Lipschitz bound: the
+    flux's certified sensitivity to the source must equal the derived
+    constant sqrt(area)*Rmax/(lam1*Rmin*(1-theta)), stay RIGOROUS, and
+    grow as the coupling approaches the contraction limit."""
+    pytest.importorskip("dolfinx")
+    r0 = sf.gs_equilibrium_certified(n=8)
+    r1 = sf.gs_equilibrium_certified(n=8, c=1.0)
+    lam1 = math.pi ** 2 * 0.5
+    Rmin, Rmax, area = 2.0, 4.0, 4.0
+    for r, c in ((r0, 0.0), (r1, 1.0)):
+        s = r["Q"].sensitivity
+        theta = c * Rmax / (Rmin * lam1)
+        want = math.sqrt(area) * Rmax / (lam1 * Rmin * (1 - theta))
+        assert s.tier == sf.Tier.RIGOROUS and s.wrt == "source"
+        assert s.bound == pytest.approx(want, rel=1e-12)
+    assert r1["Q"].sensitivity.bound > r0["Q"].sensitivity.bound
+
+
+def test_gs_sensitivity_contains_perturbation():
+    """Perturb the source by a constant current-density offset and
+    re-solve the coupled problem: the two computed fluxes may differ
+    by no more than sensitivity times the perturbation's L2 norm plus
+    both discretization errors — and the bound must not be vacuous
+    (measured 4.2x tight at this mesh)."""
+    pytest.importorskip("dolfinx")
+    base = sf.gs_equilibrium_certified(n=8, c=1.0)
+    pert = sf.gs_equilibrium_certified(n=8, c=1.0, dg0=0.5)
+    delta_l2 = 0.5 * 2.0                 # ||const||_L2 = dg0*sqrt(area)
+    moved = abs(pert["Q"].value - base["Q"].value)
+    s = base["Q"].sensitivity.bound
+    assert moved <= s * delta_l2 + base["Q"].err + pert["Q"].err
+    assert moved >= 0.2 * s * delta_l2   # deterministic LU solve
+    assert "dg0=0.5" in pert["Q"].provenance[0]
+    assert "dg0" not in base["Q"].provenance[0]

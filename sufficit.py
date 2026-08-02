@@ -4028,7 +4028,7 @@ def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
 # polynomial equilibrium supplies an exact solution for the tests.
 
 
-def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
+def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree, dg0=0.0):
     from mpi4py import MPI
     from dolfinx import mesh as dmesh, fem
     from dolfinx.fem.petsc import LinearProblem
@@ -4042,7 +4042,7 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
     Z = x[1]
     psi_ex = a_c * (R ** 2 - R0 ** 2) ** 2 + b_c * R ** 2 * Z ** 2 \
         + d_c * Z ** 2
-    g0 = -((8 * a_c + 2 * b_c) * R ** 2 + 2 * d_c)   # -Delta* of psi_ex
+    g0 = -((8 * a_c + 2 * b_c) * R ** 2 + 2 * d_c) + dg0  # -Delta* psi_ex
     kappa = 1.0 / R
 
     V = fem.functionspace(msh, ("Lagrange", degree))
@@ -4104,14 +4104,25 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
 
 
 def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
-                             degree: int = 1) -> dict:
+                             degree: int = 1, dg0: float = 0.0) -> dict:
     """Fixed-boundary Grad-Shafranov on the rectangle
     [R0-W, R0+W] x [-H, H] with the Solov'ev source plus an implicit
     coupling c*psi, solved by FEniCSx (untrusted) and certified by the
     Prager-Synge bound with rectangle-exact constants. Returns the
     energy-norm bound and a Certified value of the total poloidal
     flux content, integral of psi over the domain. Refuses when the
-    coupling exceeds the contraction limit."""
+    coupling exceeds the contraction limit. dg0 adds a constant to the
+    source profile — a uniform current-density offset.
+
+    The flux also exports its sensitivity to that source: subtracting
+    the weak forms of two coupled solutions with the same boundary
+    data, the difference e obeys (1-theta)|||e|||^2 <=
+    sqrt(Rmax/lam1) ||dg||/Rmin |||e|||, and |Q moves| <=
+    sqrt(area Rmax/lam1) |||e|||; chained, |Q moves| <=
+    sqrt(area) Rmax / (lam1 Rmin (1-theta)) * ||dg||_L2. The same
+    contraction machinery that certifies the solve, repriced as a
+    Lipschitz bound — the datum a composed plan needs before feeding
+    this solve from an upstream certified profile."""
     R0, W, H = 3.0, 1.0, 1.0
     # O-point (magnetic axis) at (R0, 0): needs 9 b + d > 0;
     # these give psi_RR/psi_ZZ ~ 2, a mildly elongated core
@@ -4125,17 +4136,23 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
             f"source c*psi is not certifiably contractive on this domain "
             f"(limit c < {0.95 * Rmin * lam1 / Rmax:.2f})")
     flux, osc, err_meas, Qh, uh, msh = _gs_solve(n, c, R0, W, H, a_c, b_c,
-                                                 d_c, degree)
+                                                 d_c, degree, dg0)
     eta = flux + math.sqrt(Rmax / lam1) * osc
     energy_bound = _up(eta / (1.0 - theta))
     # |Q(u) - Q(u_h)| <= ||1|| ||u - u_h|| <= sqrt(|Omega| Rmax/lam1) |||e|||
     area = 4.0 * W * H
     q_err = _up(math.sqrt(area * Rmax / lam1) * energy_bound)
+    sens = Sensitivity(_up(math.sqrt(area) * Rmax
+                           / (lam1 * Rmin * (1.0 - theta))),
+                       Tier.RIGOROUS, "source")
     Q = Certified(Qh, q_err, Tier.RIGOROUS,
-                  (f"gs-equilibrium n={n} c={c:g} prager-synge flux+osc "
+                  (f"gs-equilibrium n={n} c={c:g}"
+                   + (f" dg0={dg0:g}" if dg0 else "")
+                   + f" prager-synge flux+osc "
                    f"({flux:.3g}+{osc:.3g}) rectangle-exact lam1, "
                    f"contraction theta={theta:.2f}; assembly and solver "
-                   "arithmetic not carried",))
+                   "arithmetic not carried",),
+                  sensitivity=sens)
     return {"Q": Q, "energy_bound": energy_bound, "err_measured": err_meas,
             "flux_term": flux, "osc_term": osc, "theta": theta,
             "uh": uh, "msh": msh}

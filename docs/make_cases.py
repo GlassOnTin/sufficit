@@ -1530,6 +1530,14 @@ def gs_case():
     except ValueError:
         refused = True
 
+    # the exported sensitivity, exercised: a constant source offset
+    # moves the flux by no more than the certified Lipschitz constant
+    base8 = sf.gs_equilibrium_certified(n=8, c=1.0)
+    pert8 = sf.gs_equilibrium_certified(n=8, c=1.0, dg0=0.5)
+    sens = base8["Q"].sensitivity
+    smoved = abs(pert8["Q"].value - base8["Q"].value)
+    sbudget = sens.bound * 1.0 + base8["Q"].err + pert8["Q"].err
+
     # flux surfaces of the coupled equilibrium: evaluate on a grid and
     # extract contour polylines with matplotlib (build-time tool only)
     msh, uh = rc["msh"], rc["uh"]
@@ -1651,6 +1659,16 @@ energy error and guaranteed bound versus mesh size, both first order">
             f"± {rc['Q'].err:.4f} at h = 1/48.</li>"
             f"<li>Coupling past the contraction limit (c = 3): <strong>"
             f"{'refused' if refused else 'NOT REFUSED'}</strong>.</li>"
+            "<li>The flux exports its sensitivity to the source — "
+            "&#8730;area&#183;R<sub>max</sub>/(&#955;&#8321;&#183;"
+            "R<sub>min</sub>&#183;(1&#8722;&#952;)) = "
+            f"{sens.bound:.3g} per unit of source in L&#178;, RIGOROUS "
+            "— the contraction constant repriced as a Lipschitz bound "
+            "for composed plans. Exercised in this run: a constant "
+            "source offset (&#8214;&#948;&#8214; = 1) moved the flux "
+            f"by {smoved:.3g} against a budget of {sbudget:.3g}: "
+            f"<strong>{'contained' if smoved <= sbudget else 'VIOLATED'}"
+            "</strong>.</li>"
             "<li>FEniCSx has no PyPI wheels; CI installs the same "
             "Debian-family packages as the dev machine, from the "
             "FEniCS PPA, so this page regenerates from a fresh solve "

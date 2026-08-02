@@ -12,7 +12,7 @@ across pipelines of *different* rewrites is the remaining debt.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 127 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 129 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
