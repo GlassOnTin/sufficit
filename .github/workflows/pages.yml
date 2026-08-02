@@ -33,8 +33,10 @@ jobs:
             python3-matplotlib python3-mpmath python3-pytest python3-pip
       # --no-deps: the solver wheels must NOT drag in a pip numpy —
       # apt-built petsc4py breaks against it (measured: dtype size 96
-      # vs 88 ABI error). numpy and scipy stay apt's.
-      - run: pip install --break-system-packages --no-deps cvxpy-base scs qdldl
+      # vs 88 ABI error). numpy and scipy stay apt's. cvxpy is pinned
+      # below 1.7: newer releases import numpy.lib.array_utils, which
+      # exists only in numpy >= 2, and apt numpy is 1.26.
+      - run: pip install --break-system-packages --no-deps 'cvxpy-base<1.7' scs qdldl
       - run: python3 -m pytest test_sufficit.py -q
       - run: python3 docs/make_cases.py
       - uses: actions/upload-pages-artifact@v5
