@@ -1946,9 +1946,9 @@ def test_planner_loose_tol_picks_cheap():
     assert "tried 1 rung;" in c.provenance[-1]
     assert c.err <= 0.2 * 39
     # measured cost lands as structure, not prose
-    name, knob, predicted, secs, verdict = c.receipt[-1]
+    name, knob, predicted, secs, rulers, verdict = c.receipt[-1]
     assert (name, knob, predicted) == ("window", 2, 4.0)
-    assert secs >= 0.0 and verdict == c.err
+    assert secs >= 0.0 and rulers >= 0.0 and verdict == c.err
 
 
 def test_planner_escalation_monotone():
@@ -1999,12 +1999,12 @@ def test_planner_refuses_with_receipts():
         sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
                                       ell_max=6)
     e = ei.value
-    knobs = [k for _, k, _, _, _ in e.tried]
+    knobs = [k for _, k, *_ in e.tried]
     assert knobs == sorted(knobs) and len(knobs) >= 2
     assert all(isinstance(v, float) for *_, v in e.tried)
     # the receipt carries measured cost beside predicted cost, so the
     # cost models are auditable and every run calibrates them
-    assert all(s >= 0.0 for _, _, _, s, _ in e.tried)
+    assert all(r[3] >= 0.0 for r in e.tried)
     assert "ell=7" in e.next_price
     assert e.tol == pytest.approx(1e-12 * 39)
 
@@ -2043,7 +2043,7 @@ def test_lr_refusal_structured():
     with pytest.raises(sf.Refusal, match="lr-dispatch") as ei:
         sf.tfi_quench_dispatch(50, 25, 3.0, tol=1e-6, max_dim=256)
     e = ei.value
-    assert [k for _, k, _, _, _ in e.tried] == [1, 2, 3]
+    assert [k for _, k, *_ in e.tried] == [1, 2, 3]
     assert all(isinstance(v, float) for *_, v in e.tried)
     assert "dim 512" in e.next_price
 
@@ -2054,7 +2054,7 @@ def test_gc_refusal_structured():
     with pytest.raises(sf.Refusal, match="plasma-dispatch") as ei:
         sf.gc_drift_dispatch(0.02, tol=1e-9)
     e = ei.value
-    assert [k for _, k, _, _, _ in e.tried] == [0, 1]
+    assert [k for _, k, *_ in e.tried] == [0, 1]
     assert "kinetic" in e.next_price
 
 
@@ -2069,6 +2069,29 @@ def test_trace_deterministic_receipt_measured():
     assert a.provenance == b.provenance
     assert [r[:3] for r in a.receipt] == [r[:3] for r in b.receipt]
     assert all(isinstance(r[3], float) and r[3] >= 0 for r in a.receipt)
+
+
+def test_ruler_is_a_time():
+    """The ruler is one 256-dim symmetric eigendecomposition, median
+    of three: positive, finite, and in the band real machines occupy
+    (a few milliseconds, not a microsecond and not a minute)."""
+    r = sf.ruler()
+    assert math.isfinite(r) and 1e-5 < r < 10.0
+
+
+def test_receipt_rows_in_ruler_units():
+    """Seconds do not travel between machines, so every receipt row
+    also states its measured cost in ruler units. All rows of one
+    receipt share the one ruler measured for that plan: dividing
+    seconds by rulers recovers the same number on every row."""
+    with pytest.raises(sf.Refusal) as ei:
+        sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
+                                      ell_max=6)
+    rows = ei.value.tried
+    assert len(rows) >= 2 and all(len(r) == 6 for r in rows)
+    implied = [r[3] / r[4] for r in rows]
+    assert all(math.isfinite(i) and 1e-5 < i < 10.0 for i in implied)
+    assert max(implied) - min(implied) <= 1e-9 * max(implied)
 
 
 def test_sensitivity_composes_add_sub():

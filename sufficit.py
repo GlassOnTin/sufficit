@@ -4233,6 +4233,28 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
 # -- never the cost model -- decide what is true.
 
 
+def ruler() -> float:
+    """The ruler: seconds for one 256-dimensional symmetric
+    eigendecomposition on this machine, median of three. Cost is
+    state-dependent -- caches, BLAS threading, a busy neighbour can
+    swing a rung's wall-clock severalfold -- so raw seconds in a
+    receipt do not travel between machines or even between moments.
+    Dividing by a fixed microbenchmark, timed in the same process
+    moments before the runs it calibrates, removes most of the
+    machine and leaves the algorithm. One ruler spans one cost
+    direction, dense linear algebra; when a memory-bound rewrite
+    joins the library it will need a stream ruler beside this one."""
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((256, 256))
+    A = A + A.T
+    ts = []
+    for _ in range(3):
+        t0 = time.perf_counter()
+        np.linalg.eigh(A)
+        ts.append(time.perf_counter() - t0)
+    return sorted(ts)[1]
+
+
 class Refusal(ValueError):
     """A refusal is a receipt, not an apology. It records every rung
     the planner ran, what each was predicted to cost, what it actually
@@ -4244,13 +4266,13 @@ class Refusal(ValueError):
 
     def __init__(self, slug, tol, tried, next_price, context=""):
         self.slug, self.tol, self.context = slug, tol, context
-        self.tried = tried    # (rewrite, knob, predicted, secs, verdict)
+        self.tried = tried  # (rewrite, knob, predicted, secs, rulers, verdict)
         self.next_price = next_price
         at = f" at {context}" if context else ""
         meas = ", ".join(
             (f"({k}, {v:.3g}, {s:.2g}s)" if isinstance(v, float)
              else f"({k}, {v}, {s:.2g}s)")
-            for _, k, _, s, v in tried) or "none"
+            for _, k, _, s, _, v in tried) or "none"
         super().__init__(
             f"{slug}: no rung within budget certifies tol={tol:g}{at}; "
             f"measured (knob, err, cost): {meas}; {next_price}")
@@ -4322,9 +4344,16 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
     and measured cost is logged as structure -- the receipt field of
     the winning certificate, the tried field of the Refusal -- so the
     cost models are auditable and every run is calibration data for
-    better ones. The provenance trace itself stays deterministic:
+    better ones. Each row states the measured cost twice: in seconds,
+    and in ruler units -- seconds over one fixed 256-dim
+    eigendecomposition timed in this same process, moments before the
+    rungs, so it shares their caches and threading regime. Seconds do
+    not travel between machines; rulers mostly do, and a row's
+    (predicted, rulers) pair is a labeled training point for a better
+    cost model. The provenance trace itself stays deterministic:
     provenance is part of the certificate; timings are data about one
     run of it."""
+    ru = ruler()
     frontier = []
     state = []
     for i, rw in enumerate(rewrites):
@@ -4343,16 +4372,15 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
         t0 = time.perf_counter()
         try:
             c = rw.run(knob)
+            verdict = c.err
         except ValueError as exc:
-            tried.append((rw.name, knob, cost, time.perf_counter() - t0,
-                          f"raised: {exc}"))
-            c = None
+            c, verdict = None, f"raised: {exc}"
+        dt = time.perf_counter() - t0
+        tried.append((rw.name, knob, cost, dt, dt / ru, verdict))
         if c is not None:
-            tried.append((rw.name, knob, cost, time.perf_counter() - t0,
-                          c.err))
             if c.err <= tol:
                 rejected = ", ".join(
-                    f"{n}@{k}" for n, k, _, _, _ in tried[:-1]) or "none"
+                    f"{n}@{k}" for n, k, *_ in tried[:-1]) or "none"
                 trace = (f"plan {slug}: tol={tol:g}; chose "
                          f"{rw.name}@{knob} (predicted {cost:g}); tried "
                          f"{len(tried)} rung{'s' if len(tried) != 1 else ''}; "

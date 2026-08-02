@@ -42,18 +42,9 @@ STAMP = _stamp()
 
 
 def _ruler():
-    """Measure the ruler, so the seconds in the receipts are
-    comparable across builders: time one fixed dense eigendecomposition
-    on this machine and print it beside the commit stamp."""
-    rng = np.random.default_rng(0)
-    A = rng.standard_normal((256, 256))
-    A = A + A.T
-    ts = []
-    for _ in range(3):
-        t0 = time.time()
-        np.linalg.eigh(A)
-        ts.append(time.time() - t0)
-    return f"{sorted(ts)[1] * 1e3:.1f} ms"
+    """Print the library's own ruler beside the commit stamp, so the
+    seconds in the receipts are comparable across builders."""
+    return f"{sf.ruler() * 1e3:.1f} ms"
 
 
 RULER = _ruler()
@@ -1694,15 +1685,15 @@ def compiler_case():
     extreme = sf.heisenberg_energy_dispatch(N, tol=1e-9)
     # the receipt is structure, so the audit reads fields, not prose:
     # window@9 against the chosen dense, and window@2 cold vs warm
-    secs = {(n, k): s for n, k, _, s, _ in extreme.receipt}
+    secs = {(n, k): s for n, k, _, s, *_ in extreme.receipt}
     w9s = f"{secs.get(('window', 9), 0):.2g}s"
     ds = f"{extreme.receipt[-1][3]:.2g}s"
     w2_cold = f"{sweep[0][3].receipt[0][3]:.2g}s"
     w2_warm = f"{secs.get(('window', 2), 0):.2g}s"
     receipt_lines = "\n".join(
-        f"{n}@{k}: predicted {p:g}, measured {s:.2g}s, "
+        f"{n}@{k}: predicted {p:g}, measured {s:.2g}s = {ru:.1f} rulers, "
         + (f"err {v:.3g}" if isinstance(v, float) else str(v))
-        for n, k, p, s, v in extreme.receipt)
+        for n, k, p, s, ru, v in extreme.receipt)
     headline = [sweep[0][3], sweep[3][3], extreme]
     contained = sum(abs(c.value - truth) <= c.err for c in headline)
 
@@ -1876,7 +1867,18 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "part of the certificate. The timings live next door, in "
             "the certificate's structured receipt — here is the "
             "tightest run's, one rung per line:</p>"
-            f"<pre>{esc(receipt_lines)}</pre>",
+            f"<pre>{esc(receipt_lines)}</pre>"
+            "<p>Each row prices its run twice. Seconds are honest "
+            "but do not travel: another machine, or this one an hour "
+            "busier, gives different numbers for the same work. So "
+            "the planner also divides by a ruler — the footer's "
+            "256-dimensional eigendecomposition, timed inside the "
+            "same process moments before the rungs, sharing their "
+            "caches and BLAS threading — and states the cost in "
+            "rulers. A row's (predicted, rulers) pair is then a "
+            "labeled training point that survives the trip between "
+            "machines, and calibrating the cost model collapses to "
+            "learning one ratio per rewrite.</p>",
             "<h2>The phase map</h2>"
             "<p>The staircase is one slice of a bigger object. Sweep "
             "both knobs — chain length and tolerance — and the plan "
