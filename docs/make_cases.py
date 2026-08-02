@@ -36,9 +36,31 @@ def page(title, eyebrow, h1, dek, sections):
 
 
 def code_section(*funcs):
-    src = "\n\n".join(inspect.getsource(f) for f in funcs)
-    return ("<h2>The code (rendered from the module, not copied)</h2>"
-            f"<pre>{esc(src)}</pre>")
+    """Basilisk-style literate rendering: each function is its own
+    block, its docstring lifted out as the narrative paragraph, the
+    code shown without it."""
+    import ast
+    import textwrap
+    out = ["<h2>The program</h2>",
+           '<p class="note">Rendered from the module at build time. '
+           "The narrative for each function is its own docstring.</p>"]
+    for f in funcs:
+        src = textwrap.dedent(inspect.getsource(f))
+        doc = inspect.getdoc(f)
+        body = src
+        if doc:
+            first = ast.parse(src).body[0].body[0]
+            if (isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                lines = src.splitlines()
+                del lines[first.lineno - 1:first.end_lineno]
+                body = "\n".join(lines)
+        out.append(f"<h3><code>{esc(f.__name__)}</code></h3>")
+        if doc:
+            out.append(f'<p class="fn-doc">{esc(doc)}</p>')
+        out.append(f"<pre>{esc(body.rstrip())}</pre>")
+    return "\n".join(out)
 
 
 class Axes:
@@ -129,36 +151,44 @@ around the exact ground energy across the quantum phase transition">
     return page(
         "Case: certified reduced basis across a phase transition",
         "certified case",
-        "A certified parameter sweep across a quantum phase transition",
-        "Six exact solves buy a rigorous two-sided band over a 100-point "
-        "sweep — including the critical point, where nothing about the "
-        "physics is smooth.",
+        "A certified sweep across a phase transition",
+        "The ground energy of a quantum spin chain as its field is "
+        "swept. Six exact solves and two pieces of reasoning give a "
+        "rigorous band at a hundred field values, including the "
+        "critical point.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>For an affine family <code>H(g) = H₀ + g·H₁</code>, the "
-            "ground energy is an infimum of affine functions of <code>g"
-            "</code> — hence <em>concave</em>. Concave functions lie above "
-            "their chords, so certified lower bounds at snapshots certify "
-            "the chord between them with no further solve. The upper bound "
-            "is the reduced-basis Rayleigh quotient: variational, exact at "
-            "k×k cost from precomputed Grams. Outside the snapshot hull, "
-            "the code refuses.</p>",
+            "<h2>The idea</h2>"
+            "<p>The Hamiltonian is H(g) = H₀ + g·H₁ and we want its "
+            "lowest eigenvalue at every g. The lower bound comes from "
+            "the shape of that curve. The ground energy is the minimum "
+            "over states of a quantity that is linear in g, and the "
+            "minimum of a family of straight lines is concave. A "
+            "concave curve lies above every chord drawn between two of "
+            "its points. So certified lower bounds at six snapshot "
+            "values of g certify the chord everywhere in between, and "
+            "the chord costs nothing to evaluate.</p>"
+            "<p>The upper bound is the variational theorem. Take the "
+            "six snapshot ground states as a basis B and compute the "
+            "small matrices BᵀH₀B and BᵀH₁B once. Then the best trial "
+            "energy at any g is the lowest eigenvalue of a 6×6 matrix. "
+            "Outside the snapshot interval the concavity argument says "
+            "nothing, so the code refuses rather than guess.</p>",
             code_section(sf.tfi_chain, sf.reduced_basis_surrogate,
                          sf.reduced_basis_bracket),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>Blue dots: 6 certified snapshot "
-            "lower bounds (offline). Blue curve: the chord lower bound. "
-            "Rust: the reduced Rayleigh upper bound. Dashed: the exact "
-            "answer from full 1024-dimensional diagonalization at all 100 "
-            "points — computed only to check the certificate, never used "
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>Blue dots: the six certified "
+            "snapshot lower bounds. Blue curve: the chord bound built "
+            "from them. Rust: the 6×6 upper bound. The dashed curve is "
+            "the exact answer from full diagonalization at all 100 "
+            "points; it is computed to check the band and is not used "
             "by it.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li><strong>{contained}/100</strong> sweep points contained."
-            "</li>"
-            f"<li>Upper-bound error at criticality: <strong>"
-            f"{gap_at_crit:.2e}</strong> from six snapshot vectors.</li>"
-            "<li>Online cost per point: one <strong>6×6</strong> "
-            "eigenproblem.</li></ul>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li><strong>{contained}/100</strong> sweep points "
+            "contained.</li>"
+            f"<li>Upper-bound error at the critical point: <strong>"
+            f"{gap_at_crit:.2e}</strong>, from six snapshot vectors.</li>"
+            "<li>Cost per point after the offline stage: one "
+            "<strong>6×6</strong> eigenvalue problem.</li></ul>",
         ])
 
 
@@ -198,40 +228,44 @@ total energy (hartree)</text></svg>'''
     return page(
         "Case: the hydrogen molecule, bracketed from raw integrals",
         "certified case",
-        "H₂ from scratch: a bond with error bars of ±1.5·10⁻¹³",
+        "The hydrogen molecule, with error bars of 10⁻¹³ hartree",
         "Gaussian integrals in closed form, second quantization, and a "
-        "two-sided bracket — the entire pipeline is in the module, and "
-        "the dissociation limit is predicted by an independent "
-        "calculation it must agree with.",
+        "two-sided energy bracket. A separate calculation predicts the "
+        "dissociation limit, and the curve has to hit it.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>The upper bound is the variational theorem: any trial "
-            "state's energy is a ceiling on the truth. The lower bound is "
-            "a feasibility proof: <code>H − c·I</code> admits a Cholesky "
-            "factorization exactly when the ground energy is at least "
-            "<code>c</code>, and bisection turns that yes/no question "
-            "into a floor. Both bounds carry explicit floating-point "
-            "margins. At large separation, monopole cancellation is exact "
-            "for s-orbitals, so the molecule must dissociate to exactly "
-            "two isolated atoms — computed separately, giving the "
-            "a&nbsp;priori line the curve must meet.</p>",
+            "<h2>The idea</h2>"
+            "<p>The upper bound is the variational theorem: the energy "
+            "of any trial state sits above the true ground energy. The "
+            "lower bound is a feasibility question. The matrix "
+            "<code>H − c·I</code> has a Cholesky factorization exactly "
+            "when the ground energy is at least <code>c</code>, so "
+            "bisection on c turns a yes/no test into a certified floor. "
+            "Both bounds carry explicit floating-point margins.</p>"
+            "<p>There is also a free consistency check. At large "
+            "separation the two atoms stop interacting, because the "
+            "monopole terms cancel exactly for s orbitals. So the "
+            "molecule must dissociate to twice the single-atom energy. "
+            "That number comes from an independent calculation, and it "
+            "fixes the asymptote the curve must approach.</p>",
             code_section(sf.hydrogen_atom_energy, sf.h2_energy_bracket,
                          sf.eigen_bracket),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>The certified potential curve "
-            "(bracket widths ~10⁻¹³ hartree — about ten orders of "
-            "magnitude thinner than this line). The dashed asymptote is "
-            "not a fit: it is an independent calculation the curve is "
-            "required to approach.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li>Maximum bracket width over the curve: <strong>"
-            f"{2 * max(errs):.1e}</strong> hartree — versus chemical "
-            "accuracy at 1.6·10⁻³.</li>"
-            f"<li>Dissociation vs two isolated atoms: <strong>"
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>The certified potential curve. "
+            "The bracket widths are near 10⁻¹³ hartree, about ten "
+            "orders of magnitude thinner than the plotted line. The "
+            "dashed asymptote is not fitted; it is computed separately, "
+            "and the curve is required to approach it.</figcaption>"
+            "</figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Largest bracket width on the curve: <strong>"
+            f"{2 * max(errs):.1e}</strong> hartree. Chemical accuracy "
+            "is 1.6·10⁻³.</li>"
+            f"<li>Dissociation against two isolated atoms: <strong>"
             f"{diss_gap:.1e}</strong> hartree difference at R = 50.</li>"
             f"<li>Equilibrium bracket: <strong>{Es[i_eq]:.9f} ± "
-            f"{errs[i_eq]:.0e}</strong> at R = {Rs[i_eq]:.1f} bohr "
-            "(published FCI/STO-3G ≈ −1.13727 at 1.4).</li></ul>",
+            f"{errs[i_eq]:.0e}</strong> at R = {Rs[i_eq]:.1f} bohr. "
+            "The published FCI/STO-3G value is −1.13727 at 1.4.</li>"
+            "</ul>",
         ])
 
 
@@ -278,39 +312,40 @@ certified width, mHa per atom (log scale)</text></svg>'''
     return page(
         "Case: the hierarchy knob on hydrogen chains",
         "certified case",
-        "Pay for precision: the window-length ladder, measured",
-        "The certified bracket on a hydrogen chain tightens roughly 2× "
-        "for every unit of window length ℓ, at cost 4<sup>ℓ</sup> — "
-        "independent of how long the chain is.",
+        "The window-length ladder",
+        "A certified energy bracket for hydrogen chains that tightens "
+        "about 2× for each unit of window length ℓ, at cost "
+        "4<sup>ℓ</sup>. The chain length never enters the cost.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Slide a window of ℓ atoms along the chain; weight each "
-            "interaction by the reciprocal of how many windows contain it, "
-            "so the windows sum to exactly the whole Hamiltonian; then the "
-            "true energy is at least the sum of certified window floors. "
-            "Long-range Coulomb terms are absorbed exactly via a "
+            "<h2>The idea</h2>"
+            "<p>Slide a window of ℓ atoms along the chain, and weight "
+            "each interaction by the number of windows that contain it. "
+            "The weighted windows then add up to exactly the full "
+            "Hamiltonian, so the true energy is at least the sum of "
+            "certified window minima. Long-range Coulomb terms do not "
+            "fit in any window; they are absorbed exactly, using a "
             "charge-neutral rewrite and the operator inequality "
-            "<code>g(nᵢ−1)(nⱼ−1) ⪰ −(g/2)[(nᵢ−1)² + (nⱼ−1)²]</code>; "
-            "telescoping corrections on window overlaps — optimized by a "
-            "proximal bundle, valid for any choice — tighten every window "
-            "at once. The upper bound is a product of exactly-solved "
-            "blocks. Cost depends on ℓ, never on chain length.</p>",
-            "<h2>The orchestration (rendered from the module)</h2>"
-            f"<pre>{esc(inspect.getsource(sf.h_chain_bracket))}</pre>",
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>Blue: H₆ (every point checked "
-            "against exact diagonalization in this run). Rust: H₁₀ — a "
-            "2²⁰-dimensional problem with no exact answer to compare "
-            "against; none is needed. A separate recorded run extends "
-            "H₁₀ to ℓ=7 (16,384-dimensional windows, tamed by particle-"
-            "number sectors) at 55 mHa/atom; it is excluded here only to "
-            "keep this page regenerable in seconds.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li>H₆ containment vs exact: <strong>{sum(checks)}/"
-            f"{len(checks)}</strong> at every ℓ.</li>"
-            "<li>Widths halve, roughly, per unit ℓ — the grudging rate of "
-            "a <em>critical</em> chain; gapped systems tighten "
-            "exponentially faster.</li></ul>",
+            "<code>g(nᵢ−1)(nⱼ−1) ⪰ −(g/2)[(nᵢ−1)² + (nⱼ−1)²]</code>.</p>"
+            "<p>Correction terms on the window overlaps tighten every "
+            "window at once. An optimizer picks them, and the bound is "
+            "valid whatever the optimizer did, because the corrections "
+            "cancel telescopically by construction. The upper bound is "
+            "a product of exactly solved blocks.</p>",
+            code_section(sf.h_chain_bracket),
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>Blue: H₆, where every point is "
+            "checked against exact diagonalization in this run. Rust: "
+            "H₁₀, a 2²⁰-dimensional problem with no exact answer to "
+            "compare against; none is needed. A separate recorded run "
+            "extends H₁₀ to ℓ=7 at 55 mHa/atom using particle-number "
+            "sectors; it is left out here to keep the page quick to "
+            "regenerate.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>H₆ containment against exact: <strong>{sum(checks)}/"
+            f"{len(checks)}</strong>, at every ℓ.</li>"
+            "<li>Widths halve, roughly, per unit ℓ. This chain is "
+            "critical, the slowest case; gapped systems tighten "
+            "faster.</li></ul>",
         ])
 
 
@@ -368,37 +403,40 @@ butterfly apply cost ÷ plain low-rank cost (matched certified accuracy)</text>
     return page(
         "Case: the butterfly crossover at high frequency",
         "certified case",
-        "The butterfly factorization earns its keep — measurably",
-        "For oscillatory wave kernels, the multi-level butterfly beats "
-        "plain low-rank compression only past a predictable problem size. "
-        "The certificate never depends on which side of the crossover "
-        "you are on.",
+        "The butterfly crossover",
+        "For oscillatory wave kernels, the butterfly factorization "
+        "beats plain low-rank compression only past a predictable "
+        "problem size. This page measures where, and the certificate "
+        "holds on both sides of the crossover.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Well-separated blocks of a wave kernel have numerical rank "
-            "≈ R = k·r₁·r₂/D — growing with frequency k. The butterfly "
-            "ladder refines the row tree while coarsening the column tree, "
-            "keeping every factor at rank ≈ R/2<sup>L</sup>; its transfer "
-            "cost is <em>independent of N</em>, while plain low-rank costs "
-            "R·(m+n). So at fixed R the ratio must cross below 1 as N "
-            "grows — a prediction this page tests. Certification is a "
-            "posteriori: random probes of the assembled factorization, "
-            "with the failure probability printed.</p>",
+            "<h2>The idea</h2>"
+            "<p>A well-separated block of a wave kernel has numerical "
+            "rank about R = k·r₁·r₂/D, which grows with the frequency "
+            "k. Plain low-rank compression therefore costs R·(m+n) per "
+            "apply. The butterfly ladder refines the row tree while it "
+            "coarsens the column tree, which keeps every factor at "
+            "rank about R/2<sup>L</sup>, and its transfer cost does "
+            "not depend on N at all. So at fixed R the cost ratio must "
+            "drop below 1 as N grows. That is a prediction, and this "
+            "page tests it. The certificate is a posteriori: random "
+            "probes of the assembled factorization, with the failure "
+            "probability stated.</p>",
             code_section(sf.ButterflyBlock),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>Helmholtz kernel at k = 1800 "
-            f"(R ≈ 95), matched certified accuracy (plain rank "
-            f"{r_plain}). The crossover arrives where the N-independent "
-            "transfer cost is amortized — exactly as the cost model "
-            "predicts.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
-            "<li>Every apply checked against the dense kernel: actual "
-            f"error <strong>{stats_last[1]:.1e}</strong> within certified "
-            f"<strong>{stats_last[0]:.1e}</strong>.</li>"
-            f"<li>Stated failure probability: <strong>"
-            f"{stats_last[2]:.0e}</strong> — printed, not hidden.</li>"
-            f"<li>Crossover measured: {ratios[0]:.2f}× → {ratios[-1]:.2f}× "
-            "of plain low-rank as N grows at fixed R.</li></ul>",
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>Helmholtz kernel at k = 1800, "
+            "where R ≈ 95. Both methods are held to the same certified "
+            f"accuracy; the plain method needs rank {r_plain}. The "
+            "crossover arrives once the N-independent transfer cost is "
+            "amortized, which is what the cost model predicts."
+            "</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            "<li>Every apply is checked against the dense kernel: "
+            f"actual error <strong>{stats_last[1]:.1e}</strong>, within "
+            f"the certified <strong>{stats_last[0]:.1e}</strong>.</li>"
+            f"<li>Failure probability of the probe certificate: <strong>"
+            f"{stats_last[2]:.0e}</strong>.</li>"
+            f"<li>Measured crossover: {ratios[0]:.2f}× → {ratios[-1]:.2f}× "
+            "the plain low-rank cost as N grows at fixed R.</li></ul>",
         ])
 
 
@@ -462,39 +500,42 @@ error bound versus measured deviation across the high-temperature region">
     return page(
         "Case: the 2D Ising model, certified by cluster expansions",
         "certified case",
-        "A validity region with a wall the certificate refuses to cross",
-        "Free energy and correlations of the 2D Ising model at high "
-        "temperature, with floating point carried in interval "
-        "arithmetic — checked against the exact transfer matrix at "
-        "every point, and refusing where the expansion's own "
-        "convergence proof gives out.",
+        "The 2D Ising model at high temperature",
+        "Free energy and correlations from cluster expansions, with "
+        "the floating point carried in interval arithmetic. The "
+        "functions refuse outside the region where the expansion "
+        "provably converges.",
         [
-            "<h2>The theory, a priori</h2>"
+            "<h2>The idea</h2>"
             "<p>The high-temperature expansion rewrites the Ising "
-            "partition function as a gas of polymers (closed loops on "
-            "the lattice) with activity <code>t = tanh βJ</code>. The "
-            "Kotecký–Preiss criterion gives a computable radius inside "
-            "which the cluster series converges, with a geometric tail "
-            "bound at truncation order L = 12; local observables come "
-            "from pinned polymers with an Eulerian-path counting bound. "
-            "Every coefficient and every tail is evaluated in outward-"
-            "rounded interval arithmetic, so the floating point is part "
-            "of the certificate. Outside the proven radius the functions "
-            "raise — the wall at βJ ≈ 0.086 is the certificate's, not "
-            "nature's (the true critical point sits at βJ ≈ 0.4407).</p>",
+            "partition function as a gas of polymers, which are closed "
+            "loops on the lattice with activity <code>t = tanh βJ"
+            "</code>. The Kotecký–Preiss criterion gives a computable "
+            "radius inside which the cluster series converges, with a "
+            "geometric bound on the tail past truncation order L = 12. "
+            "Local observables come from pinned polymers, counted by "
+            "an Eulerian-path argument. Every coefficient and every "
+            "tail is evaluated in outward-rounded interval arithmetic, "
+            "so the floating point is part of the certificate.</p>"
+            "<p>Outside the proven radius the functions raise an "
+            "error. The wall sits at βJ ≈ 0.086. The true critical "
+            "point is at βJ ≈ 0.4407, five times farther out: the wall "
+            "belongs to the proof, not to the physics, and the "
+            "certificate says so by refusing.</p>",
             code_section(sf.ising2d_logZ_density,
                          sf.ising2d_bond_correlation),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>Lines: the certified error bound. "
-            "Dots: the measured deviation from the exact 10×10 transfer "
-            "matrix (the suite's own truth generator, itself validated "
-            "against 2¹⁶-state exhaustive enumeration). The bound must "
-            "sit above every dot; both climb as the expansion approaches "
-            "its convergence wall. Dots on the floor are at the double-"
-            "precision limit.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>Lines: the certified error "
+            "bound. Dots: the measured deviation from the exact 10×10 "
+            "transfer matrix, which is the test suite's own truth "
+            "generator, itself validated against exhaustive "
+            "enumeration of 2¹⁶ states. The bound must sit above every "
+            "dot. Both climb as the expansion nears its convergence "
+            "wall. Dots on the floor are at the double-precision "
+            "limit.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/{2 * len(betas)}"
-            "</strong> (both quantities, every temperature).</li>"
+            "</strong>, both quantities at every temperature.</li>"
             f"<li>Refusal at βJ = 0.1: <strong>{refused}/2</strong> "
             "functions raised rather than extrapolate.</li>"
             f"<li>Zero-coupling limit: log Z = log 2 "
@@ -556,43 +597,47 @@ band around the smeared spectral density, resolving two peaks">
         "Case: smeared spectral functions with resolution as part of "
         "the query",
         "certified case",
-        "Two peaks from sixteen numbers — and the price of sharpness",
+        "Two peaks from sixteen numbers",
         "A Gaussian-smeared spectral density reconstructed from 16 "
         "Euclidean correlator values, with a certified band at every "
-        "frequency. Ask for sharper resolution and the certificate "
-        "honestly charges you more error.",
+        "frequency. Sharper resolution costs more certified error, and "
+        "the certificate makes the price explicit.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>The data determine the spectral density ρ only through "
-            "exponential moments C(t) = ∫e^(−ωt) ρ(ω) dω — inverting "
-            "that is ill-posed. The Hansen–Lupo–Tantalo move: don't "
-            "invert; reconstruct the <em>smearing kernel</em> as a sum "
-            "of the exponentials you have. The certificate is a "
-            "posteriori and immune to how the coefficients were found: "
-            "a rigorous sup bound c on the weighted kernel deviation "
-            "(dense grid + per-cell Lipschitz + analytic tail) turns "
-            "positivity of ρ into |value − truth| ≤ c·C(1). One declared "
-            "physical assumption: ρ ≥ 0, stamped into the provenance.</p>",
+            "<h2>The idea</h2>"
+            "<p>The data see the spectral density ρ only through its "
+            "exponential moments, C(t) = ∫e^(−ωt) ρ(ω) dω. Inverting "
+            "that relation is ill-posed. The Hansen–Lupo–Tantalo "
+            "observation is that you do not have to invert it: build "
+            "the <em>smearing kernel</em> instead, as a combination of "
+            "the exponentials you actually have.</p>"
+            "<p>The certificate does not care how the combination was "
+            "found. If the reconstructed kernel deviates from the "
+            "target Gaussian by less than c·e^(−ω) everywhere — a "
+            "bound checked on a dense grid, with a Lipschitz estimate "
+            "per cell and an analytic tail — then positivity of ρ "
+            "gives |value − truth| ≤ c·C(1). The one physical "
+            "assumption, ρ ≥ 0, is stated in the provenance.</p>",
             code_section(sf.smeared_spectral, sf._hlt_solve),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>The certified band (rust upper, "
-            "blue lower) around the smeared two-peak density at "
-            "σ = 0.35, swept over 41 frequencies. Dashed: the exact "
-            "smeared truth, computable here because the test density is "
-            "synthetic — the band was built without it. The first peak "
-            "is certified two-sidedly; at the second the lower bound "
-            "has already fallen to zero, and past ω ≈ 2 the band runs "
-            "off the top of the plot: sixteen exponentials genuinely "
-            "cannot say more, and the certificate says so.</figcaption>"
-            "</figure>",
-            "<h2>Verified in this run</h2><ul>"
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>The certified band, rust above "
+            "and blue below, around the smeared two-peak density at "
+            "σ = 0.35, over 41 frequencies. The dashed curve is the "
+            "exact smeared truth, computable here because the test "
+            "density is synthetic; the band was built without it. The "
+            "first peak is certified from both sides. At the second, "
+            "the lower bound has fallen to zero, and past ω ≈ 2 the "
+            "band runs off the top of the plot. Sixteen exponentials "
+            "cannot say more, and the certificate reports exactly "
+            "that.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/{len(ws)}</strong> "
             "frequencies.</li>"
-            "<li>Resolution costs error, monotonically: certified err at "
-            f"ω = 1 is <strong>{res_errs[0]:.3f} → {res_errs[1]:.3f} → "
-            f"{res_errs[2]:.3f}</strong> for σ = 0.6 → 0.4 → 0.25.</li>"
-            "<li>The certificate never used the truth: it is c·C(1) "
-            "from the data and the kernel sup bound alone.</li></ul>",
+            "<li>Resolution costs error, monotonically: the certified "
+            f"error at ω = 1 is <strong>{res_errs[0]:.3f} → "
+            f"{res_errs[1]:.3f} → {res_errs[2]:.3f}</strong> for "
+            "σ = 0.6 → 0.4 → 0.25.</li>"
+            "<li>The certificate never used the truth. It is c·C(1), "
+            "from the data and the kernel bound alone.</li></ul>",
         ])
 
 
@@ -658,43 +703,43 @@ tubes around the reduced-model trajectories of both slow variables">
     return page(
         "Case: Mori-Zwanzig closures with a gap-priced certificate",
         "certified case",
-        "Forget the fast variables — and pay exactly what the gap "
-        "charges",
+        "Dropping the fast variables",
         "A 10-dimensional slow-fast system reduced to its 2 slow "
-        "coordinates by the Markovian closure. The certified tube "
-        "comes from the fast sector's spectral gap; no gap, no "
-        "certificate — the function refuses.",
+        "coordinates by the Markovian closure. The certified error "
+        "comes from the fast sector's spectral gap. Without a gap "
+        "there is no decay proof, and the function refuses.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Projecting a linear system onto slow observables leaves "
-            "an exact memory term K(s) = A₁₂e^(A₂₂s)A₂₁. If the fast "
-            "sector is dissipative — log-norm of A₂₂ strictly negative — "
-            "the kernel decays at the gap μ, and dropping the memory "
-            "(the Markovian closure A₁₁ − A₁₂A₂₂⁻¹A₂₁) costs an error a "
-            "Grönwall argument bounds with computable constants: block "
-            "norms, log-norms, and 1/μ² — the certificate is priced by "
-            "the physics that justifies the reduction. A fast initial "
-            "transient adds its own decaying term. Without a gap the "
-            "rewrite refuses: no decay proof, no closure.</p>",
+            "<h2>The idea</h2>"
+            "<p>Project a linear system onto its slow observables and "
+            "an exact memory term is left over: K(s) = A₁₂e^(A₂₂s)A₂₁. "
+            "If the fast sector is dissipative, meaning the log-norm "
+            "of A₂₂ is strictly negative, then the kernel decays at "
+            "the gap μ. Dropping the memory gives the Markovian "
+            "closure A₁₁ − A₁₂A₂₂⁻¹A₂₁, and a Grönwall argument bounds "
+            "the cost of dropping it, with constants you can compute: "
+            "block norms, log-norms, and 1/μ². The certificate is "
+            "priced by the same physics that justifies the reduction. "
+            "A fast initial transient adds one more decaying term.</p>",
             code_section(sf._lognorm, sf.mz_closure_linear),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>Both slow coordinates: closure "
-            "prediction (solid) inside its certified tube (shaded, "
-            "half-width the joint 2-norm bound), exact 10-dimensional "
-            "propagation dashed — computed only to check containment. "
-            "The tube is thin — half-width "
-            f"{errs[0]:.3f} at T = {Ts[0]:g}, saturating at "
-            f"{errs[-1]:.3f} by T = 20 because the reduced model is "
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>Both slow coordinates. The "
+            "closure prediction is solid, inside its certified tube "
+            "(shaded; the half-width is the joint 2-norm bound). The "
+            "exact 10-dimensional propagation is dashed, computed only "
+            "to check containment. The tube half-width is "
+            f"{errs[0]:.3f} at T = {Ts[0]:g} and saturates at "
+            f"{errs[-1]:.3f} by T = 20, because the reduced model is "
             "itself dissipative.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
+            "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/{len(Ts)}</strong> "
             "horizons out to T = 20.</li>"
             "<li>The gap prices the certificate: doubling the fast "
             f"sector's stiffness tightens the bound <strong>"
             f"{e_base / e_stiff:.1f}×</strong> at T = 5.</li>"
-            f"<li>No-gap system: <strong>{'refused' if refused else 'NOT REFUSED'}"
-            "</strong> (an undamped fast mode means the memory kernel "
-            "never certifiably decays).</li></ul>",
+            f"<li>No-gap system: <strong>"
+            f"{'refused' if refused else 'NOT REFUSED'}</strong>. An "
+            "undamped fast mode means the memory kernel never "
+            "certifiably decays.</li></ul>",
         ])
 
 
@@ -751,55 +796,57 @@ its conformal calibrated bound">
         "Case: gravitational-wave surrogates with a conformal mismatch "
         "certificate",
         "certified case",
-        "The purest ε in physics, served by a surrogate that names "
-        "its odds",
-        "Waveforms need only match to the detector's mismatch "
-        "tolerance — an ε set by instrument and SNR. A reduced-order "
-        "surrogate answers any parameter in microseconds, and its "
-        "certificate is the field's own validation practice upgraded "
-        "to a distribution-free guarantee with the failure probability "
-        "printed.",
+        "Waveform surrogates with stated odds",
+        "A detector fixes the mismatch tolerance it can distinguish. "
+        "The surrogate answers any parameter in a fraction of a "
+        "millisecond, and its certificate states the probability that "
+        "it is wrong.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Raw waveforms decorrelate wildly across parameter space "
-            "(hundreds of radians of dephasing), but amplitude and "
-            "unwrapped phase are smooth — the gwsurrogate insight, "
-            "reproduced here from waveform evaluations alone: fix the "
-            "free global phase, unwrap, reduce each piece by SVD, fit "
-            "the mode coefficients. The certificate is conformal: the "
-            "worst mismatch over n_cal held-out draws bounds a fresh "
-            "draw from the same distribution with P(miss) ≤ 1/(n_cal+1) "
-            "— by exchangeability alone, no smoothness assumed, the "
-            "same theorem behind the Mori–Zwanzig empirical tier. "
-            "Refusal outside the training hull, and dispatch refuses "
-            "when the calibrated mismatch exceeds the detector's ε.</p>",
+            "<h2>The idea</h2>"
+            "<p>Raw waveforms decorrelate across parameter space by "
+            "hundreds of radians of dephasing, so no small basis fits "
+            "them directly. But the amplitude and the unwrapped phase "
+            "are smooth functions of the parameter. So fix the free "
+            "global phase, unwrap, reduce amplitude and phase "
+            "separately by SVD, and fit the mode coefficients. That is "
+            "the gwsurrogate architecture, reproduced here from "
+            "waveform evaluations alone.</p>"
+            "<p>The certificate is conformal. Hold out n_cal fresh "
+            "parameter draws, measure the surrogate's mismatch at each, "
+            "and take the worst. For a new draw from the same "
+            "distribution, the probability of exceeding that worst "
+            "value is at most 1/(n_cal+1). This follows from "
+            "exchangeability alone; no smoothness is assumed. It is "
+            "the same theorem behind the Mori–Zwanzig empirical tier. "
+            "The surrogate refuses outside its training range, and "
+            "dispatch refuses when the calibrated mismatch exceeds "
+            "the detector's ε.</p>",
             code_section(sf._gw_chirp, sf._gw_mismatch,
                          sf.gw_surrogate_build, sf._gw_surrogate_raw,
                          sf.gw_surrogate_eval, sf.gw_surrogate_dispatch),
-            "<h2>The certification, executed and drawn</h2>"
+            "<h2>The result</h2>"
             f"<figure>{svg}<figcaption>Measured mismatch across 120 "
             "parameters (solid) for two offline builds, each under its "
             "conformal bound (dashed). The 4-mode surrogate finds the "
-            "waveform manifold's exact amplitude/phase rank and hits "
-            "machine precision; the deliberately loose 3-mode build "
-            "shows what the certificate does with an imperfect "
-            "surrogate: reports it, honestly, at 10⁻².</figcaption>"
-            "</figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li>Fresh-draw exceedances of the calibrated bound: "
-            f"<strong>{exceed}/200</strong> (declared rate "
-            f"1/{tight['n_cal'] + 1} ≈ {200 // (tight['n_cal'] + 1)}/200)."
-            "</li>"
-            f"<li>Online cost: <strong>{1e6 * t_sur:.0f} µs</strong> per "
-            "waveform, independent of what truth costs. No speedup "
-            f"here — this model family is itself cheap "
-            f"({1e6 * t_truth:.0f} µs) — the architecture is the "
-            "point: with numerical-relativity truth at ~10⁵ CPU-hours "
-            "per waveform, offline-only truth evaluation IS the "
+            "waveform family's exact amplitude and phase rank and "
+            "reaches machine precision. The 3-mode build is "
+            "deliberately too small, and the certificate reports the "
+            "consequence: mismatch near 10⁻².</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Fresh draws exceeding the calibrated bound: "
+            f"<strong>{exceed}/200</strong>. The declared rate is "
+            f"1/{tight['n_cal'] + 1}, about "
+            f"{200 // (tight['n_cal'] + 1)}/200.</li>"
+            f"<li>Cost per query: <strong>{1e6 * t_sur:.0f} µs</strong>, "
+            "independent of what the truth costs. There is no speedup "
+            f"here, since this model family is itself cheap "
+            f"({1e6 * t_truth:.0f} µs). The architecture is the point: "
+            "with numerical-relativity truth at about 10⁵ CPU-hours "
+            "per waveform, evaluating truth only offline is the whole "
             "product.</li>"
             "<li>Dispatch refuses below the calibrated mismatch and "
-            "outside the training hull (both exercised in the suite)."
-            "</li></ul>",
+            "outside the training range. Both cases are exercised in "
+            "the test suite.</li></ul>",
         ])
 
 
@@ -859,53 +906,55 @@ interval ladder on the Lorenz mean of z, with witness and attractor">
     return page(
         "Case: sum-of-squares transport bounds, proven over the rationals",
         "certified case",
-        "A bound on chaos, with a proof you can check by hand",
-        "The long-time average of z over every trajectory of the Lorenz "
-        "system, bracketed by a sum-of-squares certificate whose final "
-        "arbiter is exact rational arithmetic — the SDP solver "
-        "proposes, the LDL^T over ℚ disposes.",
+        "A bound on chaos, proven over the rationals",
+        "The long-time average of z in the Lorenz system, for every "
+        "trajectory at once. An SDP solver proposes the certificate; "
+        "exact rational arithmetic decides it.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>For any polynomial V, the time average of ∇V·f vanishes "
-            "on every bounded trajectory, so sup<sub>x</sub> [Φ + ∇V·f] "
-            "bounds the average of Φ. Minimizing over V is the "
-            "background-method/SOS program of Doering–Constantin through "
-            "Tobasco–Fantuzzi–Goulart — certificates on a problem "
-            "famous for having none. The project split applies "
-            "verbatim: the <em>search</em> for V and a Gram matrix is "
-            "unrigorous float optimization (an SDP solver, even), but "
-            "the <em>certificate</em> is the polynomial identity "
-            "U − Φ − ∇V·f = mᵀQm checked coefficient-by-coefficient "
-            "over ℚ, and Q ⪰ 0 proven by rational LDLᵀ. Boundedness of "
-            "every trajectory — which the theorem needs — is itself an "
-            "SOS certificate for the classical absorbing ball. The "
-            "fixed points C± are exact trajectories with ⟨z⟩ = ρ−1 = "
-            "27, closing the bracket from below.</p>",
+            "<h2>The idea</h2>"
+            "<p>Take any polynomial V. Along a trajectory, dV/dt = "
+            "∇V·f, and the time average of a derivative of a bounded "
+            "quantity is zero. So the time average of Φ equals the "
+            "time average of Φ + ∇V·f, which is at most "
+            "sup<sub>x</sub> [Φ + ∇V·f]. Every V gives a bound; "
+            "minimizing over V is a sum-of-squares program. This is "
+            "the background method of Doering and Constantin, in the "
+            "modern form of Tobasco, Fantuzzi, and Goulart.</p>"
+            "<p>The search for V and for a Gram matrix is float "
+            "optimization, here an SDP solver, and none of it is "
+            "trusted. The certificate is the polynomial identity "
+            "U − Φ − ∇V·f = mᵀQm, checked coefficient by coefficient "
+            "over the rationals, plus a rational LDLᵀ proof that "
+            "Q ⪰ 0. No float enters the verdict. The theorem needs "
+            "bounded trajectories, and that is itself an SOS "
+            "certificate, for the classical absorbing ball. The fixed "
+            "points C± are exact trajectories with ⟨z⟩ = ρ−1 = 27, "
+            "which closes the bracket from below.</p>",
             code_section(sf._sos_exact_check, sf._rational_ldl_psd,
                          sf.lorenz_mean_z_bracket),
-            "<h2>The certification, executed and drawn</h2>"
-            f"<figure>{svg}<figcaption>The certified ladder: quadratic "
-            "V proves ⟨z⟩ ≤ 28 (by hand, exactly); quartic V — found "
-            "by an SDP solver after nondimensionalization, then "
-            "re-proven over ℚ — lands at "
-            f"{float(c4.value + c4.err):.3f}, sharp against the "
-            "fixed-point witness at 27 to one part in 27,000. The "
-            "chaotic attractor's own average sits well below: the "
-            "bracket bounds the WORST trajectory, and the worst "
-            "trajectory is sitting on the fixed point.</figcaption>"
-            "</figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li>Degree-2 bracket: <strong>[27, 28]</strong>; degree-4: "
-            f"<strong>[27, {float(c4.value + c4.err):.3f}]</strong> — "
-            "both PSD proofs completed in exact rational arithmetic, "
-            "no float in the verdict.</li>"
-            f"<li>Simulated attractor mean <strong>{mean_z:.2f}</strong> "
-            "≤ the certified bound, as it must be.</li>"
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>The certified ladder. Quadratic "
+            "V proves ⟨z⟩ ≤ 28, by a hand-derived Gram checked "
+            "exactly. Quartic V, found by the SDP solver after "
+            "nondimensionalization and re-proven over the rationals, "
+            f"lands at {float(c4.value + c4.err):.3f}: sharp against "
+            "the fixed-point witness at 27 to one part in 27,000. The "
+            "chaotic attractor's own average sits well below, because "
+            "the bracket bounds the worst trajectory, and the worst "
+            "trajectory is the one sitting on the fixed point."
+            "</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Degree-2 bracket <strong>[27, 28]</strong>; degree-4 "
+            f"<strong>[27, {float(c4.value + c4.err):.3f}]</strong>. "
+            "Both PSD proofs completed in exact rational arithmetic."
+            "</li>"
+            f"<li>Simulated attractor mean <strong>{mean_z:.2f}</strong>, "
+            "below the certified bound.</li>"
             f"<li>The checker refuses an indefinite polynomial: "
             f"<strong>{'yes' if refused else 'NO'}</strong>.</li>"
-            "<li>cvxpy/SCS is a search-only dependency: delete it and "
-            "the degree-4 <em>search</em> dies, but no certificate "
-            "anywhere weakens.</li></ul>",
+            "<li>cvxpy/SCS is a search-only dependency. Removing it "
+            "kills the degree-4 search and weakens no certificate."
+            "</li></ul>",
         ])
 
 
@@ -973,54 +1022,58 @@ extrapolating down in epsilon, verification solves beneath them">
         "Case: the plasma hierarchy, and the asymptotic tier's first "
         "shipment",
         "certified case",
-        "Calibrate where truth is cheap, certify where it isn't",
-        "The guiding-center reduction of charged-particle motion, "
-        "certified at the ASYMPTOTIC tier: the truncation exponent is "
-        "a theorem, the constant is measured on a ladder of large ε "
-        "where full kinetic solves cost almost nothing, and the bound "
-        "is extrapolated down to the ε where they don't.",
+        "The guiding-center hierarchy",
+        "The first ASYMPTOTIC-tier certificate. The truncation "
+        "exponent of the reduction is a theorem. The constant is "
+        "measured at large ε, where full kinetic solves are cheap, "
+        "and the bound is carried down to small ε, where they are "
+        "not.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Every reduction hierarchy in plasma physics — kinetic → "
-            "drift-kinetic → fluid — rests on a small parameter ε = "
-            "gyroradius/gradient scale, with truncation errors of proven "
-            "<em>order</em> and unknown <em>constant</em>. That is "
-            "exactly what Tier.ASYMPTOTIC declares: exponent proven, "
-            "constant measured, regime assumption named. The economics "
-            "make it work: the full kinetic solve costs ~1/ε, so the "
-            "constant is calibrated where solves are cheap and the "
-            "certificate carries it to where they are not. One honest "
-            "subtlety, found by measurement: the order-1 truncation "
-            "coefficient is gyrophase-oscillatory, so pairwise "
-            "convergence slopes swing wildly while the <em>envelope</em> "
-            "is flat — the certifier therefore checks envelopes, and "
-            "refuses only in the one dangerous direction: a measured "
-            "constant growing toward the ladder floor, the signature of "
-            "a claimed exponent the data contradict.</p>",
+            "<h2>The idea</h2>"
+            "<p>Every reduction hierarchy in plasma physics, from "
+            "kinetic to drift-kinetic to fluid, rests on a small "
+            "parameter: ε, the gyroradius over the gradient scale. The "
+            "truncation error of an order-k reduction is O(ε^(k+1)). "
+            "The exponent is a theorem; the constant in front is not "
+            "computable. Tier.ASYMPTOTIC says exactly that: exponent "
+            "proven, constant measured, remaining assumption stated."
+            "</p>"
+            "<p>The measurement is affordable for a simple reason. A "
+            "full kinetic solve costs about 1/ε, so at large ε it is "
+            "cheap. Measure the error constant on a ladder of large ε "
+            "values, take the worst, add a safety factor, and carry "
+            "the bound down to the small ε you actually care about. "
+            "One subtlety came out of the measurements: the order-1 "
+            "truncation coefficient oscillates with gyrophase, so "
+            "convergence slopes between ladder rungs swing wildly "
+            "while the envelope stays flat. The certifier therefore "
+            "checks the envelope, and it refuses in the one dangerous "
+            "direction, a measured constant that grows toward the "
+            "ladder floor. That growth is what the data look like when "
+            "the claimed exponent is wrong.</p>",
             code_section(sf.asymptotic_extrapolate, sf.gc_drift_asymptotic,
                          sf.gc_drift_dispatch, sf._gc_prediction,
                          sf._gc_orbit_delta),
-            "<h2>The certification, executed and drawn</h2>"
+            "<h2>The result</h2>"
             f"<figure>{svg}<figcaption>Filled dots: measured truncation "
-            "errors on the calibration ladder (order 0 rust, order 1 "
-            "blue). Lines: the certified envelopes η·C·ε<sup>k</sup> "
-            "extrapolating leftward — into the region where kinetic "
-            "solves get expensive. Open rings: expensive verification "
-            "solves at ε = 0.02 and 0.01, never used by the "
-            "certificate, sitting beneath their envelopes as the "
-            "theorem says they must.</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
-            f"<li>Containment at the verification ε: <strong>{contained}/4"
-            "</strong> (both orders, both ε).</li>"
-            f"<li>Tier: <strong>{certs[1].tier.name}</strong>, fail_p 0 — "
-            "the un-rigor is named in the provenance, not hidden in the "
-            "number.</li>"
-            "<li>Dispatch along the hierarchy: tol = 0.05 served by "
-            f"<strong>order 0</strong> (free), tol = 2·10⁻³ escalated to "
-            f"<strong>order 1</strong> (err {c_disp1.err:.1e}); an "
+            "errors on the calibration ladder, order 0 in rust and "
+            "order 1 in blue. Lines: the certified envelopes "
+            "η·C·ε<sup>k</sup>, extrapolated leftward into the region "
+            "where kinetic solves get expensive. Open rings: "
+            "verification solves at ε = 0.02 and 0.01, never used by "
+            "the certificate, sitting beneath their envelopes as the "
+            "theorem requires.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment at the verification ε: <strong>"
+            f"{contained}/4</strong>, both orders at both ε.</li>"
+            f"<li>Tier: <strong>{certs[1].tier.name}</strong>. The "
+            "assumptions are stated in the provenance string.</li>"
+            "<li>Dispatch along the hierarchy: tol = 0.05 is served by "
+            f"<strong>order 0</strong>, tol = 2·10⁻³ escalates to "
+            f"<strong>order 1</strong> (err {c_disp1.err:.1e}), and an "
             "impossible tol refuses and prices the kinetic rung.</li>"
-            "<li>Wrong-exponent refusal: a synthetic truth ~ ε fed to a "
-            f"claimed ε² certifier was <strong>"
+            "<li>Wrong-exponent refusal: a synthetic truth scaling as "
+            "ε, fed to a certifier claiming ε², was <strong>"
             f"{'refused' if refused else 'NOT REFUSED'}</strong>.</li>"
             "</ul>",
         ])
@@ -1103,46 +1156,49 @@ shaded past the budget wall">
     return page(
         "Case: quantum-dynamics dispatch by Lieb-Robinson cone",
         "certified case",
-        "Does a certified classical simulation exist? Ask the boundary",
-        "A quench observable on a transverse-field Ising chain, certified "
-        "by simulating only a cone of sites and measuring — not "
-        "estimating — what leaks across its edge. The compiler grows the "
-        "cone as the light cone spreads, and refuses when its budget is "
-        "outrun. Chain length never enters the cost.",
+        "A light cone, measured at its boundary",
+        "A quench observable on a spin chain, computed inside a cone "
+        "of sites. The truncation error is an integral of a boundary "
+        "commutator, and the simulation measures that commutator as "
+        "it runs. The chain length never enters the cost.",
         [
-            "<h2>The theory, a priori</h2>"
-            "<p>Comparing full dynamics with cone-restricted dynamics, "
-            "Duhamel gives ‖A(t) − A_cone(t)‖ ≤ ∫₀ᵗ ‖[H − H_cone, "
-            "A_cone(s)]‖ ds, and only the two bonds crossing the cone "
-            "boundary fail to commute with the cone-supported operator. "
-            "Those commutator norms are <em>measured inside the "
-            "simulation itself</em> — near zero until the excitation "
-            "front physically arrives — so the certificate carries no "
-            "Lieb–Robinson velocity constants to be loose about. "
-            "Quadrature is rigorous too: the interpolation remainder is "
-            "priced by the measured second derivative ‖[P,[H,[H,A]]]‖, "
-            "with a crude cap only at the harmless δ⁴ level.</p>",
+            "<h2>The idea</h2>"
+            "<p>Compare the full dynamics with dynamics restricted to "
+            "a cone of sites around the observable. Duhamel's formula "
+            "gives ‖A(t) − A_cone(t)‖ ≤ ∫₀ᵗ ‖[H − H_cone, A_cone(s)]‖ "
+            "ds, and in that difference only the two bonds crossing "
+            "the cone boundary matter; everything else commutes. The "
+            "cone simulation already has A_cone(s) in hand, so it can "
+            "measure those commutator norms directly. They stay near "
+            "zero until the excitation front physically reaches the "
+            "boundary. So the certificate contains no Lieb–Robinson "
+            "velocity constants to be loose about; it contains a "
+            "measurement. The time integral is made rigorous by an "
+            "interpolation remainder priced by the measured second "
+            "derivative, with a crude cap only at order δ⁴, where it "
+            "cannot matter.</p>",
             code_section(sf.tfi_quench_dispatch, sf._lr_cone_run,
                          sf._opnorm_ub),
-            "<h2>The certification, executed and drawn</h2>"
+            "<h2>The result</h2>"
             f"<figure>{svg}<figcaption>The certified band around "
-            "⟨Z(t)⟩ at the critical point (g = 1), tolerance 10⁻². Ticks "
-            "mark where dispatch grew the cone; the shaded region is "
-            "refusal — the measured boundary leakage exceeds the "
-            "tolerance at every affordable radius, and the error message "
-            "prices the next cone instead of guessing. The certified "
-            "width breathes in a sawtooth because dispatch always takes "
-            "the cheapest adequate cone. Dashed: the exact "
+            "⟨Z(t)⟩ at the critical point, tolerance 10⁻². Ticks mark "
+            "where dispatch grew the cone. In the shaded region the "
+            "measured boundary leakage exceeds the tolerance at every "
+            "affordable radius, so the code refuses and prices the "
+            "next cone instead of guessing. The certified width moves "
+            "in a sawtooth because dispatch always takes the cheapest "
+            "adequate cone. The dashed curve is the exact "
             "2048-dimensional answer, computed only to check the band."
             "</figcaption></figure>",
-            "<h2>Verified in this run</h2><ul>"
+            "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/{len(cert)}</strong> "
-            "certified sweep points vs exact diagonalization.</li>"
-            f"<li>Refusal wall at <strong>t = {wall:g}</strong> with "
-            f"max_dim = {md}: past it, no certificate is claimed.</li>"
-            "<li>Chain length never enters: a <strong>10⁶-site</strong> "
-            f"chain certified ±10⁻³ in <strong>{big_secs:.1f} s</strong>, "
-            "bit-identical to the 2001-site run: "
+            "certified sweep points against exact diagonalization.</li>"
+            f"<li>Refusal wall at <strong>t = {wall:g}</strong> for "
+            f"max_dim = {md}. Past it, no certificate is claimed.</li>"
+            "<li>Chain length does not enter: a <strong>10⁶-site"
+            f"</strong> chain certified to ±10⁻³ in <strong>"
+            f"{big_secs:.1f} s</strong>, bit-identical to the "
+            "2001-site run: "
             f"<strong>{'yes' if identical else 'NO'}</strong>.</li></ul>",
         ])
 
@@ -1167,6 +1223,11 @@ STYLE = '''<style>
   h1 { font-size:2.1rem; line-height:1.15; margin:0.3rem 0 0.6rem;
     letter-spacing:-0.01em; text-wrap:balance; }
   h2 { font-size:1.35rem; margin:2.6rem 0 0.7rem; }
+  h3 { font-size:0.95rem; margin:2rem 0 0.4rem; }
+  h3 code { background:none; padding:0; font-size:0.95rem; }
+  .fn-doc { margin:0.2rem 0 0.7rem; }
+  .note { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    font-size:0.82rem; color:var(--muted); margin:0.2rem 0 0.8rem; }
   .eyebrow { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
     font-size:0.72rem; text-transform:uppercase; letter-spacing:0.14em;
     color:var(--muted); margin:0; }
