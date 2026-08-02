@@ -3938,3 +3938,137 @@ def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
     between resolutions."""
     out = sph_dam_break(nres=nres, T=T, obstacle=obstacle)
     return float(np.sum(out["F"]) * (out["ts"][1] - out["ts"][0]))
+
+
+# ------------------------------------------------------------- FEniCSx
+# bridge: Grad-Shafranov equilibrium with a guaranteed a posteriori
+# certificate. The tokamak equilibrium equation -Delta* psi =
+# R^2 p'(psi) + F F'(psi) is weighted Poisson, kappa = 1/R, on the
+# (R, Z) half-plane, and for elliptic problems the Prager-Synge
+# identity gives error bounds that are GUARANTEED, not estimated:
+# for the weak solution u, any conforming u_h with the right boundary
+# trace, and ANY H(div) field sigma,
+#   |||u - u_h||| <= ||kappa grad u_h + sigma||_{1/kappa}
+#                    + sqrt(Rmax/lam1) ||f - div sigma||,
+# where lam1 is the exact first Dirichlet eigenvalue of the rectangle
+# and |||.||| the kappa-weighted energy norm. FEniCSx proposes: it
+# solves the primal problem and a mixed RT problem for sigma. The
+# bound holds for whatever it returns — a bad sigma costs tightness,
+# never truth (measured: a sign error in the mixed boundary term gave
+# efficiency 27x, still a valid bound; fixed, 1.6x). Implicit
+# coupling c*psi in the source is certified through the contraction
+# factor theta = c Rmax / (Rmin lam1), refusing at theta >= 1. Tier
+# RIGOROUS; assembly and linear-solver arithmetic are not carried
+# (declared), as in the other solver pipelines. The Solov'ev
+# polynomial equilibrium supplies an exact solution for the tests.
+
+
+def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
+    from mpi4py import MPI
+    from dolfinx import mesh as dmesh, fem
+    from dolfinx.fem.petsc import LinearProblem
+    import ufl
+    import basix.ufl
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD,
+                                 [[R0 - W, -H], [R0 + W, H]], [n, n],
+                                 dmesh.CellType.triangle)
+    x = ufl.SpatialCoordinate(msh)
+    R = x[0]
+    Z = x[1]
+    psi_ex = a_c * (R ** 2 - R0 ** 2) ** 2 + b_c * R ** 2 * Z ** 2 \
+        + d_c * Z ** 2
+    g0 = -((8 * a_c + 2 * b_c) * R ** 2 + 2 * d_c)   # -Delta* of psi_ex
+    kappa = 1.0 / R
+
+    V = fem.functionspace(msh, ("Lagrange", degree))
+    u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
+    aform = ufl.inner(kappa * ufl.grad(u), ufl.grad(v)) * ufl.dx
+    uD = fem.Function(V)
+    uD.interpolate(fem.Expression(psi_ex, V.element.interpolation_points))
+    tdim = msh.topology.dim
+    msh.topology.create_connectivity(tdim - 1, tdim)
+    bdofs = fem.locate_dofs_topological(
+        V, tdim - 1, dmesh.exterior_facet_indices(msh.topology))
+    bc = fem.dirichletbc(uD, bdofs)
+
+    uh = fem.Function(V)
+    uh.interpolate(uD)
+    picard = 1 if c == 0.0 else 40
+    for _ in range(picard):
+        f = (g0 + c * uh) / R
+        prob = LinearProblem(
+            aform, f * v * ufl.dx, bcs=[bc],
+            petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+            petsc_options_prefix="gs_")
+        sol = prob.solve()
+        uh = sol[0] if isinstance(sol, tuple) else sol
+
+    # the frozen source the certificate is issued against
+    f = (g0 + c * uh) / R
+    RT = basix.ufl.element("RT", msh.basix_cell(), degree)
+    DG = basix.ufl.element("DG", msh.basix_cell(), degree - 1)
+    Wsp = fem.functionspace(msh, basix.ufl.mixed_element([RT, DG]))
+    sig, p = ufl.TrialFunctions(Wsp)
+    tau, q = ufl.TestFunctions(Wsp)
+    am = (ufl.inner(sig / kappa, tau) - p * ufl.div(tau)
+          + ufl.div(sig) * q) * ufl.dx
+    Lm = f * q * ufl.dx \
+        - psi_ex * ufl.inner(tau, ufl.FacetNormal(msh)) * ufl.ds
+    pm = LinearProblem(am, Lm, bcs=[],
+                       petsc_options={"ksp_type": "preonly",
+                                      "pc_type": "lu",
+                                      "pc_factor_mat_solver_type": "mumps"},
+                       petsc_options_prefix="gsm_")
+    sol = pm.solve()
+    wh = sol[0] if isinstance(sol, tuple) else sol
+    sigh = wh.sub(0).collapse()
+
+    def norm(form):
+        return math.sqrt(abs(fem.assemble_scalar(fem.form(form))))
+
+    flux = norm(ufl.inner(kappa * ufl.grad(uh) + sigh,
+                          kappa * ufl.grad(uh) + sigh) / kappa * ufl.dx)
+    osc = norm((f - ufl.div(sigh)) ** 2 * ufl.dx)
+    err_meas = norm(kappa * ufl.inner(ufl.grad(uh) - ufl.grad(psi_ex),
+                                      ufl.grad(uh) - ufl.grad(psi_ex))
+                    * ufl.dx)
+    Qh = fem.assemble_scalar(fem.form(uh * ufl.dx))
+    return flux, osc, err_meas, float(Qh), uh, msh
+
+
+def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
+                             degree: int = 1) -> dict:
+    """Fixed-boundary Grad-Shafranov on the rectangle
+    [R0-W, R0+W] x [-H, H] with the Solov'ev source plus an implicit
+    coupling c*psi, solved by FEniCSx (untrusted) and certified by the
+    Prager-Synge bound with rectangle-exact constants. Returns the
+    energy-norm bound and a Certified value of the total poloidal
+    flux content, integral of psi over the domain. Refuses when the
+    coupling exceeds the contraction limit."""
+    R0, W, H = 3.0, 1.0, 1.0
+    # O-point (magnetic axis) at (R0, 0): needs 9 b + d > 0;
+    # these give psi_RR/psi_ZZ ~ 2, a mildly elongated core
+    a_c, b_c, d_c = 1.0 / 100, 1.0 / 108, 1.0 / 10
+    Rmin, Rmax = R0 - W, R0 + W
+    lam1 = math.pi ** 2 * (1.0 / (2 * W) ** 2 + 1.0 / (2 * H) ** 2)
+    theta = c * Rmax / (Rmin * lam1)
+    if theta >= 0.95:
+        raise ValueError(
+            f"contraction factor theta={theta:.2f} >= 0.95: the coupled "
+            f"source c*psi is not certifiably contractive on this domain "
+            f"(limit c < {0.95 * Rmin * lam1 / Rmax:.2f})")
+    flux, osc, err_meas, Qh, uh, msh = _gs_solve(n, c, R0, W, H, a_c, b_c,
+                                                 d_c, degree)
+    eta = flux + math.sqrt(Rmax / lam1) * osc
+    energy_bound = _up(eta / (1.0 - theta))
+    # |Q(u) - Q(u_h)| <= ||1|| ||u - u_h|| <= sqrt(|Omega| Rmax/lam1) |||e|||
+    area = 4.0 * W * H
+    q_err = _up(math.sqrt(area * Rmax / lam1) * energy_bound)
+    Q = Certified(Qh, q_err, Tier.RIGOROUS,
+                  (f"gs-equilibrium n={n} c={c:g} prager-synge flux+osc "
+                   f"({flux:.3g}+{osc:.3g}) rectangle-exact lam1, "
+                   f"contraction theta={theta:.2f}; assembly and solver "
+                   "arithmetic not carried",))
+    return {"Q": Q, "energy_bound": energy_bound, "err_measured": err_meas,
+            "flux_term": flux, "osc_term": osc, "theta": theta,
+            "uh": uh, "msh": msh}

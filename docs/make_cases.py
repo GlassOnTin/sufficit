@@ -1452,6 +1452,155 @@ STYLE = '''<style>
 </style>'''
 
 
+# ======================================================================
+def gs_case():
+    import numpy as np2
+    from dolfinx import geometry
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ladder = []
+    for n in (8, 16, 32):
+        r = sf.gs_equilibrium_certified(n=n)
+        ladder.append((1.0 / n, r["err_measured"], r["energy_bound"]))
+    rc = sf.gs_equilibrium_certified(n=48, c=1.0)
+    r12 = sf.gs_equilibrium_certified(n=12, c=1.0)
+    agree = abs(rc["Q"].value - r12["Q"].value) <= rc["Q"].err + r12["Q"].err
+    try:
+        sf.gs_equilibrium_certified(n=8, c=3.0)
+        refused = False
+    except ValueError:
+        refused = True
+
+    # flux surfaces of the coupled equilibrium: evaluate on a grid and
+    # extract contour polylines with matplotlib (build-time tool only)
+    msh, uh = rc["msh"], rc["uh"]
+    gr = np2.linspace(2.001, 3.999, 121)
+    gz = np2.linspace(-0.999, 0.999, 121)
+    GX, GZ = np2.meshgrid(gr, gz)
+    pts = np2.column_stack([GX.ravel(), GZ.ravel(),
+                            np2.zeros(GX.size)])
+    tree = geometry.bb_tree(msh, msh.topology.dim)
+    cand = geometry.compute_collisions_points(tree, pts)
+    coll = geometry.compute_colliding_cells(msh, cand, pts)
+    cells = [coll.links(i)[0] for i in range(len(pts))]
+    vals = uh.eval(pts, np2.array(cells, dtype=np2.int32)).reshape(GX.shape)
+    cs = plt.contour(GX, GZ, vals,
+                 levels=np2.linspace(float(vals.min()) + 0.01,
+                                     0.40, 10))
+    ml, mt, sc = 40, 14, 130.0
+    paths = []
+    for lev, segs in zip(cs.levels, cs.allsegs):
+        for seg in segs:
+            if len(seg) < 2:
+                continue
+            d = "M " + " L ".join(
+                f"{ml + sc * (p[0] - 2.0):.1f} "
+                f"{mt + sc * (1.0 - p[1]):.1f}" for p in seg[::2])
+            paths.append(f'<path d="{d}" fill="none" class="blue-ink" '
+                         f'stroke-width="1.4" opacity="0.8"/>')
+    plt.close("all")
+    Wpx, Hpx = ml + int(sc * 2) + 20, mt + int(sc * 2) + 30
+    svg_flux = (f'<svg viewBox="0 0 {Wpx} {Hpx}" role="img" '
+                f'aria-label="Flux surfaces of the coupled equilibrium">'
+                f'<rect x="{ml}" y="{mt}" width="{sc * 2:.0f}" '
+                f'height="{sc * 2:.0f}" fill="none" class="board-ink" '
+                f'stroke-width="1.5"/>' + "".join(paths)
+                + f'<text x="{ml + sc:.0f}" y="{Hpx - 6}" '
+                f'text-anchor="middle" class="board-text" font-size="11">'
+                f'R, from 2 to 4</text>'
+                f'<text x="{ml - 8}" y="{mt + sc:.0f}" text-anchor="end" '
+                f'class="board-text" font-size="11">Z</text></svg>')
+
+    axl = Axes((1 / 40, 1 / 6), (5e-3, 1.0), h=300, logx=True, logy=True)
+    lp = []
+    for idx, cls, lab in ((1, "board", "measured error"),
+                          (2, "blue", "guaranteed bound")):
+        xs = [p[0] for p in ladder]
+        ys = [p[idx] for p in ladder]
+        lp.append(f'<path d="{axl.path(xs, ys)}" fill="none" '
+                  f'class="{cls}-ink" stroke-width="2"/>')
+        for x, y in zip(xs, ys):
+            lp.append(f'<circle cx="{axl.X(x):.1f}" cy="{axl.Y(y):.1f}" '
+                      f'r="4.5" class="{cls}-fill"/>')
+        lp.append(f'<text x="{axl.X(xs[0]) + 8:.1f}" '
+                  f'y="{axl.Y(ys[0]):.1f}" class="board-text" '
+                  f'font-size="10.5" fill="var(--{cls if cls == "blue" else "muted"})">{lab}</text>')
+    svg_lad = f'''<svg viewBox="0 0 640 300" role="img" aria-label="Measured
+energy error and guaranteed bound versus mesh size, both first order">
+{axl.grid((1e-2, 1e-1), (1 / 8, 1 / 16, 1 / 32),
+          xfmt=lambda v: f"h = 1/{round(1 / v)}", yfmt=lambda v: f"{v:g}")}
+{"".join(lp)}</svg>'''
+
+    eff = [f"{b / e:.2f}" for _, e, b in ladder]
+    return page(
+        "Case: a tokamak equilibrium with a guaranteed error bound",
+        "certified case · recorded run",
+        "A tokamak equilibrium with a guaranteed error bound",
+        "The Grad-Shafranov equation solved by FEniCSx, certified by "
+        "the Prager-Synge identity with rectangle-exact constants. The "
+        "bound is guaranteed, not estimated, and the implicit coupling "
+        "in the source is certified through a contraction factor that "
+        "refuses past its limit.",
+        [
+            "<h2>The idea</h2>"
+            "<p>The tokamak equilibrium equation −Δ*ψ = R²p′(ψ) + "
+            "FF′(ψ) is weighted Poisson with κ = 1/R, and for elliptic "
+            "problems there is a bound that is guaranteed rather than "
+            "estimated. The Prager–Synge identity says: for any vector "
+            "field σ with square-integrable divergence, the energy-norm "
+            "error of a computed ψ_h is at most ‖κ∇ψ_h + σ‖ plus a "
+            "divergence-mismatch term whose constant is the rectangle's "
+            "exact first eigenvalue. FEniCSx proposes: it solves the "
+            "primal problem, and a mixed Raviart–Thomas problem to get "
+            "a good σ. The bound holds for whatever it returns. During "
+            "this build a sign error in the mixed boundary term "
+            "produced a σ that inflated the bound to 27 times the true "
+            "error, and the bound was still valid; fixed, it sits at "
+            "1.6 times. A bad guess costs tightness, never truth.</p>"
+            "<p>The implicit coupling is the interesting part. With a "
+            "source term c·ψ the problem the solver iterates on depends "
+            "on its own answer. The certificate handles it without "
+            "trusting the iteration: the coupled solution map is a "
+            "contraction with factor θ = c·R_max/(R_min·λ₁), λ₁ again "
+            "rectangle-exact, and the frozen-source bound divided by "
+            "(1−θ) covers the true coupled solution. At θ ≥ 1 the "
+            "function refuses: past that limit the fixed point is not "
+            "certifiably unique.</p>",
+            code_section(sf.gs_equilibrium_certified, sf._gs_solve),
+            "<h2>The result</h2>"
+            f"<figure>{svg_flux}<figcaption>Flux surfaces ψ = const of "
+            "the coupled equilibrium (c = 1) on the poloidal plane, "
+            "from the certified solve at h = 1/48. The nested surfaces "
+            "are the magnetic geometry a tokamak confines on."
+            "</figcaption></figure>"
+            f"<figure>{svg_lad}<figcaption>Measured energy error "
+            "against the exact Solov'ev solution, and the guaranteed "
+            "bound above it, on a mesh ladder. Both converge at first "
+            f"order; the bound stays within {max(eff)}× of the truth. "
+            "Unlike every resolution-ladder certificate in this "
+            "collection, this bound needs no ladder: each mesh "
+            "certifies itself.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            "<li>Guaranteed bound contains the measured error at every "
+            f"mesh; efficiencies {', '.join(eff)}.</li>"
+            "<li>The certified flux functional contains the exact "
+            "value, computed independently in exact rational "
+            "arithmetic from the Solov'ev polynomial.</li>"
+            f"<li>Coupled problem (c = 1): certificates at two meshes "
+            f"agree within their joint error: <strong>"
+            f"{'yes' if agree else 'NO'}</strong>; Q = {rc['Q'].value:.4f} "
+            f"± {rc['Q'].err:.4f} at h = 1/48.</li>"
+            f"<li>Coupling past the contraction limit (c = 3): <strong>"
+            f"{'refused' if refused else 'NOT REFUSED'}</strong>.</li>"
+            "<li>Recorded run: FEniCSx has no PyPI wheels, so CI cannot "
+            "regenerate this page; it is committed from a local run of "
+            "the same generator, and the tests that gate it run "
+            "wherever dolfinx is installed.</li></ul>",
+        ])
+
+
 CASES = {
     "tfi-reduced-basis.html": tfi_case,
     "h2-bracket.html": h2_case,
@@ -1467,12 +1616,29 @@ CASES = {
     "sph-wall.html": sph_case,
 }
 
+# pages needing tools CI does not have (dolfinx): generated locally,
+# committed, served as-is — the recorded-run pattern from TARGETS
+RECORDED = {
+    "gs-equilibrium.html": gs_case,
+}
+
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(os.path.join(here, "cases"), exist_ok=True)
     only = sys.argv[1:] or list(CASES)
     for name in only:
         t0 = time.time()
+        if name in RECORDED:
+            try:
+                html = RECORDED[name]()
+            except ImportError as exc:
+                print(f"skipped {name}: {exc}")
+                continue
+            os.makedirs(os.path.join(here, "cases-recorded"), exist_ok=True)
+            with open(os.path.join(here, "cases-recorded", name), "w") as f:
+                f.write(html)
+            print(f"wrote cases-recorded/{name}  ({time.time() - t0:.0f}s)")
+            continue
         with open(os.path.join(here, "cases", name), "w") as f:
             f.write(CASES[name]())
         print(f"wrote cases/{name}  ({time.time() - t0:.0f}s)")

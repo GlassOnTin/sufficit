@@ -1867,3 +1867,55 @@ def test_sph_deterministic():
     a = sf.sph_dam_break(nres=12, T=1.0)
     b = sf.sph_dam_break(nres=12, T=1.0)
     assert np.array_equal(a["F"], b["F"])
+
+
+def test_gs_certified_energy_bound_ladder():
+    """Grad-Shafranov via FEniCSx with a Prager-Synge certificate: the
+    guaranteed energy-norm bound must contain the measured error
+    against the exact Solov'ev solution at every mesh, stay efficient
+    (bound within 3x of truth), and converge at first order."""
+    pytest.importorskip("dolfinx")
+    prev = None
+    for n in (8, 16, 32):
+        r = sf.gs_equilibrium_certified(n=n)
+        assert r["err_measured"] <= r["energy_bound"]
+        assert r["energy_bound"] < 3.0 * r["err_measured"]
+        if prev is not None:
+            ratio = prev / r["energy_bound"]
+            assert 1.6 < ratio < 2.6          # first order in h
+        prev = r["energy_bound"]
+
+
+def test_gs_functional_contains_exact():
+    """The certified functional (total poloidal flux content, integral
+    of psi) must contain the exact value, computed independently in
+    exact rational arithmetic from the Solov'ev polynomial."""
+    pytest.importorskip("dolfinx")
+    from fractions import Fraction as F
+    a, b, d = F(1, 100), F(1, 108), F(1, 10)
+    # integrals over [2,4]x[-1,1] of the Solov'ev monomials
+    int_R2 = F(64 - 8, 3)
+    int_quart = F(1024 - 32, 5) - 18 * int_R2 + 81 * 2
+    Q_exact = a * int_quart * 2 + b * int_R2 * F(2, 3) + d * 2 * F(2, 3)
+    r = sf.gs_equilibrium_certified(n=16)
+    c = r["Q"]
+    assert c.tier == sf.Tier.RIGOROUS
+    assert abs(c.value - float(Q_exact)) <= c.err
+    assert "prager-synge" in c.provenance[0]
+
+
+def test_gs_implicit_coupling_certifies_and_refuses():
+    """The implicitly coupled problem (source depends on the unknown
+    flux through c*psi): certified via a contraction factor whose
+    eigenvalue bound is rectangle-exact. Two certified runs at
+    different meshes must agree within their joint error (a rigorous
+    cross-check needing no exact solution), and a coupling beyond the
+    contraction limit refuses."""
+    pytest.importorskip("dolfinx")
+    r1 = sf.gs_equilibrium_certified(n=12, c=1.0)
+    r2 = sf.gs_equilibrium_certified(n=24, c=1.0)
+    q1, q2 = r1["Q"], r2["Q"]
+    assert abs(q1.value - q2.value) <= q1.err + q2.err
+    assert q2.err < q1.err
+    with pytest.raises(ValueError, match="contraction"):
+        sf.gs_equilibrium_certified(n=8, c=3.0)
