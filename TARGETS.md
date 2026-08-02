@@ -55,6 +55,60 @@ The same archetypes recur wherever detail is simulated but functionals are wante
 
 Four patterns cover nearly everything above, and the rewrite library should be organized around them: **small-parameter expansions** (gyrokinetics, EFT, post-Newtonian, Braginskii — asymptotic tier); **variational sandwiches** (chemistry's upper/lower bracket, SOS transport bounds, reduced-basis a posteriori estimators — rigorous tier); **resolution-limited queries** (HLT smearing, g−2 windows, GW mismatch — ε supplied by the instrument); and **projection with memory** (Mori–Zwanzig in MD, plasma closures, subgrid models — empirical tier, with variational scores where they exist). A compression contributed under one archetype in one field should transfer to its siblings mechanically; that transfer is the flywheel working.
 
+## Engines, and the guess/check line
+
+Criterion 4 says the compiler targets existing engines. The SOS work fixed
+the shape of that relationship: cvxpy and SCS search, exact rational
+arithmetic decides, and deleting the solver kills the search without
+weakening any certificate. Every integration below sits on the same line.
+Engines propose. Certificates are issued on our side of the line, and
+refusal stays available whenever an engine's output cannot be checked at
+the declared tolerance.
+
+**FEniCSx — the first bridge.** For elliptic problems, equilibrated-flux
+a posteriori estimates (the Ern–Vohralík lineage) give bounds on the
+discretization error that are guaranteed, not estimated, and computable
+from the discrete solution alone; goal-oriented variants bound
+functionals. That is a RIGOROUS-tier certificate for PDE functionals,
+which no resolution ladder over a forward solver can provide at any
+budget. First artifact: a certified Poisson functional with a guaranteed
+bound, verified on our side from the fluxes FEniCSx returns; then
+low-frequency Helmholtz, which connects back to the wave-scattering
+column.
+
+**Basilisk — the second bridge.** The nearest culture to this project:
+adaptive refinement against a declared per-field tolerance, and a test
+suite of literate pages that measure convergence orders in the open. It
+stops one step short of certificates — orders are reported, never
+enforced, and there is no refusal. The bridge: drive Basilisk as an
+untrusted external binary, ladder its maximum refinement level (fixed per
+rung; Richardson over freely adapting meshes is not a ladder), and mint
+grid-convergence certificates on functionals. First artifact: the
+sea-wall triage rerun with the Saint-Venant solver in place of the toy
+WCSPH. Second-order ladders should tighten the impulse certificate by an
+order of magnitude and may flip the low-berm refusal to a certificate.
+The cost is a C toolchain (qcc), so recorded-run pages rather than CI
+regeneration, at least at first.
+
+**Proposers per domain.** PySCF supplies integrals and reference
+wavefunctions at scale while the Cholesky floors and window machinery
+stay ours. gwsurrogate and bilby generate and consume waveforms around
+the conformal mismatch certificate. QuTiP, stim, and quimb are the
+engines the quantum dispatch procedure chooses between. OpenMM, deeptime,
+and pymbar carry molecular kinetics, where MBAR's asymptotic variances
+pair naturally with the conformal layer. Dedalus hosts the SOS transport
+program at PDE scale. pyrokinetics and DESC sit under the plasma
+hierarchy dispatch.
+
+**The checker side.** A short list, trusted only after declaration:
+python-flint (Arb) ball arithmetic would harden the interval type and
+make degree-six rational SOS cheap; mpmath already referees the test
+suite. The long game for the ASYMPTOTIC tier's "exponent proven" clause
+is a proof assistant, and it can wait.
+
+Order of work: FEniCSx, then Basilisk, then PySCF — rigor first, then the
+most visible tightening, then scale.
+
 ## Sequencing
 
 | Target | Roadmap phases | Dominant contraction | Certificate outlook |
