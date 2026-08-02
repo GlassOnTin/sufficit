@@ -37,6 +37,11 @@ class Certified:
     tier: Tier
     provenance: Tuple[str, ...]
     fail_p: float = 0.0        # P(bound is wrong); composes by union bound
+    # the planner's per-rung log: (rewrite, knob, predicted cost,
+    # measured seconds, outcome). Bookkeeping about the run, not part
+    # of the proof: provenance stays deterministic, timings live here,
+    # and composition drops the receipt.
+    receipt: Tuple = ()
 
     def _combine(self, other: "Certified", value, err, note: str) -> "Certified":
         return Certified(value, err, min(self.tier, other.tier),
@@ -4190,9 +4195,12 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
     expensive. Cost models decide only the order of attempts;
     certificates decide what is true. When every ladder is exhausted,
     the planner refuses with the full receipt. Every rung's predicted
-    and measured cost is logged, in the trace and in the receipt: the
-    cost models are auditable, and every run is calibration data for
-    better ones."""
+    and measured cost is logged as structure -- the receipt field of
+    the winning certificate, the tried field of the Refusal -- so the
+    cost models are auditable and every run is calibration data for
+    better ones. The provenance trace itself stays deterministic:
+    provenance is part of the certificate; timings are data about one
+    run of it."""
     frontier = []
     state = []
     for i, rw in enumerate(rewrites):
@@ -4220,13 +4228,13 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
                           c.err))
             if c.err <= tol:
                 rejected = ", ".join(
-                    f"{n}@{k} ({p:g}, {s:.2g}s)"
-                    for n, k, p, s, _ in tried[:-1]) or "none"
+                    f"{n}@{k}" for n, k, _, _, _ in tried[:-1]) or "none"
                 trace = (f"plan {slug}: tol={tol:g}; chose "
-                         f"{rw.name}@{knob} (predicted {cost:g}, "
-                         f"measured {tried[-1][3]:.2g}s); tried "
-                         f"{len(tried)} rungs; rejected {rejected}")
-                return replace(c, provenance=c.provenance + (trace,))
+                         f"{rw.name}@{knob} (predicted {cost:g}); tried "
+                         f"{len(tried)} rung{'s' if len(tried) != 1 else ''}; "
+                         f"rejected {rejected}")
+                return replace(c, provenance=c.provenance + (trace,),
+                               receipt=tuple(tried))
             meas[i].append((knob, c.err))
         if remaining:
             nxt = _fit_jump(meas[i], tol, remaining) if jump \

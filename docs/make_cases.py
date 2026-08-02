@@ -40,6 +40,24 @@ def _stamp():
 STAMP = _stamp()
 
 
+def _ruler():
+    """Measure the ruler, so the seconds in the receipts are
+    comparable across builders: time one fixed dense eigendecomposition
+    on this machine and print it beside the commit stamp."""
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((256, 256))
+    A = A + A.T
+    ts = []
+    for _ in range(3):
+        t0 = time.time()
+        np.linalg.eigh(A)
+        ts.append(time.time() - t0)
+    return f"{sorted(ts)[1] * 1e3:.1f} ms"
+
+
+RULER = _ruler()
+
+
 def check_counts():
     """The prose states how many checks the suite runs. Nothing keeps
     prose true except a check, so this is the check: count the tests,
@@ -68,7 +86,8 @@ def page(title, eyebrow, h1, dek, sections):
 {body}
 <hr>
 <p class="note">Every number and figure above comes from the run that
-built this page: {STAMP}.</p>
+built this page: {STAMP}. Ruler for any timings: one 256&#215;256
+symmetric eigendecomposition took {RULER} on this builder.</p>
 </main>'''
 
 
@@ -1651,15 +1670,20 @@ def compiler_case():
         c = sf.heisenberg_energy_dispatch(N, tol=tol)
         trace = c.provenance[-1]
         chosen = trace.split("chose ")[1].split(" ")[0]
-        cost = float(trace.split("predicted ")[1].split(",")[0])
+        cost = float(trace.split("predicted ")[1].split(")")[0])
         sweep.append((tol, chosen, cost, c))
     extreme = sf.heisenberg_energy_dispatch(N, tol=1e-9)
-    # the trace logs (predicted, measured) per rung; pull the pair that
-    # audits the cost model at this N: window@9 against the chosen dense
-    et = extreme.provenance[-1]
-    m9 = re.search(r"window@9 \(([^,]+), ([^)]+)\)", et)
-    md = re.search(r"measured ([^)]+)\)", et)
-    w9s, ds = (m9.group(2) if m9 else "?"), (md.group(1) if md else "?")
+    # the receipt is structure, so the audit reads fields, not prose:
+    # window@9 against the chosen dense, and window@2 cold vs warm
+    secs = {(n, k): s for n, k, _, s, _ in extreme.receipt}
+    w9s = f"{secs.get(('window', 9), 0):.2g}s"
+    ds = f"{extreme.receipt[-1][3]:.2g}s"
+    w2_cold = f"{sweep[0][3].receipt[0][3]:.2g}s"
+    w2_warm = f"{secs.get(('window', 2), 0):.2g}s"
+    receipt_lines = "\n".join(
+        f"{n}@{k}: predicted {p:g}, measured {s:.2g}s, "
+        + (f"err {v:.3g}" if isinstance(v, float) else str(v))
+        for n, k, p, s, v in extreme.receipt)
     headline = [sweep[0][3], sweep[3][3], extreme]
     contained = sum(abs(c.value - truth) <= c.err for c in headline)
 
@@ -1759,7 +1783,12 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "algorithm — the planner's claim stops at its library."
             "</figcaption></figure>"
             "<p>Three of the plan traces, verbatim from the "
-            f"certificates' provenance:</p><pre>{traces}</pre>",
+            f"certificates' provenance:</p><pre>{traces}</pre>"
+            "<p>The trace is deterministic, because provenance is "
+            "part of the certificate. The timings live next door, in "
+            "the certificate's structured receipt — here is the "
+            "tightest run's, one rung per line:</p>"
+            f"<pre>{esc(receipt_lines)}</pre>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/3</strong> "
             "planner-chosen brackets contain the exact "
@@ -1774,18 +1803,16 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "</li>"
             "<li>An impossible question refuses with a receipt: "
             f"<code>{esc(str(receipt)[:160])}&hellip;</code></li>"
-            "<li>The receipt audits its own cost model: every rung in "
-            "the traces above carries a (predicted, measured) pair — "
-            f"window@9 measured <strong>{esc(w9s)}</strong> against "
-            f"dense's <strong>{esc(ds)}</strong>, under a model that "
-            "priced them 512 against 1024. And compare window@2 "
-            "across the traces: the same rung, priced 4 every time, "
-            "measures orders of magnitude cheaper once its "
-            "corrections are cached. Cost is state-dependent; the "
-            "predictions are "
-            "not; only logging both exposes it. These pairs, kept in "
-            "every run, are the calibration data for better cost "
-            "models.</li>"
+            "<li>The receipt audits its own cost model: window@9 "
+            f"measured <strong>{esc(w9s)}</strong> against dense's "
+            f"<strong>{esc(ds)}</strong>, under a model that priced "
+            "them 512 against 1024. And the same window@2 rung, "
+            f"priced 4 in both plans, measured {esc(w2_cold)} in the "
+            f"first plan and {esc(w2_warm)} in the last — its "
+            "corrections were cached by then. Cost is "
+            "state-dependent; the predictions are not; only logging "
+            "both exposes it. These pairs, kept in every run, are "
+            "the calibration data for better cost models.</li>"
             "<li>What this is not, yet: the plan space is single-knob "
             "ladders per query. Composed pipelines that split one "
             "error budget across several rewrites are the remaining "

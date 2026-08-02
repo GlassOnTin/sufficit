@@ -1943,8 +1943,12 @@ def test_planner_loose_tol_picks_cheap():
     first window rung certifies and nothing else runs."""
     c = sf.heisenberg_energy_dispatch(40, tol=0.2)
     assert "chose window@2" in c.provenance[-1]
-    assert "tried 1 rungs" in c.provenance[-1]
+    assert "tried 1 rung;" in c.provenance[-1]
     assert c.err <= 0.2 * 39
+    # measured cost lands as structure, not prose
+    name, knob, predicted, secs, verdict = c.receipt[-1]
+    assert (name, knob, predicted) == ("window", 2, 4.0)
+    assert secs >= 0.0 and verdict == c.err
 
 
 def test_planner_escalation_monotone():
@@ -2015,7 +2019,7 @@ def test_planner_jump_fewer_runs():
     s = sf.heisenberg_energy_dispatch(60, jump=False, **kw)
 
     def runs(c):
-        return int(re.search(r"tried (\d+) rungs",
+        return int(re.search(r"tried (\d+) rung",
                              c.provenance[-1]).group(1))
     assert runs(j) < runs(s)
     assert j.err <= 0.031 * 59 and s.err <= 0.031 * 59
@@ -2052,3 +2056,16 @@ def test_gc_refusal_structured():
     e = ei.value
     assert [k for _, k, _, _, _ in e.tried] == [0, 1]
     assert "kinetic" in e.next_price
+
+
+def test_trace_deterministic_receipt_measured():
+    """Attack kept as a test: an early trace format put measured
+    seconds inline in provenance, making two identical runs produce
+    different certificates. Provenance is part of the certificate and
+    must be byte-identical across reruns; the timings belong in the
+    structured receipt, where they may differ freely."""
+    a = sf.tfi_quench_dispatch(30, 15, 1.0, tol=1e-2, n_steps=200)
+    b = sf.tfi_quench_dispatch(30, 15, 1.0, tol=1e-2, n_steps=200)
+    assert a.provenance == b.provenance
+    assert [r[:3] for r in a.receipt] == [r[:3] for r in b.receipt]
+    assert all(isinstance(r[3], float) and r[3] >= 0 for r in a.receipt)
