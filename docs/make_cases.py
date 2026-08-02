@@ -744,6 +744,155 @@ tubes around the reduced-model trajectories of both slow variables">
 
 
 # ======================================================================
+def sph_case():
+    snaps_t = (1.6, 2.8, 3.4)
+    runs = {}
+    for n in (16, 24, 36, 48):
+        runs[n] = sf.sph_dam_break(nres=n,
+                                   snapshots=snaps_t if n == 36 else ())
+
+    def J(n):
+        o = runs[n]
+        return float(np.sum(o["F"]) * (o["ts"][1] - o["ts"][0]))
+
+    hs = [1 / 16, 1 / 24, 1 / 36]
+    cJ = sf.gci_extrapolate([J(n) for n in (16, 24, 36)], hs)
+    contained = abs(J(48) - cJ.value) <= cJ.err
+    peaks = {n: float(np.max(runs[n]["F"])) for n in runs}
+    try:
+        sf.gci_extrapolate([peaks[n] for n in (16, 24, 36)], hs)
+        peak_refused = False
+    except ValueError:
+        peak_refused = True
+    tall = [sf.sph_wall_impulse(n, obstacle=(2.9, 0.4, 0.4))
+            for n in (12, 18, 27)]
+    c0b = sf.gci_extrapolate(tall, [1 / 12, 1 / 18, 1 / 27])
+    try:
+        sf.gci_extrapolate([sf.sph_wall_impulse(n, obstacle=(2.9, 0.4, 0.12))
+                            for n in (12, 18, 27)],
+                           [1 / 12, 1 / 18, 1 / 27])
+        mid_refused = False
+    except ValueError:
+        mid_refused = True
+
+    # snapshots: particles colored by pressure, three moments
+    W, Hp, ml, mt = 640, 150, 30, 8
+    sc = (W - 2 * ml) / 4.0
+    panels = []
+    pmax = max(float(s[3].max()) for s in runs[36]["snaps"]) or 1.0
+    for k, (tt, sx, sy, sp) in enumerate(runs[36]["snaps"]):
+        oy = k * Hp
+        dots = []
+        hot = sp > 0.12 * pmax
+        for cls, sel in (("blue-fill", ~hot), ("rust-fill", hot)):
+            for x, y, p in zip(sx[sel], sy[sel], sp[sel]):
+                op = 0.35 + 0.6 * min(max(p, 0.0) / pmax, 1.0)
+                dots.append(f'<circle cx="{ml + sc * x:.1f}" '
+                            f'cy="{oy + Hp - 18 - sc * y:.1f}" r="2.1" '
+                            f'class="{cls}" opacity="{op:.2f}"/>')
+        panels.append(
+            f'<line x1="{ml}" y1="{oy + Hp - 18:.1f}" '
+            f'x2="{ml + sc * 4.0:.1f}" y2="{oy + Hp - 18:.1f}" '
+            f'class="board-ink" stroke-width="2"/>'
+            f'<line x1="{ml + sc * 4.0:.1f}" y1="{oy + Hp - 18:.1f}" '
+            f'x2="{ml + sc * 4.0:.1f}" y2="{oy + mt:.1f}" '
+            f'class="board-ink" stroke-width="3"/>'
+            f'<text x="{ml:.0f}" y="{oy + mt + 10:.1f}" class="board-text" '
+            f'font-size="11">t = {tt:g}</text>' + "".join(dots))
+    svg_snap = (f'<svg viewBox="0 0 {W} {3 * Hp}" role="img" '
+                f'aria-label="The bore approaching, striking, and running '
+                f'up the wall; particles colored by pressure">'
+                + "".join(panels) + "</svg>")
+
+    # force traces at two resolutions
+    ax = Axes((1.8, 4.6), (-0.02, 1.05 * max(peaks[24], peaks[36])), h=280)
+    tr = []
+    for n, cls in ((24, "blue"), (36, "rust")):
+        o = runs[n]
+        keep = o["ts"] > 1.8
+        tr.append(f'<path d="{ax.path(o["ts"][keep], o["F"][keep])}" '
+                  f'fill="none" class="{cls}-ink" stroke-width="1.6" '
+                  f'opacity="0.9"/>')
+    svg_F = f'''<svg viewBox="0 0 640 280" role="img" aria-label="Wall force
+against time at two resolutions: peaks scatter, areas agree better">
+{ax.grid((0.2, 0.4, 0.6, 0.8), (2.0, 2.5, 3.0, 3.5, 4.0, 4.5),
+         xfmt=lambda v: f"t = {v:g}", yfmt=lambda v: f"{v:g}")}
+{"".join(tr)}
+<text x="{ax.ml + 10}" y="{ax.mt + 14}" class="board-text" font-size="10.5"
+      fill="var(--blue)">force on the wall, resolution 24 (blue) and 36
+ (rust)</text></svg>'''
+
+    return page(
+        "Case: a breaking wave against a sea wall",
+        "certified case",
+        "A wave, a wall, and what can honestly be promised",
+        "A dam-break bore strikes a wall in a declared SPH model. The "
+        "engineering question is the load on the wall. Three different "
+        "queries get three different verdicts, and the verdicts are "
+        "the product.",
+        [
+            "<h2>The idea</h2>"
+            "<p>Breaking-wave peak pressures are famously "
+            "irreproducible, in experiments as in simulations: the "
+            "peak depends on the last millimeter of breaker shape and "
+            "any entrapped air. Design practice responds by using the "
+            "impulse, the time integral of the force. The same triage "
+            "falls out of the certificates here. The raw peak shows no "
+            "asymptotic range on a resolution ladder, so the "
+            "convergence certifier refuses it. The delivered impulse "
+            "converges, and certifies, with an honestly wide error "
+            "bar: this laptop-budget model is below its asymptotic "
+            "range, and the certificate says by how much instead of "
+            "hiding it.</p>"
+            "<p>The certifier is the engineering community's own "
+            "instrument, Roache's grid-convergence method, with two "
+            "teeth added: it refuses when the ladder shows no "
+            "asymptotic range, and it caps the usable order at the "
+            "scheme's formal order, because a lucky triplet can "
+            "otherwise measure a spurious high order and issue a "
+            "false, too-tight certificate. Both failure modes were "
+            "hit, measured, during this build.</p>"
+            "<p>The design question, what obstacle protects the wall, "
+            "gets a three-part answer. A berm 40% of the water-column "
+            "height certifiably zeroes the delivered impulse: the "
+            "ladder is constant at zero. The bare wall certifies a "
+            "nonzero impulse. In between, a low berm sheds a thin jet "
+            "over its crest that the affordable resolutions cannot "
+            "converge, and the certifier refuses rather than guess.</p>",
+            code_section(sf.sph_dam_break, sf.sph_wall_impulse,
+                         sf.gci_extrapolate),
+            "<h2>The result</h2>"
+            f"<figure>{svg_snap}<figcaption>The bore at t = 1.6, 2.8 "
+            "and 3.4: approach, impact, runup. Particles are colored "
+            "by pressure; the wall lights up on impact. 1296 fluid "
+            "particles at the resolution shown.</figcaption></figure>"
+            f"<figure>{svg_F}<figcaption>The force on the wall at two "
+            "resolutions. The peaks disagree by half; the areas under "
+            "the curves agree far better. That is the whole story of "
+            "why the impulse is the certifiable query and the peak is "
+            "not.</figcaption></figure>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Delivered impulse: <strong>{cJ.value:.3f} ± "
+            f"{cJ.err:.3f}</strong> (measured order in the provenance; "
+            "wide, and honestly so). The finer verification rung the "
+            "certificate never saw lands "
+            f"<strong>{'inside' if contained else 'OUTSIDE'}</strong>."
+            "</li>"
+            f"<li>Raw peak force: <strong>"
+            f"{'refused' if peak_refused else 'NOT REFUSED'}</strong> — "
+            f"ladder peaks {', '.join(f'{peaks[n]:.2f}' for n in (16, 24, 36))}, "
+            "no asymptotic range.</li>"
+            f"<li>Tall berm (40% of column height): impulse certified "
+            f"<strong>{c0b.value:.0f} ± {c0b.err:.0f}</strong> — the "
+            "bore never reaches the wall, at any rung.</li>"
+            f"<li>Low berm (12%): <strong>"
+            f"{'refused' if mid_refused else 'NOT REFUSED'}</strong> — "
+            "the crest jet is under-resolved at this budget, and the "
+            "certificate says so.</li></ul>",
+        ])
+
+
+# ======================================================================
 def gw_case():
     import time as _time
     tight = sf.gw_surrogate_build(seed=7)
@@ -1265,6 +1414,7 @@ CASES = {
     "plasma-hierarchy.html": plasma_case,
     "sos-transport.html": sos_case,
     "gw-surrogate.html": gw_case,
+    "sph-wall.html": sph_case,
 }
 
 if __name__ == "__main__":

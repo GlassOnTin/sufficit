@@ -3707,3 +3707,234 @@ def gw_surrogate_dispatch(sur, lam: float, tol: float) -> Certified:
             f"training points (currently {len(sur['basis'])} basis "
             f"vectors from eps_build offline tolerance)")
     return gw_surrogate_eval(sur, lam)
+
+
+def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
+                    p_spread: float = 0.8, p_cap: float = 2.0) -> Certified:
+    """Grid-convergence certificate for a resolution ladder, in the
+    manner of Roache's GCI (the standard of engineering solution
+    verification). vals are the functional at resolutions hs, coarse
+    to fine. The convergence order is MEASURED from ladder triplets,
+    so the tier is EMPIRICAL: unlike asymptotic_extrapolate, no
+    exponent is proven here. Refuses when the ladder shows no
+    asymptotic range: differences that change sign, a measured order
+    below p_floor, or orders that disagree across triplets by more
+    than p_spread. The certified value is the finest rung; err covers
+    the remaining distance to h -> 0 with the declared safety factor."""
+    if len(vals) < 3 or len(vals) != len(hs):
+        raise ValueError("need >= 3 ladder rungs")
+    if any(b >= a for a, b in zip(hs, hs[1:])):
+        raise ValueError("hs must decrease, coarse to fine")
+    d = [b - a for a, b in zip(vals, vals[1:])]
+    if all(x == 0 for x in d):
+        return Certified(vals[-1], 0.0, Tier.EMPIRICAL,
+                         (f"gci rungs={len(vals)} ladder constant at every "
+                          "rung; assumes the constancy persists to h=0",))
+    if any(x == 0 for x in d) or any(x * y <= 0 for x, y in zip(d, d[1:])):
+        raise ValueError("no asymptotic range: ladder differences are "
+                         f"not monotone ({', '.join(f'{x:.3g}' for x in d)})")
+    ratios = [a / b for a, b in zip(hs, hs[1:])]
+    if max(ratios) / min(ratios) > 1.01:
+        raise ValueError("ladder must use a fixed refinement ratio")
+    ps = [math.log(abs(d[k] / d[k + 1])) / math.log(ratios[k])
+          for k in range(len(d) - 1)]
+    if min(ps) < p_floor or max(ps) - min(ps) > p_spread:
+        raise ValueError("no asymptotic range: measured orders "
+                         f"{', '.join(f'{p:.2f}' for p in ps)} are unstable "
+                         f"or below {p_floor:g}")
+    # cap the usable order at the scheme's formal order: a coincidentally
+    # clean triplet can measure a spurious high order, and the inflated
+    # denominator then yields a false, too-tight certificate (measured:
+    # p=5.1 on a wall-force peak whose finer rung fell outside the err)
+    p = min(min(ps), p_cap)
+    r_last = hs[-2] / hs[-1]
+    err = safety * abs(d[-1]) / (r_last ** p - 1.0)
+    return Certified(vals[-1], _up(err), Tier.EMPIRICAL,
+                     (f"gci rungs={len(vals)} order measured "
+                      f"p={p:.2f} (not proven) safety={safety:g}; assumes "
+                      "the asymptotic range seen on the ladder persists "
+                      "to h=0",))
+
+
+# ------------------------------------------------------------- SPH
+# beachhead: wave impact on a wall. The model, declared: 2D weakly
+# compressible SPH (Wendland C2 kernel, Tait equation of state,
+# Monaghan artificial viscosity, dynamic boundary particles), a
+# dam-break column collapsing into a bore that strikes the far wall.
+# The engineering question is what the impact does to the wall. The
+# query has to be designed before it can be certified: the raw peak
+# pressure of a breaking-wave impact is famously irreproducible (it
+# depends on entrapped air and the last millimeter of breaker shape),
+# and the resolution ladder shows it — no asymptotic range, so the
+# GCI certifier refuses. The time-smoothed impact force converges,
+# and that is the quantity sea-wall design practice actually uses.
+# Certificates here are EMPIRICAL (measured convergence order, GCI):
+# for violent free-surface flow no proven exponent exists, and the
+# honest tier says so.
+
+
+def _sph_pairs(px, py, rad):
+    """All particle pairs closer than rad, via a cell-linked list.
+    Returns (i, j) index arrays with i < j."""
+    cx = np.floor(px / rad).astype(np.int64)
+    cy = np.floor(py / rad).astype(np.int64)
+    ncy = cy.max() - cy.min() + 3
+    key = (cx - cx.min() + 1) * ncy + (cy - cy.min() + 1)
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    ii, jj = [], []
+    for dk in (0, ncy - 1, ncy, ncy + 1, 1):
+        tgt = ks + dk
+        lo = np.searchsorted(ks, tgt, side="left")
+        hi = np.searchsorted(ks, tgt, side="right")
+        n = hi - lo
+        src = np.repeat(np.arange(len(ks)), n)
+        if len(src) == 0:
+            continue
+        dst = np.repeat(lo, n) + (np.arange(len(src))
+                                  - np.repeat(np.cumsum(n) - n, n))
+        if dk == 0:
+            keep = dst > src
+            src, dst = src[keep], dst[keep]
+        ii.append(order[src])
+        jj.append(order[dst])
+    i = np.concatenate(ii)
+    j = np.concatenate(jj)
+    d2 = (px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2
+    keep = d2 < rad * rad
+    return i[keep], j[keep]
+
+
+def sph_dam_break(nres: int = 18, tank=(4.0, 3.0), column=(1.0, 1.0),
+                  T: float = 4.6, alpha: float = None,
+                  obstacle=None, snapshots=()):
+    """Run the dam break and return the horizontal force history on
+    the right wall. nres is particles per unit length; g = rho0 = 1;
+    the bore reaches the wall near t ~ 2.2 for the default geometry.
+    obstacle, if given, is (x0, width, height): a rectangular berm on
+    the floor in the bore's path, built from the same boundary
+    particles as the walls. Returns a dict with ts, F (wall force),
+    and particle snapshots at the requested times."""
+    if alpha is None:
+        # Monaghan viscosity scales with h, so fixed alpha would give
+        # each ladder rung a different fluid (measured: arrival times
+        # drifting 3.5 -> 2.8 down a ladder). Scale alpha ~ 1/nres to
+        # hold the physical viscosity constant across resolutions.
+        alpha = 1.44 / nres
+    dx = 1.0 / nres
+    h = 1.3 * dx
+    rad = 2.0 * h
+    rho0, g, gamma = 1.0, 1.0, 7.0
+    c0 = 20.0 * math.sqrt(g * column[1])
+    B = c0 * c0 * rho0 / gamma
+    m = rho0 * dx * dx
+
+    def grid(x0, x1, y0, y1):
+        gx = np.arange(x0 + dx / 2, x1, dx)
+        gy = np.arange(y0 + dx / 2, y1, dx)
+        X, Y = np.meshgrid(gx, gy)
+        return X.ravel(), Y.ravel()
+
+    fx, fy = grid(0.0, column[0], 0.0, column[1])
+    walls = [grid(-3 * dx, tank[0] + 3 * dx, -3 * dx, 0.0),      # floor
+             grid(-3 * dx, 0.0, 0.0, tank[1]),                   # left
+             grid(tank[0], tank[0] + 3 * dx, 0.0, tank[1])]      # right
+    if obstacle is not None:
+        ox, ow, oh = obstacle
+        walls.append(grid(ox, ox + ow, 0.0, oh))
+    bx = np.concatenate([w[0] for w in walls])
+    by = np.concatenate([w[1] for w in walls])
+    nf = len(fx)
+    right = np.zeros(nf + len(bx), bool)
+    right[nf + sum(len(w[0]) for w in walls[:2]):
+          nf + sum(len(w[0]) for w in walls[:3])] = True
+
+    px = np.concatenate([fx, bx])
+    py = np.concatenate([fy, by])
+    vx = np.zeros_like(px)
+    vy = np.zeros_like(px)
+    rho = np.full(len(px), rho0)
+    fluid = np.zeros(len(px), bool)
+    fluid[:nf] = True
+
+    dt = 0.25 * h / c0
+    nsteps = int(T / dt)
+    ts = np.arange(nsteps) * dt
+    F = np.zeros(nsteps)
+    snaps, want = [], sorted(snapshots)
+
+    a2 = 7.0 / (4.0 * math.pi * h * h)
+
+    def rates():
+        i, j = _sph_pairs(px, py, rad)
+        dxij = px[i] - px[j]
+        dyij = py[i] - py[j]
+        r = np.sqrt(dxij ** 2 + dyij ** 2)
+        q = r / h
+        f1 = np.maximum(1.0 - 0.5 * q, 0.0)
+        W = a2 * f1 ** 4 * (1.0 + 2.0 * q)
+        gfac = -5.0 * a2 * f1 ** 3 / (h * h)     # grad W = gfac * (dx, dy)
+        gx_, gy_ = gfac * dxij, gfac * dyij
+        # density by summation every step: drift-free, unlike the
+        # continuity form (measured: continuity drifted the hydrostatic
+        # pressure to 1.9x at one resolution and 0 at another)
+        rho = np.full(len(px), m * a2)           # self term W(0)
+        np.add.at(rho, i, m * W)
+        np.add.at(rho, j, m * W)
+        # free-surface WCSPH: kernel deficiency at the surface reads
+        # rho < rho0, and the Tait EOS would turn that into strong
+        # negative (tensile) pressure and blow the flow apart; clamp
+        p = np.maximum(B * ((rho / rho0) ** gamma - 1.0), 0.0)
+        dvx = vx[i] - vx[j]
+        dvy = vy[i] - vy[j]
+        vr = dvx * dxij + dvy * dyij
+        mu = np.where(vr < 0, h * vr / (r * r + 0.01 * h * h), 0.0)
+        pi_ij = -alpha * c0 * mu / (0.5 * (rho[i] + rho[j]))
+        fac = m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2 + pi_ij)
+        ax = np.zeros(len(px))
+        ay = np.zeros(len(px))
+        np.add.at(ax, i, -fac * gx_)
+        np.add.at(ay, i, -fac * gy_)
+        np.add.at(ax, j, fac * gx_)
+        np.add.at(ay, j, fac * gy_)
+        ay[fluid] -= g
+        wallF = float(np.sum(np.where(right[j] & fluid[i], m * fac * gx_, 0.0))
+                      - np.sum(np.where(right[i] & fluid[j], m * fac * gx_,
+                                        0.0)))
+        return rho, ax, ay, wallF
+
+    for k in range(nsteps):
+        rho, ax, ay, wallF = rates()
+        F[k] = wallF
+        vx[fluid] += dt * ax[fluid]
+        vy[fluid] += dt * ay[fluid]
+        px[fluid] += dt * vx[fluid]
+        py[fluid] += dt * vy[fluid]
+        if want and k * dt >= want[0]:
+            pfl = B * ((rho[fluid] / rho0) ** gamma - 1.0)
+            snaps.append((want.pop(0), px[fluid].copy(), py[fluid].copy(),
+                          pfl))
+    return {"ts": ts, "F": F, "snaps": snaps, "n_fluid": nf, "dx": dx,
+            "px": px, "py": py, "rho": rho, "fluid": fluid, "B": B,
+            "gamma": gamma}
+
+
+def wave_impact_force(F, ts, tau: float):
+    """The queried functional: the largest boxcar average of the wall
+    force over a window tau. tau = 0 asks for the raw instantaneous
+    peak — the query the ladder refuses to certify."""
+    if tau <= 0.0:
+        return float(np.max(F))
+    w = max(1, int(round(tau / (ts[1] - ts[0]))))
+    c = np.cumsum(np.concatenate([[0.0], F]))
+    return float(np.max((c[w:] - c[:-w]) / w))
+
+
+def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
+    """The queried functional: total horizontal impulse delivered to
+    the right wall over the first T time units (momentum transferred
+    by the impact). Robust where the raw peak is not: it integrates
+    out both the pressure-spike scatter and the arrival-time jitter
+    between resolutions."""
+    out = sph_dam_break(nres=nres, T=T, obstacle=obstacle)
+    return float(np.sum(out["F"]) * (out["ts"][1] - out["ts"][0]))

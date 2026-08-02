@@ -1777,3 +1777,89 @@ def test_gw_mismatch_metric_sanity():
     best = min(np.linalg.norm(hn - np.exp(1j * th) * gn)
                for th in np.linspace(0, 2 * math.pi, 20000))
     assert math.sqrt(2 * m) == pytest.approx(best, rel=1e-4)
+
+
+def test_gci_extrapolate():
+    """Grid-convergence certificate (the engineering V&V practice, made
+    refusal-capable): a clean h^p ladder certifies and contains the
+    h->0 limit; a ladder with no asymptotic range refuses."""
+    hs = [0.4, 0.2, 0.1, 0.05]
+    vals = [3.0 + 2.1 * h ** 1.7 for h in hs]
+    c = sf.gci_extrapolate(vals, hs)
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert abs(c.value - 3.0) <= c.err
+    assert "order" in c.provenance[0] and "measured" in c.provenance[0]
+    with pytest.raises(ValueError, match="asymptotic range"):
+        sf.gci_extrapolate([3.0, 3.4, 3.1, 3.5], hs)
+
+
+def test_sph_physics_sane():
+    """The declared SPH model behaves like water: the dam-break front
+    advances monotonically at a physical speed, and the wall feels
+    nothing until the bore arrives."""
+    out = sf.sph_dam_break(nres=16, snapshots=(1.0, 1.5, 2.0))
+    fronts = [s[1].max() for s in out["snaps"]]
+    assert fronts[0] < fronts[1] < fronts[2]
+    speed = (fronts[2] - fronts[0]) / 1.0
+    assert 0.9 < speed < 2.2          # Ritter dry-front speed is 2
+    ts, F = out["ts"], out["F"]
+    assert np.max(np.abs(F[ts < 1.5])) < 0.05
+    assert np.max(F) > 0.3            # and the impact is a real event
+
+
+def test_sph_hydrostatic_pressure():
+    """A settled full-width column: fluid pressure near the floor must
+    approach rho g depth."""
+    out = sf.sph_dam_break(nres=16, tank=(1.5, 1.2), column=(1.5, 0.6),
+                           T=2.5, alpha=0.5)
+    fl = out["fluid"]
+    pj = out["B"] * ((out["rho"][fl]) ** out["gamma"] - 1.0)
+    low = out["py"][fl] < 0.12
+    p_bot = float(np.mean(pj[low]))
+    assert abs(p_bot - 0.55) < 0.2    # rho g (0.6 - 0.05) with SPH slop
+
+
+def test_sph_impulse_certifies_peak_refuses():
+    """The query triage, measured on a fixed-viscosity resolution
+    ladder. The delivered impulse certifies (containment checked at a
+    finer rung the certificate never saw) with an honestly wide err:
+    the model is below its asymptotic range at this budget and the
+    certificate says so. The raw peak force scatters with no
+    asymptotic range at all, and the certifier refuses it — the
+    honest verdict for breaking-wave peak loads."""
+    J, peaks = {}, {}
+    for n in (16, 24, 36, 48):
+        out = sf.sph_dam_break(nres=n)
+        J[n] = float(np.sum(out["F"]) * (out["ts"][1] - out["ts"][0]))
+        peaks[n] = float(np.max(out["F"]))
+    hs = [1 / 16, 1 / 24, 1 / 36]
+    c = sf.gci_extrapolate([J[n] for n in (16, 24, 36)], hs)
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert abs(J[48] - c.value) <= c.err
+    assert c.err < 5.0 * abs(c.value)     # wide, and honestly so
+    with pytest.raises(ValueError, match="asymptotic range"):
+        sf.gci_extrapolate([peaks[n] for n in (16, 24, 36)], hs)
+
+
+def test_sph_berm_design_brackets():
+    """The engineering answer has three regimes, and the certificates
+    tell them apart: a tall berm certifiably zeroes the delivered
+    impulse (ladder constant at zero); an under-resolved intermediate
+    berm REFUSES rather than pretend; the bare wall certifies a
+    nonzero impulse (previous test)."""
+    hs = [1 / 12, 1 / 18, 1 / 27]
+    tall = [sf.sph_wall_impulse(n, obstacle=(2.9, 0.4, 0.4))
+            for n in (12, 18, 27)]
+    c = sf.gci_extrapolate(tall, hs)
+    assert c.value == 0.0 and c.err == 0.0
+    mid = [sf.sph_wall_impulse(n, obstacle=(2.9, 0.4, 0.12))
+           for n in (12, 18, 27)]
+    with pytest.raises(ValueError, match="asymptotic range"):
+        sf.gci_extrapolate(mid, hs)
+
+
+def test_sph_deterministic():
+    """No randomness anywhere: two runs are bitwise identical."""
+    a = sf.sph_dam_break(nres=12, T=1.0)
+    b = sf.sph_dam_break(nres=12, T=1.0)
+    assert np.array_equal(a["F"], b["F"])

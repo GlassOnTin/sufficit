@@ -6,7 +6,7 @@ answers the question and proves how wrong it could be.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 100 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 106 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -34,7 +34,7 @@ h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4566, -0.4221]
 
 Requirements: `numpy` and `scipy`; `mpmath` for the tests; `cvxpy-base`
 and `scs` only for the SOS search, whose result is re-proven exactly.
-Run the suite with `pytest test_sufficit.py` (about two minutes).
+Run the suite with `pytest test_sufficit.py` (about four minutes; the SPH ladders are the long pole).
 
 ## Measured results
 
@@ -51,6 +51,7 @@ Run the suite with `pytest test_sufficit.py` (about two minutes).
 | TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | boundary commutator measured inside the cone; refuses when the light cone outruns the budget |
 | Guiding-center drift (plasma hierarchy) | the first ASYMPTOTIC-tier certificate | exponent proven, constant measured on a cheap large-ε ladder; refuses when the data contradict the exponent |
 | Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
+| Breaking wave on a sea wall (SPH) | delivered impulse certified; raw peak refused (no asymptotic range); a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
 
 ## How it stays honest
