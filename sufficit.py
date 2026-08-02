@@ -3998,7 +3998,8 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
         f = (g0 + c * uh) / R
         prob = LinearProblem(
             aform, f * v * ufl.dx, bcs=[bc],
-            petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+            petsc_options={"ksp_type": "preonly", "pc_type": "lu",
+                           "ksp_error_if_not_converged": True},
             petsc_options_prefix="gs_")
         sol = prob.solve()
         uh = sol[0] if isinstance(sol, tuple) else sol
@@ -4017,7 +4018,8 @@ def _gs_solve(n, c, R0, W, H, a_c, b_c, d_c, degree):
     pm = LinearProblem(am, Lm, bcs=[],
                        petsc_options={"ksp_type": "preonly",
                                       "pc_type": "lu",
-                                      "pc_factor_mat_solver_type": "mumps"},
+                                      "pc_factor_mat_solver_type": "mumps",
+                                      "ksp_error_if_not_converged": True},
                        petsc_options_prefix="gsm_")
     sol = pm.solve()
     wh = sol[0] if isinstance(sol, tuple) else sol
