@@ -1,8 +1,10 @@
 # sufficit
 
 A query compiler for physics. Declare the model, the question, and the
-error you can tolerate. The system searches for a cheap computation that
-answers the question and proves how wrong it could be.
+error you can tolerate; get back a cheap computation and a proof of how
+wrong it could be. Half of that exists today: the rewrites and their
+certificates are real, built and proved by hand, one per problem. The
+search that composes rewrites automatically is the stated debt.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
@@ -32,9 +34,12 @@ print(c.value, c.err)                  # -1.137275944 +/- 1.5e-13 hartree
 h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4566, -0.4221]
 ```
 
-Requirements: `numpy` and `scipy`; `mpmath` for the tests; `cvxpy-base`
-and `scs` only for the SOS search, whose result is re-proven exactly.
-Run the suite with `pytest test_sufficit.py` (about four minutes; the SPH ladders are the long pole).
+There is no package yet: the library is the single file
+[`sufficit.py`](sufficit.py) — clone and import. Requirements: `numpy` and
+`scipy`; `mpmath` for the tests; `cvxpy-base` and `scs` only for the SOS
+search, whose result is re-proven exactly. Run the suite with
+`pytest test_sufficit.py` (about four minutes; the SPH ladders are the
+long pole).
 
 ## Measured results
 
@@ -72,6 +77,22 @@ Run the suite with `pytest test_sufficit.py` (about four minutes; the SPH ladder
   demodulation that provably changed nothing, a rebalancing rule that
   measured 5 mHa worse, a warm start that loosened certificates from 66
   to 87 mHa.
+- **Certificates bound the model's answer, not the world's.** The model
+  is declared in the query. The H₂ bracket is ±10⁻¹³ hartree about the
+  STO-3G model, which itself sits ~0.05 hartree from the molecule.
+  Choosing a better model is a separate, stated step.
+
+## Neighbors
+
+None of the proof techniques are invented here. Ball arithmetic and
+validated numerics (Arb, INTLAB) supply the interval habits; the
+certifying-algorithms literature supplies the proposer/checker split; the
+SOS bounds on time averages follow Tobasco, Fantuzzi, and Goulart; the
+guaranteed FEM bounds follow Prager and Synge via the equilibrated-flux
+literature; the distribution-free tier is conformal prediction. The bet
+specific to Sufficit is composition: these traditions behind one query
+interface, with one certificate type, so bounds from different proofs add
+like autodiff gradients.
 
 ## Contributing
 

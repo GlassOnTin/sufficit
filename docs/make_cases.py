@@ -6,17 +6,51 @@ Run from the repo root:  python3 docs/make_cases.py   (~2 minutes)
 import inspect
 import math
 import os
+import re
+import subprocess
 import sys
 import time
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 import sufficit as sf  # noqa: E402
 
 
 def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _stamp():
+    """The commit that produced this page, so a certificate is citable:
+    the numbers on a page belong to exactly one commit."""
+    try:
+        h = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                    cwd=ROOT, text=True).strip()
+        d = subprocess.check_output(["git", "show", "-s", "--format=%cs"],
+                                    cwd=ROOT, text=True).strip()
+        dirty = subprocess.check_output(["git", "status", "--porcelain"],
+                                        cwd=ROOT, text=True).strip()
+        return f"commit <code>{h}</code>" + (" (modified)" if dirty else "") + f", {d}"
+    except Exception:
+        return "an uncommitted working tree"
+
+
+STAMP = _stamp()
+
+
+def check_counts():
+    """The prose states how many checks the suite runs. Nothing keeps
+    prose true except a check, so this is the check: count the tests,
+    and fail the build if any stated count disagrees."""
+    with open(os.path.join(ROOT, "test_sufficit.py")) as f:
+        n = len(re.findall(r"^def test_", f.read(), re.M))
+    for name in ("README.md", os.path.join("docs", "explainer.html")):
+        with open(os.path.join(ROOT, name)) as f:
+            stated = [int(m) for m in re.findall(r"(\d+) checks", f.read())]
+        if not stated or any(s != n for s in stated):
+            raise RuntimeError(f"{name} states {stated} checks; the suite has {n}")
 
 
 def page(title, eyebrow, h1, dek, sections):
@@ -32,6 +66,9 @@ def page(title, eyebrow, h1, dek, sections):
 <h1>{h1}</h1>
 <p class="dek">{dek}</p>
 {body}
+<hr>
+<p class="note">Every number and figure above comes from the run that
+built this page: {STAMP}.</p>
 </main>'''
 
 
@@ -1623,6 +1660,7 @@ CASES = {
 RECORDED = {}
 
 if __name__ == "__main__":
+    check_counts()
     here = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(os.path.join(here, "cases"), exist_ok=True)
     only = sys.argv[1:] or list(CASES)

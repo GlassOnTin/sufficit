@@ -175,10 +175,15 @@
     nowhere to go.</figcaption>
   </figure>
 
-  <p>For the hydrogen molecule, computed from scratch, the bracket is
+  <p>For the hydrogen molecule in the smallest standard basis, computed from
+  scratch, the bracket is
   <code>−1.137275944&nbsp;±&nbsp;0.00000000000015</code> hartree. The interval
   is ten billion times narrower than what chemists call chemical accuracy,
-  and it is a guarantee, not an estimate.</p>
+  and it is a guarantee, not an estimate. Be clear about what is guaranteed:
+  the answer of the declared model. The basis itself sits about 0.05 hartree
+  from the real molecule. Every certificate on this site bounds the model's
+  answer, not the world's; the model is always stated, and choosing a better
+  one is a separate, honest step.</p>
 
   <h2><span class="lecture-no">Part 3</span>Guess freely, check strictly</h2>
   <p>One rule makes the whole thing practical: it does not matter how you find
@@ -467,11 +472,27 @@
     certificate.</figcaption>
   </figure>
 
+  <h2><span class="lecture-no">Part 10</span>What you have to trust</h2>
+  <p>A certificate is only as good as its checker, so here is the trusted
+  base, stated. When a page says RIGOROUS, you are trusting four things:
+  the theorems quoted in the docstrings, which are hand-proved, not
+  machine-checked; a few hundred lines of margin bookkeeping that execute
+  those theorems in floating point, padding every rounding step in the safe
+  direction; NumPy and LAPACK, which do the arithmetic the margins surround;
+  and Python's exact rational arithmetic, for the checks that run over the
+  rationals and never touch a float. A bug in the bookkeeping would corrupt
+  every certificate downstream of it. That is the real attack surface, and
+  the test suite is the current defense: every bound is compared against
+  brute force, exact solutions, or independent constructions. The honest
+  gap: none of it is machine-checked. A proof-assistant kernel for the
+  handful of core inequalities would shrink the trusted base from a module
+  to a page, and it is the obvious next hardening.</p>
+
   <hr>
   <p style="color: var(--muted); font-size: 0.9rem;">Sufficit is a working
   research code: one Python module of certified rewrites and one test suite
   in which every claimed bound is checked against brute force, exact
-  solutions, or independent constructions. 100 checks, several of which exist
+  solutions, or independent constructions. 109 checks, several of which exist
   to record a mistake. Source on
   <a href="https://github.com/GlassOnTin/sufficit">GitHub</a>, AGPL-3.0.</p>
 </main>
