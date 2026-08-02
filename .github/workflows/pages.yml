@@ -29,9 +29,12 @@ jobs:
           sudo add-apt-repository -y ppa:fenics-packages/fenics
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-dolfinx python3-matplotlib python3-mpmath \
-            python3-pytest python3-pip
-      - run: pip install --break-system-packages cvxpy-base scs
+            python3-dolfinx python3-numpy python3-scipy \
+            python3-matplotlib python3-mpmath python3-pytest python3-pip
+      # --no-deps: the solver wheels must NOT drag in a pip numpy —
+      # apt-built petsc4py breaks against it (measured: dtype size 96
+      # vs 88 ABI error). numpy and scipy stay apt's.
+      - run: pip install --break-system-packages --no-deps cvxpy-base scs
       - run: python3 -m pytest test_sufficit.py -q
       - run: python3 docs/make_cases.py
       - uses: actions/upload-pages-artifact@v5

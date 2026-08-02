@@ -1536,7 +1536,7 @@ energy error and guaranteed bound versus mesh size, both first order">
     eff = [f"{b / e:.2f}" for _, e, b in ladder]
     return page(
         "Case: a tokamak equilibrium with a guaranteed error bound",
-        "certified case · recorded run",
+        "certified case",
         "A tokamak equilibrium with a guaranteed error bound",
         "The Grad-Shafranov equation solved by FEniCSx, certified by "
         "the Prager-Synge identity with rectangle-exact constants. The "
@@ -1594,10 +1594,10 @@ energy error and guaranteed bound versus mesh size, both first order">
             f"± {rc['Q'].err:.4f} at h = 1/48.</li>"
             f"<li>Coupling past the contraction limit (c = 3): <strong>"
             f"{'refused' if refused else 'NOT REFUSED'}</strong>.</li>"
-            "<li>Recorded run: FEniCSx has no PyPI wheels, so CI cannot "
-            "regenerate this page; it is committed from a local run of "
-            "the same generator, and the tests that gate it run "
-            "wherever dolfinx is installed.</li></ul>",
+            "<li>FEniCSx has no PyPI wheels; CI installs the same "
+            "Debian-family packages as the dev machine, from the "
+            "FEniCS PPA, so this page regenerates from a fresh solve "
+            "on every push like the rest.</li></ul>",
         ])
 
 
@@ -1614,13 +1614,13 @@ CASES = {
     "sos-transport.html": sos_case,
     "gw-surrogate.html": gw_case,
     "sph-wall.html": sph_case,
-}
-
-# pages needing tools CI does not have (dolfinx): generated locally,
-# committed, served as-is — the recorded-run pattern from TARGETS
-RECORDED = {
     "gs-equilibrium.html": gs_case,
 }
+
+# pages needing tools CI does not have: generated locally, committed,
+# served as-is — the recorded-run pattern from TARGETS (empty since CI
+# gained FEniCSx from the PPA; Basilisk will likely use it next)
+RECORDED = {}
 
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
