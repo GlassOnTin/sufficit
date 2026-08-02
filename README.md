@@ -2,13 +2,16 @@
 
 A query compiler for physics. Declare the model, the question, and the
 error you can tolerate; get back a cheap computation and a proof of how
-wrong it could be. Half of that exists today: the rewrites and their
-certificates are real, built and proved by hand, one per problem. The
-search that composes rewrites automatically is the stated debt.
+wrong it could be. The rewrites and their certificates are real, built
+and proved by hand, one per problem — and the first slice of the search
+half now exists: a planner that selects and escalates among competing
+rewrites by declared cost, with the certificate as referee. Composed
+multi-stage plans that split one error budget across rewrites are the
+remaining debt.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 109 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 119 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -59,6 +62,7 @@ long pole).
 | Breaking wave on a sea wall (SPH) | delivered impulse certified; raw peak refused (no asymptotic range); a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
 | Tokamak equilibrium (Grad–Shafranov via FEniCSx) | guaranteed energy-norm bound within 1.6× of the true error; implicit coupling certified by a contraction factor | Prager–Synge with rectangle-exact constants — guaranteed, not estimated; refuses past the contraction limit |
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
+| The planner (first compiler slice) | one question at three tolerances → three algorithms; model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts, certificates arbitrate; refusal returns a structured receipt with every rung priced |
 
 ## How it stays honest
 

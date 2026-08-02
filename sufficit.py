@@ -14,6 +14,7 @@ too, via the directed-rounding Interval type ("+fp" in provenance).
 from __future__ import annotations
 
 import functools
+import heapq
 import math
 from dataclasses import dataclass, replace
 from enum import IntEnum
@@ -3075,27 +3076,33 @@ def tfi_quench_dispatch(n: int, site: int, t: float, tol: float,
     the next cone — when no cone within max_dim certifies tol."""
     if t < 0:
         raise ValueError("t must be >= 0")
-    tried = []
+
+    def dim(r):
+        return 1 << (min(n - 1, site + r) - max(0, site - r) + 1)
+
+    rs = []
     r = 1
-    while True:
-        lo, hi = max(0, site - r), min(n - 1, site + r)
-        nc = hi - lo + 1
-        if (1 << nc) > max_dim:
-            raise ValueError(
-                f"lr-dispatch: no cone within max_dim={max_dim} certifies "
-                f"tol={tol:g} at t={t:g}; measured (r, err): "
-                + ", ".join(f"({rr}, {ee:.3g})" for rr, ee in tried)
-                + f"; the next cone needs dim {1 << nc} "
-                f"(~{((1 << nc) / max_dim) ** 3:.0f}x the largest "
-                "affordable step cost)")
-        value, err = _lr_cone_run(n, site, t, J, g, r, n_steps)
-        tried.append((r, err))
-        if err <= tol:
-            return Certified(value, err, Tier.RIGOROUS,
-                             (f"lr-cone r={r} sites={nc} steps={n_steps} "
-                              "a-posteriori boundary commutator, "
-                              "exact-arithmetic",))
+    while dim(r) <= max_dim:
+        rs.append(r)
+        if site - r <= 0 and site + r >= n - 1:
+            break  # the cone covers the chain; no larger rung exists
         r += 1
+
+    def run(r):
+        value, err = _lr_cone_run(n, site, t, J, g, r, n_steps)
+        nc = min(n - 1, site + r) - max(0, site - r) + 1
+        return Certified(value, err, Tier.RIGOROUS,
+                         (f"lr-cone r={r} sites={nc} steps={n_steps} "
+                          "a-posteriori boundary commutator, "
+                          "exact-arithmetic",))
+
+    def price():
+        nd = dim(rs[-1] + 1) if rs else dim(1)
+        return (f"the next cone needs dim {nd} (~{(nd / max_dim) ** 3:.0f}x "
+                "the largest affordable step cost)")
+
+    rw = Rewrite("lr-cone", tuple(rs), lambda r: float(dim(r)), run, price)
+    return plan("lr-dispatch", tol, [rw], jump=False, context=f"t={t:g}")
 
 
 # ------------------------------------------------------------- Plasma
@@ -3221,17 +3228,13 @@ def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
     guiding-center order whose asymptotic certificate meets tol.
     Refuses — pricing the full kinetic fallback — when the hierarchy
     is exhausted."""
-    last = None
-    for order in (0, 1):
-        c = gc_drift_asymptotic(eps, order, a, v, T, **kw)
-        if c.err <= tol:
-            return c
-        last = c
-    raise ValueError(
-        f"plasma-dispatch: hierarchy exhausted at eps={eps:g}: order-1 "
-        f"certifies {last.err:.3g} > tol={tol:g}; the full kinetic solve "
-        f"(~{int(40 * T / eps)} RHS evaluations, cost ~ T/eps) with a "
-        "rigorous ODE certificate is the remaining rung")
+    rw = Rewrite(
+        "gc-hierarchy", (0, 1), lambda o: float(o + 1),
+        lambda o: gc_drift_asymptotic(eps, o, a, v, T, **kw),
+        lambda: (f"the full kinetic solve (~{int(40 * T / eps)} RHS "
+                 "evaluations, cost ~ T/eps) with a rigorous ODE "
+                 "certificate is the remaining rung"))
+    return plan("plasma-dispatch", tol, [rw], context=f"eps={eps:g}")
 
 
 # ------------------------------------------------------------- SOS
@@ -4090,3 +4093,187 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
     return {"Q": Q, "energy_bound": energy_bound, "err_measured": err_meas,
             "flux_term": flux, "osc_term": osc, "theta": theta,
             "uh": uh, "msh": msh}
+
+
+# ------------------------------------------------------------- The
+# planner. Everything above this line is a library of certified
+# rewrites; this section is the first piece of the compiler the vision
+# promises. Given a tolerance, it searches the rewrites' declared
+# ladders, runs the cheapest promising rung, and lets the certificate
+# -- never the cost model -- decide what is true.
+
+
+class Refusal(ValueError):
+    """A refusal is a receipt, not an apology. It records every rung
+    the planner ran, what each was predicted to cost, what each
+    actually measured, and the price of the cheapest thing it did not
+    try. It subclasses ValueError so every existing caller that
+    catches ValueError keeps working."""
+
+    def __init__(self, slug, tol, tried, next_price, context=""):
+        self.slug, self.tol, self.context = slug, tol, context
+        self.tried = tried              # (rewrite, knob, cost, verdict)
+        self.next_price = next_price
+        at = f" at {context}" if context else ""
+        meas = ", ".join(
+            f"({k}, {v:.3g})" if isinstance(v, float) else f"({k}, {v})"
+            for _, k, _, v in tried) or "none"
+        super().__init__(
+            f"{slug}: no rung within budget certifies tol={tol:g}{at}; "
+            f"measured (knob, err): {meas}; {next_price}")
+
+
+@dataclass(frozen=True)
+class Rewrite:
+    """One way to answer a question, with a declared ladder of effort.
+    knobs is the ladder, cheapest rung first. cost predicts what a
+    rung will cost, in any units kept consistent within one front
+    door; it is a guess and is never trusted. run executes a rung and
+    returns a Certified -- the only arbiter. A rung may itself raise:
+    that refusal is a measurement too, and the planner records it and
+    moves on. price_beyond, when given, names what the rung past the
+    ladder would cost, for the refusal receipt."""
+    name: str
+    knobs: Tuple[Any, ...]
+    cost: Callable[[Any], float]
+    run: Callable[[Any], Certified]
+    price_beyond: Callable[[], str] = None
+
+
+def _fit_jump(meas, tol, remaining):
+    """Model-guided escalation. After two honest failures there is no
+    reason to keep climbing one rung at a time: fit the measured
+    errors to geometric decay, err ~ A * rho^knob -- a straight line
+    in (knob, log err) -- and jump to the first remaining rung the
+    line predicts will land at tol/2. Aiming past the target absorbs
+    a wobbly fit, and a wrong jump costs one extra run, because the
+    certificate still arbitrates. Whenever the data refuse the model
+    -- fewer than two points, errors not decreasing, a slope that is
+    flat or rising -- fall back to plain stepping."""
+    if len(meas) < 2:
+        return remaining[0]
+    es = [e for _, e in meas]
+    if any(e2 >= e1 for e1, e2 in zip(es, es[1:])) or min(es) <= 0:
+        return remaining[0]
+    ks = [float(k) for k, _ in meas]
+    ys = [math.log(e) for e in es]
+    kbar = sum(ks) / len(ks)
+    ybar = sum(ys) / len(ys)
+    den = sum((k - kbar) ** 2 for k in ks)
+    if den == 0:
+        return remaining[0]
+    s = sum((k - kbar) * (y - ybar) for k, y in zip(ks, ys)) / den
+    if not math.isfinite(s) or s >= 0:
+        return remaining[0]
+    need = (math.log(tol / 2.0) - (ybar - s * kbar)) / s
+    for k in remaining:
+        if float(k) >= need:
+            return k
+    return remaining[-1]
+
+
+def plan(slug: str, tol: float, rewrites, jump: bool = True,
+         context: str = "") -> Certified:
+    """The planner. Seed a frontier with the first rung of every
+    rewrite, priced by each one's own cost model, and run whichever
+    rung is predicted cheapest. If its certificate meets the
+    tolerance, that rewrite wins, and the plan trace is appended to
+    the certificate's provenance. If not, the measurement is kept,
+    the rewrite's next rung -- chosen by _fit_jump when jumping is on
+    -- goes back on the frontier, and the next-cheapest promise runs.
+    That promise may belong to a competing rewrite, so a rewrite that
+    measures badly is dethroned the moment its next rung gets
+    expensive. Cost models decide only the order of attempts;
+    certificates decide what is true. When every ladder is exhausted,
+    the planner refuses with the full receipt."""
+    frontier = []
+    state = []
+    for i, rw in enumerate(rewrites):
+        state.append(list(rw.knobs))
+        if rw.knobs:
+            heapq.heappush(frontier,
+                           (float(rw.cost(rw.knobs[0])), i, rw.knobs[0]))
+    tried, meas = [], [[] for _ in rewrites]
+    while frontier:
+        cost, i, knob = heapq.heappop(frontier)
+        rw, remaining = rewrites[i], state[i]
+        while remaining and remaining[0] != knob:
+            remaining.pop(0)          # rungs the jump skipped are gone
+        if remaining:
+            remaining.pop(0)
+        try:
+            c = rw.run(knob)
+        except ValueError as exc:
+            tried.append((rw.name, knob, cost, f"raised: {exc}"))
+            c = None
+        if c is not None:
+            tried.append((rw.name, knob, cost, c.err))
+            if c.err <= tol:
+                rejected = ", ".join(
+                    f"{n}@{k}" for n, k, _, _ in tried[:-1]) or "none"
+                trace = (f"plan {slug}: tol={tol:g}; chose "
+                         f"{rw.name}@{knob} (predicted {cost:g}); tried "
+                         f"{len(tried)} rungs; rejected {rejected}")
+                return replace(c, provenance=c.provenance + (trace,))
+            meas[i].append((knob, c.err))
+        if remaining:
+            nxt = _fit_jump(meas[i], tol, remaining) if jump \
+                else remaining[0]
+            heapq.heappush(frontier, (float(rw.cost(nxt)), i, nxt))
+    prices = [rw.price_beyond() for rw in rewrites if rw.price_beyond]
+    raise Refusal(slug, tol, tried,
+                  "; ".join(prices) or "no rung remains", context)
+
+
+def heisenberg_energy_dispatch(N: int, tol: float,
+                               correction_iters: int = 80,
+                               dense_max: int = 12, ell_max: int = None,
+                               jump: bool = True) -> Certified:
+    """Ground energy of the N-site spin-1/2 Heisenberg chain, certified
+    so the bracket half-width per bond meets tol. Two rewrites compete.
+    The window ladder costs 2^ell however long the chain is; the dense
+    bracket costs 2^N and is exact, so it enters the race only when
+    the chain is small enough to form (N <= dense_max). The planner
+    runs whichever promises cheapest; the certificates decide. Returns
+    the total-energy bracket, plan trace last in its provenance."""
+    tol_total = tol * (N - 1)
+    ells = tuple(range(2, min(N - 1, ell_max or 10) + 1))
+
+    def beyond():
+        nxt = ells[-1] + 1
+        return (f"the next window ell={nxt} costs 2^{nxt} = {2 ** nxt} "
+                "and is past the declared ladder")
+
+    rewrites = [Rewrite("window", ells, lambda ell: 2.0 ** ell,
+                        lambda ell: heisenberg_chain_bracket(
+                            N, ell, correction_iters), beyond)]
+    if N <= dense_max:
+        rewrites.append(
+            Rewrite("dense", (N,), lambda _: 2.0 ** N,
+                    lambda _: heisenberg_chain_bracket(N, ell=N)))
+    return plan("chain-energy", tol_total, rewrites, jump=jump,
+                context=f"N={N}")
+
+
+def h_chain_energy_dispatch(n: int, tol: float, d: float = 1.8,
+                            ell_max: int = 5,
+                            jump: bool = True) -> Certified:
+    """Ground-energy bracket for the n-atom hydrogen chain, certified
+    so the half-width per atom meets tol. One rewrite, one knob: the
+    window length ell, at cost 4^ell. This is quantum chemistry's
+    folklore method ladder -- run a cheap method, distrust it, run a
+    dearer one -- replaced by a declared ladder the planner climbs, or
+    jumps, until a certificate says stop. Returns the total-energy
+    bracket with the plan trace."""
+    tol_total = tol * n
+    ells = tuple(range(2, min(n - 1, ell_max) + 1))
+
+    def beyond():
+        nxt = ells[-1] + 1
+        return (f"the next window ell={nxt} costs 4^{nxt} = {4 ** nxt} "
+                f"and is past the declared ladder (ell_max={ell_max})")
+
+    rw = Rewrite("window", ells, lambda ell: 4.0 ** ell,
+                 lambda ell: h_chain_bracket(n, d, ell), beyond)
+    return plan("hchain-energy", tol_total, [rw], jump=jump,
+                context=f"n={n}")

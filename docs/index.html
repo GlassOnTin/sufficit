@@ -18,14 +18,19 @@
   <h1>Sufficit</h1>
   <p class="sub"><em>A query compiler for physics: declare the model, the
   question, and the tolerance — get an algorithm and a certificate.</em></p>
-  <p class="sub">Half of that exists today. The certificates are real, and
-  each comes from a rewrite built and proved by hand; the search that
-  composes rewrites automatically is the stated debt.</p>
+  <p class="sub">The certificates are real, each from a rewrite built and
+  proved by hand. The first slice of the search half now exists too: a
+  planner that selects and escalates among competing rewrites by declared
+  cost, with the certificate as referee. Composed multi-stage plans that
+  split one error budget across rewrites are the remaining debt.</p>
   <ul>
     <li><a href="explainer.html">The illustrated tour</a> — start here</li>
     <li>Certified cases — the idea, the program rendered from the
         module, and the result of running it, one page each:
       <ul>
+        <li><a href="cases/the-compiler.html">The planner</a> — one
+            question at three tolerances gets three algorithms; the
+            certificates, not the cost models, decide</li>
         <li><a href="cases/h2-bracket.html">The hydrogen molecule</a> —
             a two-sided energy bracket, ±10⁻¹³ hartree</li>
         <li><a href="cases/hchain-ladder.html">The window-length

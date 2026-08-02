@@ -1919,3 +1919,133 @@ def test_gs_implicit_coupling_certifies_and_refuses():
     assert q2.err < q1.err
     with pytest.raises(ValueError, match="contraction"):
         sf.gs_equilibrium_certified(n=8, c=3.0)
+
+
+def test_fit_jump_math():
+    """The jump fit on exact geometric decay err = 0.5^k lands on the
+    analytically correct rung; anything that contradicts the model
+    falls back to plain stepping."""
+    rem = [4, 5, 6, 7, 8, 9, 10]
+    meas = [(2, 0.25), (3, 0.125)]
+    # 0.5^k <= tol/2 = 2e-2 needs k >= 5.64, so rung 6
+    assert sf._fit_jump(meas, 4e-2, rem) == 6
+    # target beyond the ladder: top rung (the guess is not trusted
+    # in either direction -- the top rung might certify)
+    assert sf._fit_jump(meas, 1e-3, rem) == 10
+    # non-monotone, single point, flat: all fall back to stepping
+    assert sf._fit_jump([(2, 0.1), (3, 0.2)], 1e-3, rem) == 4
+    assert sf._fit_jump([(2, 0.1)], 1e-3, rem) == 4
+    assert sf._fit_jump([(2, 0.1), (3, 0.1)], 1e-3, rem) == 4
+
+
+def test_planner_loose_tol_picks_cheap():
+    """A loose question buys the cheapest algorithm: at 0.2/bond the
+    first window rung certifies and nothing else runs."""
+    c = sf.heisenberg_energy_dispatch(40, tol=0.2)
+    assert "chose window@2" in c.provenance[-1]
+    assert "tried 1 rungs" in c.provenance[-1]
+    assert c.err <= 0.2 * 39
+
+
+def test_planner_escalation_monotone():
+    """Tighter questions buy costlier algorithms, never cheaper ones:
+    the predicted cost of the chosen rung is non-decreasing as tol
+    falls, and every answer meets its tolerance."""
+    costs = []
+    for tol in (0.2, 0.05, 0.02):
+        c = sf.heisenberg_energy_dispatch(40, tol=tol, ell_max=8)
+        assert c.err <= tol * 39
+        costs.append(float(re.search(r"predicted (\S+)\)",
+                                     c.provenance[-1]).group(1)))
+    assert costs == sorted(costs)
+
+
+def test_planner_dense_dethrones_windows():
+    """Competition flips on the tolerance. At 3e-2/bond a window wins
+    and the dense rewrite never runs; at 1e-9/bond every window rung
+    floors out on the relaxation gap and the dense bracket -- exact,
+    1024-dimensional, priced accordingly -- is the one that
+    certifies. Both contain the eigh truth."""
+    loose = sf.heisenberg_energy_dispatch(10, tol=3e-2)
+    assert "chose window@" in loose.provenance[-1]
+    assert "dense" not in loose.provenance[-1]
+    tight = sf.heisenberg_energy_dispatch(10, tol=1e-9)
+    assert "chose dense@10" in tight.provenance[-1]
+    truth = np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0]
+    assert abs(loose.value - truth) <= loose.err
+    assert abs(tight.value - truth) <= tight.err
+
+
+def test_planner_containment():
+    """House rule, applied to the planner: whatever algorithm it
+    chooses at whatever tolerance, the bracket contains the exact
+    answer."""
+    truth = np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0]
+    for tol in (0.2, 3e-2, 1e-3, 1e-9):
+        c = sf.heisenberg_energy_dispatch(10, tol=tol)
+        assert abs(c.value - truth) <= c.err
+        assert c.err <= tol * 9
+
+
+def test_planner_refuses_with_receipts():
+    """An impossible question gets a receipt: every rung run, in
+    order, with measured errors, and the price of the rung past the
+    ladder."""
+    with pytest.raises(sf.Refusal, match="chain-energy") as ei:
+        sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
+                                      ell_max=6)
+    e = ei.value
+    knobs = [k for _, k, _, _ in e.tried]
+    assert knobs == sorted(knobs) and len(knobs) >= 2
+    assert all(isinstance(v, float) for _, _, _, v in e.tried)
+    assert "ell=7" in e.next_price
+    assert e.tol == pytest.approx(1e-12 * 39)
+
+
+def test_planner_jump_fewer_runs():
+    """The jump earns its keep: on the N=60 ladder (corrections off,
+    so the decay is clean) the model-guided jump reaches a certifying
+    rung in strictly fewer runs than plain stepping. Both certify,
+    and two valid brackets on the same number must overlap."""
+    kw = dict(tol=0.031, correction_iters=0, ell_max=9)
+    j = sf.heisenberg_energy_dispatch(60, **kw)
+    s = sf.heisenberg_energy_dispatch(60, jump=False, **kw)
+
+    def runs(c):
+        return int(re.search(r"tried (\d+) rungs",
+                             c.provenance[-1]).group(1))
+    assert runs(j) < runs(s)
+    assert j.err <= 0.031 * 59 and s.err <= 0.031 * 59
+    assert abs(j.value - s.value) <= j.err + s.err
+
+
+def test_hchain_ell_from_tol():
+    """The folklore method ladder, mechanized: at 0.08 hartree/atom on
+    H6 the planner steps past ell=3 (measured 0.122/atom) and stops at
+    ell=4 (0.044/atom), the smallest window that certifies."""
+    c = sf.h_chain_energy_dispatch(6, tol=0.08, jump=False)
+    assert "chose window@4" in c.provenance[-1]
+    assert "window@3" in c.provenance[-1]
+    assert c.err <= 0.08 * 6
+
+
+def test_lr_refusal_structured():
+    """The migrated quench dispatch refuses with the same receipt: the
+    three affordable cones, their measured errors, and the price of
+    the fourth."""
+    with pytest.raises(sf.Refusal, match="lr-dispatch") as ei:
+        sf.tfi_quench_dispatch(50, 25, 3.0, tol=1e-6, max_dim=256)
+    e = ei.value
+    assert [k for _, k, _, _ in e.tried] == [1, 2, 3]
+    assert all(isinstance(v, float) for _, _, _, v in e.tried)
+    assert "dim 512" in e.next_price
+
+
+def test_gc_refusal_structured():
+    """Same receipt from the plasma hierarchy: both orders measured,
+    the kinetic fallback priced."""
+    with pytest.raises(sf.Refusal, match="plasma-dispatch") as ei:
+        sf.gc_drift_dispatch(0.02, tol=1e-9)
+    e = ei.value
+    assert [k for _, k, _, _ in e.tried] == [0, 1]
+    assert "kinetic" in e.next_price

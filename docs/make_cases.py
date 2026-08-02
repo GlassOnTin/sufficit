@@ -1638,6 +1638,140 @@ energy error and guaranteed bound versus mesh size, both first order">
         ])
 
 
+# ======================================================================
+def compiler_case():
+    N = 10
+    truth = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * (N - 1)))[0])
+
+    # one question, a sweep of tolerances: the planner picks the
+    # algorithm anew at each, and the trace says why
+    tols = (0.3, 0.1, 3e-2, 1e-2, 3e-3)
+    sweep = []
+    for tol in tols:
+        c = sf.heisenberg_energy_dispatch(N, tol=tol)
+        trace = c.provenance[-1]
+        chosen = trace.split("chose ")[1].split(" ")[0]
+        cost = float(trace.split("predicted ")[1].split(")")[0])
+        sweep.append((tol, chosen, cost, c))
+    extreme = sf.heisenberg_energy_dispatch(N, tol=1e-9)
+    headline = [sweep[0][3], sweep[3][3], extreme]
+    contained = sum(abs(c.value - truth) <= c.err for c in headline)
+
+    # the jump, measured against plain stepping on a clean ladder
+    kw = dict(tol=0.031, correction_iters=0, ell_max=9)
+    runs_of = lambda c: int(c.provenance[-1].split("tried ")[1].split(" ")[0])
+    jumped = runs_of(sf.heisenberg_energy_dispatch(60, **kw))
+    stepped = runs_of(sf.heisenberg_energy_dispatch(60, jump=False, **kw))
+
+    # the folklore ladder of quantum chemistry, mechanized
+    hc = sf.h_chain_energy_dispatch(6, tol=0.08, jump=False)
+
+    # an impossible question gets a receipt
+    try:
+        sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
+                                      ell_max=6)
+        receipt = None
+    except sf.Refusal as e:
+        receipt = e
+
+    # staircase: tolerance on x, predicted cost of the chosen rung on y
+    ax = Axes((1.5e-3, 0.5), (2.5, 2048), h=320, logx=True, logy=True)
+    flip = next(i for i, s in enumerate(sweep) if s[1].startswith("dense"))
+    wall = math.sqrt(sweep[flip][0] * sweep[flip - 1][0])
+    wx = ax.X(wall)
+    pts, labels = [], []
+    for tol, chosen, cost, _ in sweep:
+        x, y = ax.X(tol), ax.Y(cost)
+        pts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" '
+                   f'class="blue-fill"/>')
+        ly, anchor = (y + 18, "start") if y < ax.mt + 24 else (y - 10,
+                                                               "middle")
+        labels.append(f'<text x="{x:.1f}" y="{ly:.1f}" '
+                      f'text-anchor="{anchor}" class="board-text" '
+                      f'font-size="10" opacity="0.85">{chosen}</text>')
+    step = " L ".join(
+        f"{ax.X(t):.1f} {ax.Y(c):.1f} L {ax.X(tols[i + 1]) if i + 1 < len(tols) else ax.X(ax.xlim[0]):.1f} {ax.Y(c):.1f}"
+        for i, (t, _, c, _) in enumerate(sweep))
+    svg = f'''<svg viewBox="0 0 640 320" role="img" aria-label="Staircase of
+chosen algorithm cost against tolerance, with the window-to-dense wall">
+{ax.grid((10, 100, 1000), (1e-2, 1e-1),
+         xfmt=lambda v: f"tol = {v:g}", yfmt=lambda v: f"{v:g}")}
+<rect x="{ax.ml}" y="{ax.mt}" width="{wx - ax.ml:.1f}"
+      height="{320 - ax.mt - ax.mb}" fill="var(--rust)" opacity="0.07"/>
+<line x1="{wx:.1f}" y1="{ax.mt}" x2="{wx:.1f}" y2="{320 - ax.mb}"
+      class="rust-ink" stroke-dasharray="4 4" stroke-width="1.4"/>
+<text x="{wx + 8:.1f}" y="{ax.mt + 14}" class="board-text"
+      font-size="10.5" fill="var(--rust)">&#8592; the windows floor out;
+ dense takes over</text>
+<path d="M {step}" fill="none" class="blue-ink" stroke-width="1.6"
+      opacity="0.55"/>
+{"".join(pts)}{"".join(labels)}
+<text x="{ax.ml + 10}" y="{320 - ax.mb - 10}" class="board-text"
+      font-size="10.5">predicted cost of the chosen rung, N = {N} chain</text>
+</svg>'''
+
+    traces = "\n".join(esc(c.provenance[-1]) for c in headline)
+    return page(
+        "Case: the planner",
+        "certified case",
+        "The compiler half, first slice",
+        "One question at three tolerances gets three different "
+        "algorithms. A planner searches the rewrites' declared cost "
+        "ladders; the certificates, never the cost models, decide "
+        "what is true.",
+        [
+            "<h2>The idea</h2>"
+            "<p>Until now every page on this site answered its "
+            "question with an algorithm someone chose by hand. This "
+            "page is the first piece of the promised compiler: the "
+            "choice itself is made by a program. Each way of "
+            "answering a question is declared as a rewrite with a "
+            "ladder of effort and a guessed cost per rung. The "
+            "planner runs the cheapest promise first. If the "
+            "certificate that comes back meets the tolerance, done. "
+            "If not, the measurement is kept, the rewrite's next rung "
+            "goes back in the queue — after two failures a fitted "
+            "decay model picks how far to jump — and the next "
+            "cheapest promise runs, which may belong to a competing "
+            "rewrite. Nothing here is trusted: a wrong cost model or "
+            "a bad jump wastes some running time, and cannot corrupt "
+            "the answer, because every answer still arrives with its "
+            "own certificate.</p>",
+            code_section(sf.Rewrite, sf._fit_jump, sf.plan,
+                         sf.heisenberg_energy_dispatch),
+            "<h2>The result</h2>"
+            f"<figure>{svg}<figcaption>The staircase. Loose questions "
+            "are served by short windows at cost 2<sup>ℓ</sup>; as "
+            "the tolerance tightens the planner climbs the ladder, "
+            "and past the wall the window widths floor out on the "
+            "relaxation gap, so the dense 1024-dimensional bracket — "
+            "exact, and priced 2<sup>N</sup> — wins the competition. "
+            "The wall belongs to this 10-site chain; on a 10⁶-site "
+            "chain there is no dense column to flee to."
+            "</figcaption></figure>"
+            "<p>Three of the plan traces, verbatim from the "
+            f"certificates' provenance:</p><pre>{traces}</pre>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment: <strong>{contained}/3</strong> "
+            "planner-chosen brackets contain the exact "
+            "1024-dimensional answer.</li>"
+            "<li>The jump earns its keep: on the 60-site ladder the "
+            f"certifying rung is reached in <strong>{jumped} runs"
+            f"</strong> with the fitted jump against <strong>"
+            f"{stepped}</strong> with plain stepping.</li>"
+            "<li>The folklore method ladder of quantum chemistry, "
+            "mechanized: H6 at 0.08 hartree/atom &rarr; <code>"
+            f"{esc(hc.provenance[-1].split('; rejected')[0])}</code>."
+            "</li>"
+            "<li>An impossible question refuses with a receipt: "
+            f"<code>{esc(str(receipt)[:160])}&hellip;</code></li>"
+            "<li>What this is not, yet: the plan space is single-knob "
+            "ladders per query. Composed pipelines that split one "
+            "error budget across several rewrites are the remaining "
+            "debt.</li></ul>",
+        ])
+
+
 CASES = {
     "tfi-reduced-basis.html": tfi_case,
     "h2-bracket.html": h2_case,
@@ -1652,6 +1786,7 @@ CASES = {
     "gw-surrogate.html": gw_case,
     "sph-wall.html": sph_case,
     "gs-equilibrium.html": gs_case,
+    "the-compiler.html": compiler_case,
 }
 
 # pages needing tools CI does not have: generated locally, committed,
