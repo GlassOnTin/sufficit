@@ -3216,3 +3216,366 @@ def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
         f"certifies {last.err:.3g} > tol={tol:g}; the full kinetic solve "
         f"(~{int(40 * T / eps)} RHS evaluations, cost ~ T/eps) with a "
         "rigorous ODE certificate is the remaining rung")
+
+
+# ------------------------------------------------------------- SOS
+# transport bounds (turbulence beachhead). The background-flow method
+# in miniature: for dx/dt = f(x) polynomial and a quantity Phi, any
+# polynomial V gives sup_x [Phi + grad V . f] >= long-time average of
+# Phi on every bounded trajectory (the time average of grad V . f = 
+# dV/dt vanishes). Minimizing the sup over V is a sum-of-squares
+# program. The project split applies verbatim: the SEARCH for V and
+# for a Gram matrix is unrigorous float optimization; the CERTIFICATE
+# is exact rational arithmetic — the polynomial identity
+# U - Phi - grad V . f = m^T Q m is checked coefficient by coefficient
+# over Q (the rationals), and Q >= 0 is proven by rational LDL^T. No
+# SDP solver is trusted and no float enters the proof. Boundedness of
+# every trajectory (which the theorem needs) is itself an SOS
+# certificate: K - delta W - grad W . f >= 0 globally for the
+# classical Lorenz Lyapunov function W, so W <= K/delta absorbs.
+# Polynomials are dicts {(i, j, k): coeff} over x^i y^j z^k, coeff
+# type Fraction (exact path) or float (search path) — the same code
+# runs both.
+
+
+def _pmul(p, q):
+    out = {}
+    for a, ca in p.items():
+        for b, cb in q.items():
+            m = (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+            out[m] = out.get(m, 0 * ca) + ca * cb
+    return {m: c for m, c in out.items() if c != 0}
+
+
+def _paxpy(p, q, s):
+    out = dict(p)
+    for m, c in q.items():
+        out[m] = out.get(m, 0 * c) + s * c
+    return {m: c for m, c in out.items() if c != 0}
+
+
+def _pdiff(p, i):
+    out = {}
+    for m, c in p.items():
+        if m[i] > 0:
+            mm = list(m)
+            mm[i] -= 1
+            out[tuple(mm)] = c * m[i]
+    return out
+
+
+def _lorenz_fields(num=float):
+    from fractions import Fraction
+    beta = 8.0 / 3.0 if num is float else Fraction(8, 3)
+    fx = {(0, 1, 0): 10, (1, 0, 0): -10}
+    fy = {(1, 0, 0): 28, (1, 0, 1): -1, (0, 1, 0): -1}
+    fz = {(1, 1, 0): 1, (0, 0, 1): -beta}
+    return (fx, fy, fz), (10, 28, beta)
+
+
+def _grad_dot_f(V, fields):
+    out = {}
+    for i, fi in enumerate(fields):
+        out = _paxpy(out, _pmul(_pdiff(V, i), fi), 1)
+    return out
+
+
+def _sos_structure(S):
+    """Gram basis for S split by the (x,y) -> (-x,-y) parity when S
+    respects it: blocks of monomials of degree <= deg(S)/2, grouped so
+    each Gram entry contributes to exactly one monomial of S."""
+    deg = max((sum(m) for m in S), default=0)
+    half = (deg + 1) // 2
+    # per-variable cap floor(deg_v(S)/2) is sound: the v-leading
+    # coefficient of sum p_k^2 is itself a nonzero SOS, so no square
+    # may exceed half the v-degree of S
+    vcap = [max((m[v] for m in S), default=0) // 2 for v in range(3)]
+    symmetric = all((m[0] + m[1]) % 2 == 0 for m in S)
+    basis = []
+    for i in range(min(half, vcap[0]) + 1):
+        for j in range(min(half - i, vcap[1]) + 1):
+            for k in range(min(half - i - j, vcap[2]) + 1):
+                basis.append((i, j, k))
+    if symmetric:
+        blocks = [[m for m in basis if (m[0] + m[1]) % 2 == 0],
+                  [m for m in basis if (m[0] + m[1]) % 2 == 1]]
+    else:
+        blocks = [basis]
+    blocks = [b for b in blocks if b]
+    entries = []          # (block, i, j, product monomial, weight)
+    groups = {}           # monomial -> entry indices
+    for bi, b in enumerate(blocks):
+        for i in range(len(b)):
+            for j in range(i, len(b)):
+                m = tuple(b[i][t] + b[j][t] for t in range(3))
+                w = 1 if i == j else 2
+                groups.setdefault(m, []).append(len(entries))
+                entries.append((bi, i, j, m, w))
+    return blocks, entries, groups
+
+
+def _gram_matrices(blocks, entries, vals):
+    mats = [np.zeros((len(b), len(b))) for b in blocks]
+    for (bi, i, j, _, _), v in zip(entries, vals):
+        mats[bi][i, j] = mats[bi][j, i] = v
+    return mats
+
+
+def _sos_search(S_float, blocks, entries, groups, restarts=3, seed=0):
+    """Float search for a PSD Gram: free entries per monomial group
+    (the last entry absorbs the exact identity), maximize the minimum
+    eigenvalue across blocks. Returns (lambda_min, entry values)."""
+    from scipy.optimize import minimize
+    free = [i for m, idx in groups.items() for i in idx[:-1]]
+
+    def assemble(theta):
+        vals = np.zeros(len(entries))
+        vals[free] = theta
+        for m, idx in groups.items():
+            w_last = entries[idx[-1]][4]
+            acc = sum(vals[i] * entries[i][4] for i in idx[:-1])
+            vals[idx[-1]] = (S_float.get(m, 0.0) - acc) / w_last
+        return vals
+
+    def negmin(theta):
+        return -min(np.linalg.eigvalsh(M)[0]
+                    for M in _gram_matrices(blocks, entries,
+                                            assemble(theta)))
+
+    if not free:
+        vals = assemble(np.zeros(0))
+        return -negmin(np.zeros(0)), vals
+    rng = np.random.default_rng(seed)
+    best = (-math.inf, None)
+    for r in range(restarts):
+        x0 = np.zeros(len(free)) if r == 0 \
+            else 0.1 * rng.standard_normal(len(free))
+        res = minimize(negmin, x0, method="Powell",
+                       options={"maxiter": 4000, "xtol": 1e-10})
+        if -res.fun > best[0]:
+            best = (-res.fun, assemble(res.x))
+    return best
+
+
+def _rational_ldl_psd(M):
+    """Exact LDL^T over Fraction: True iff M is PSD (zero pivots must
+    annihilate their entire column)."""
+    from fractions import Fraction
+    n = len(M)
+    A = [[Fraction(M[i][j]) for j in range(n)] for i in range(n)]
+    for j in range(n):
+        if A[j][j] < 0:
+            return False
+        if A[j][j] == 0:
+            if any(A[i][j] != 0 for i in range(j + 1, n)):
+                return False
+            continue
+        for i in range(j + 1, n):
+            lij = A[i][j] / A[j][j]
+            for k in range(j, n):
+                A[i][k] -= lij * A[j][k]
+    return True
+
+
+def _sos_exact_check(S, margin=1e-7, structure=None, warm=None):
+    """Exact-rational global-nonnegativity certificate for the
+    polynomial S (dict of Fraction coefficients): float-search a Gram
+    matrix (or take the caller's candidate via structure/warm — any
+    solver may propose, none is trusted), rationalize its free
+    entries, restore the polynomial identity EXACTLY through the
+    absorber entries, then prove each block PSD by rational LDL^T.
+    One-sided: True is a theorem, False means no certificate was
+    found."""
+    from fractions import Fraction
+    blocks, entries, groups = structure if structure is not None \
+        else _sos_structure(S)
+    for m, c in S.items():
+        if m not in groups and c != 0:
+            return False
+    if warm is not None:
+        vals = warm
+        lam = min(np.linalg.eigvalsh(M)[0]
+                  for M in _gram_matrices(blocks, entries, vals))
+    else:
+        lam, vals = _sos_search({m: float(c) for m, c in S.items()},
+                                blocks, entries, groups)
+    # the exact LDL^T is the arbiter (zero pivots are legal PSD);
+    # the float lambda only gates hopeless cases — rationalization of
+    # free entries can perturb a boundary Gram, and then LDL refuses,
+    # which is the safe direction
+    if vals is None or lam < -abs(margin):
+        return False
+    # boundary Grams (lam ~ 0) are legal but fragile under rounding:
+    # retry at coarser denominators, which recover the simple rational
+    # structure such optima usually have
+    for den in (10 ** 9, 10 ** 6, 10 ** 3, 10, 1):
+        exact = [Fraction(0)] * len(entries)
+        for m, idx in groups.items():
+            for i in idx[:-1]:
+                exact[i] = Fraction(vals[i]).limit_denominator(den)
+            last = entries[idx[-1]]
+            acc = sum(exact[i] * entries[i][4] for i in idx[:-1])
+            exact[idx[-1]] = (S.get(m, Fraction(0)) - acc) / last[4]
+        ok = True
+        for bi, b in enumerate(blocks):
+            M = [[Fraction(0)] * len(b) for _ in b]
+            for (bj, i, j, _, _), v in zip(entries, exact):
+                if bj == bi:
+                    M[i][j] = M[j][i] = v
+            if not _rational_ldl_psd(M):
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
+def _lorenz_absorbing_certificate():
+    """K - delta W - grad W . f is globally SOS for the classical
+    W = x^2 + y^2 + (z - sigma - rho)^2: every trajectory enters and
+    stays in {W <= K/delta}, so time averages of polynomials exist
+    bounded and the auxiliary-function theorem applies to ALL
+    trajectories."""
+    from fractions import Fraction
+    fields, (sigma, rho, beta) = _lorenz_fields(num=Fraction)
+    s = sigma + rho
+    W = {(2, 0, 0): Fraction(1), (0, 2, 0): Fraction(1),
+         (0, 0, 2): Fraction(1), (0, 0, 1): -2 * s, (0, 0, 0): s * s}
+    delta = Fraction(3, 2)
+    S = _paxpy({}, W, -delta)
+    S = _paxpy(S, _grad_dot_f(W, fields), -1)
+    zc = -S.get((0, 0, 1), Fraction(0))
+    zq = S.get((0, 0, 2), Fraction(0))
+    K = zc * zc / (4 * zq) - S.get((0, 0, 0), Fraction(0)) + 1
+    S = _paxpy(S, {(0, 0, 0): Fraction(1)}, K)
+    return _sos_exact_check(S), K / delta
+
+
+_LORENZ_V4_BASIS = (
+    {(0, 0, 1): 1}, {(2, 0, 0): 1}, {(1, 1, 0): 1},
+    {(0, 2, 0): 1}, {(0, 0, 2): 1},
+    {(2, 0, 1): 1}, {(1, 1, 1): 1}, {(0, 2, 1): 1},
+    {(0, 0, 3): 1},
+    {(4, 0, 0): 1},
+    {(2, 2, 0): 1, (2, 0, 2): 1},                # x^2 (y^2 + z^2)
+    {(0, 4, 0): 1, (0, 2, 2): 2, (0, 0, 4): 1},  # (y^2 + z^2)^2
+)
+
+
+def _lorenz_S(theta, U, num=float):
+    """S = U - z - grad V . f with V = sum theta_i B_i; the quartic
+    basis elements depend on (y, z) only through y^2 + z^2, which
+    cancels the degree-5 part of grad V . f exactly."""
+    fields, _ = _lorenz_fields(num=num)
+    V = {}
+    for t, B in zip(theta, _LORENZ_V4_BASIS):
+        V = _paxpy(V, B, t)
+    S = {(0, 0, 0): U, (0, 0, 1): -1}
+    return _paxpy(S, _grad_dot_f(V, fields), -1)
+
+
+def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
+    """Certified bracket on the supremum over trajectories of the
+    long-time average of z for the classical Lorenz system
+    (sigma, rho, beta) = (10, 28, 8/3). Upper bound: auxiliary
+    polynomial V of the given degree with U - z - grad V . f proven
+    globally SOS in exact rational arithmetic. Lower bound: the fixed
+    points C+- are exact trajectories with <z> = rho - 1 = 27
+    (algebraic identity). Boundedness of all trajectories by the
+    absorbing-ball SOS certificate. Tier RIGOROUS throughout — the
+    float search chose V, the rational proof never trusted it."""
+    from fractions import Fraction
+    ok, ball = _lorenz_absorbing_certificate()
+    if not ok:
+        raise RuntimeError("absorbing-ball certificate failed")
+    rho = Fraction(28)
+    if degree == 2:
+        # hand solution: V = (y^2 + z^2)/(2 rho beta) - z/beta, U = rho
+        b = Fraction(3, 448)
+        theta = [Fraction(-3, 8), 0, 0, b, b, 0, 0, 0, 0, 0, 0, 0]
+        U = rho
+        if not _sos_exact_check(_lorenz_S(theta, U, num=Fraction)):
+            raise RuntimeError("degree-2 certificate failed")
+    elif degree == 4:
+        # The search is a genuine SDP; naive coordinate/subgradient
+        # ascent stalls on the thin curved feasible sliver (measured:
+        # Powell -7e-8, alternating projections -3e-3). cvxpy+SCS is a
+        # SEARCH-ONLY dependency — the proof below never trusts it —
+        # and the problem must be nondimensionalized (x -> 25 u, exact)
+        # or SCS returns garbage (measured: U*=33 raw vs 27.000004
+        # scaled).
+        try:
+            import cvxpy as cp
+        except ImportError as exc:
+            raise RuntimeError(
+                "degree-4 search uses cvxpy (search-only; the exact "
+                "rational proof never trusts it): pip install "
+                "cvxpy-base scs") from exc
+        L = 25
+        U = Fraction(27001, 1000)
+        nb = len(_LORENZ_V4_BASIS)
+
+        def scaled(p):
+            return {m: c * L ** sum(m) for m, c in p.items()}
+
+        base0 = _lorenz_S([0.0] * nb, 0.0, num=float)
+        Sj = []
+        for i in range(nb):
+            e = [0.0] * nb
+            e[i] = 1.0
+            d = _lorenz_S(e, 0.0, num=float)
+            Sj.append(scaled({m: c - base0.get(m, 0.0)
+                              for m, c in d.items()
+                              if c != base0.get(m, 0.0)}))
+        support = set().union(*[set(d) for d in Sj]) \
+            | {(0, 0, 0), (0, 0, 1)}
+        blocks, entries, groups = _sos_structure(
+            dict.fromkeys(support, 1.0))
+        th = cp.Variable(nb)
+        t = cp.Variable()
+        Q = [cp.Variable((len(b), len(b)), symmetric=True)
+             for b in blocks]
+        cons = [q >> t * np.eye(q.shape[0]) for q in Q]
+        for m in sorted(groups):
+            lhs = 0
+            for i in groups[m]:
+                bi, r, cc, _, w = entries[i]
+                lhs = lhs + w * Q[bi][r, cc]
+            rhs = (float(U) if m == (0, 0, 0) else 0.0) \
+                + (-float(L) if m == (0, 0, 1) else 0.0) \
+                + sum(Sj[j].get(m, 0.0) * th[j] for j in range(nb))
+            cons.append(lhs == rhs)
+        prob = cp.Problem(cp.Maximize(t), cons)
+        import warnings
+        with warnings.catch_warnings():
+            # SCS self-reports "inaccurate" near its tolerance floor;
+            # irrelevant here — the exact rational check is the arbiter
+            warnings.simplefilter("ignore")
+            prob.solve(solver=cp.SCS, eps=1e-10, max_iters=400000)
+        if t.value is None or t.value < 1e-6:
+            raise RuntimeError(f"degree-4 SDP search failed "
+                               f"(status {prob.status})")
+        # theta enters the scaled polynomial amplified by L^4 ~ 4e5:
+        # rationalize far below the Gram margin or the absorber repair
+        # eats it (measured: 1e-7 rounding -> 0.04 coefficient shifts)
+        theta = [Fraction(v).limit_denominator(10 ** 13)
+                 for v in th.value]
+        S_ex = {m: c * Fraction(L) ** sum(m)
+                for m, c in _lorenz_S(theta, U, num=Fraction).items()}
+        warm = np.zeros(len(entries))
+        for k, (bi, i, j, _, _w) in enumerate(entries):
+            warm[k] = Q[bi].value[i, j]
+        if not _sos_exact_check(S_ex, structure=(blocks, entries, groups),
+                                warm=warm):
+            raise RuntimeError("degree-4 exact certification failed at "
+                               f"U={float(U):.6f}")
+    else:
+        raise NotImplementedError("degrees 2 and 4")
+    lo, up = Fraction(27), U
+    return Certified(float((lo + up) / 2), float((up - lo) / 2),
+                     Tier.RIGOROUS,
+                     (f"lorenz-<z> sos degree={degree}: upper {float(up):.6f} "
+                      "by exact rational Gram (LDL^T over Q), lower 27 by "
+                      "fixed-point witness (algebraic); all trajectories "
+                      f"bounded by absorbing-ball sos certificate (W <= "
+                      f"{float(ball):.0f}); long-time averages",))

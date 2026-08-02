@@ -7,7 +7,7 @@ the certificate.*
 Working research code. One module of certified rewrites
 ([`sufficit.py`](sufficit.py)), one test suite in which every claimed bound is
 checked against brute force, exact solutions, or independent constructions
-([`test_sufficit.py`](test_sufficit.py) — 92 checks, several of which exist to
+([`test_sufficit.py`](test_sufficit.py) — 96 checks, several of which exist to
 commemorate a mistake). **The certificate is the product**: every answer ships
 as `value ± err` where the `±` is a theorem (or carries a printed failure
 probability), never a hope.
@@ -31,7 +31,7 @@ print(c.value, c.err)                  # -1.137275944 +/- 1.5e-13 hartree
 h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4566, -0.4221]
 ```
 
-Requirements: `numpy`, `scipy`, `mpmath` (tests only). Run the suite with
+Requirements: `numpy`, `scipy`, `mpmath` (tests only), `cvxpy-base`+`scs` (SOS search only — certificates never trust the solver). Run the suite with
 `pytest test_sufficit.py` (~1 minute).
 
 ## Measured highlights
@@ -46,6 +46,7 @@ Requirements: `numpy`, `scipy`, `mpmath` (tests only). Run the suite with
 | Hydrogen chains, up to 2²⁰ states (H₁₀, ℓ=7) | 55 mHa/atom bracket | rigorous both sides — no exact answer exists, none needed |
 | TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s (Lieb–Robinson cone) | a-posteriori boundary-commutator certificate; refuses when the light cone outruns the budget |
 | Guiding-center drift (plasma hierarchy) | first ASYMPTOTIC-tier certificate: exponent proven, constant measured on a cheap large-ε ladder, extrapolated down | refuses when the measured constant contradicts the claimed order |
+| Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001] — sharp to the fixed-point witness | Gram identity + PSD proven in exact rational arithmetic; SDP solver used for search only |
 | Smeared spectral functions (HLT mold) | resolution is part of the query | error bounded by the data itself; degrades honestly to statistics |
 | Mori–Zwanzig closures | certified linear tier + conformal empirical tier | gap-dependent bound, or distribution-free `fail_p = 1/(n+1)` |
 

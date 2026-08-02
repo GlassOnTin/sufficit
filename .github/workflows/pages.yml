@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: pip install numpy scipy mpmath pytest
+      - run: pip install numpy scipy mpmath pytest cvxpy-base scs
       - run: pytest test_sufficit.py -q
       - run: python docs/make_cases.py
       - uses: actions/upload-pages-artifact@v5

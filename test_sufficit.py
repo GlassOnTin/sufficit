@@ -1660,3 +1660,62 @@ def test_asymptotic_tier_composes_downward():
     c = sf.gc_drift_asymptotic(0.02, order=1)
     rig = sf.Certified(1.0, 0.0, sf.Tier.RIGOROUS, ("const",))
     assert (c + rig).tier == sf.Tier.ASYMPTOTIC
+
+
+def test_sos_exact_checker():
+    """The exact-rational SOS checker: accepts a hand-built SOS with a
+    known Gram, refuses an indefinite polynomial. No floats anywhere
+    in the verdict."""
+    from fractions import Fraction as F
+    # (x - 2y)^2 + (xy - 1)^2 = x^2 - 6xy + 4y^2 + x^2y^2 + 1  >= 0
+    S = {(2, 0, 0): F(1), (1, 1, 0): F(-6), (0, 2, 0): F(4),
+         (2, 2, 0): F(1), (0, 0, 0): F(1)}
+    assert sf._sos_exact_check(S) is True
+    bad = {(2, 0, 0): F(1), (1, 1, 0): F(-3), (0, 2, 0): F(1)}
+    assert sf._sos_exact_check(bad) is False
+
+
+def test_lorenz_z_quadratic_exact():
+    """Degree-2 rung, fully by hand: the SOS proof of <z> <= rho on
+    every trajectory, certified in exact rational arithmetic, and the
+    fixed-point witness <z> = rho - 1 closing the bracket to width 1/2."""
+    c = sf.lorenz_mean_z_bracket(degree=2)
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    assert abs((c.value - c.err) - 27.0) < 1e-12      # witness side exact
+    assert (c.value + c.err) <= 28.0 + 1e-12          # <z> <= rho
+    assert "sos" in c.provenance[0] and "exact" in c.provenance[0]
+    assert "absorbing" in c.provenance[0]
+
+
+def test_lorenz_z_quartic_tightens():
+    """Degree-4 auxiliary polynomial, found by unrigorous float search,
+    certified by the exact checker: the bound must strictly beat the
+    quadratic rung."""
+    c2 = sf.lorenz_mean_z_bracket(degree=2)
+    c4 = sf.lorenz_mean_z_bracket(degree=4)
+    assert c4.err < c2.err
+    assert c4.tier == sf.Tier.RIGOROUS
+
+
+def test_lorenz_bound_dominates_attractor():
+    """Sanity from the other side: a long simulated trajectory's mean z
+    (~23.5, chaotic attractor) must sit below the certified sup-over-
+    trajectories bracket."""
+    def f(x, y, z):
+        return 10.0 * (y - x), x * (28.0 - z) - y, x * y - 8.0 / 3.0 * z
+
+    x, y, z = 1.0, 1.0, 1.0
+    dt, n, acc = 0.004, 250_000, 0.0
+    for i in range(n):
+        ax, ay, az = f(x, y, z)
+        bx, by, bz = f(x + dt / 2 * ax, y + dt / 2 * ay, z + dt / 2 * az)
+        cx, cy, cz = f(x + dt / 2 * bx, y + dt / 2 * by, z + dt / 2 * bz)
+        ex, ey, ez = f(x + dt * cx, y + dt * cy, z + dt * cz)
+        x += dt / 6 * (ax + 2 * bx + 2 * cx + ex)
+        y += dt / 6 * (ay + 2 * by + 2 * cy + ey)
+        z += dt / 6 * (az + 2 * bz + 2 * cz + ez)
+        acc += z
+    mean_z = acc / n
+    c4 = sf.lorenz_mean_z_bracket(degree=4)
+    assert 22.0 < mean_z < 25.0                       # on the attractor
+    assert mean_z <= c4.value + c4.err
