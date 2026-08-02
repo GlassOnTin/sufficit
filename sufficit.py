@@ -3579,3 +3579,131 @@ def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
                       "fixed-point witness (algebraic); all trajectories "
                       f"bounded by absorbing-ball sos certificate (W <= "
                       f"{float(ball):.0f}); long-time averages",))
+
+
+# ------------------------------------------------------------- GW
+# surrogates (the last TARGETS domain). The purest resolution-limited
+# query in physics: a waveform need only match to the detector's
+# noise-weighted mismatch — epsilon set by instrument and SNR, not by
+# formalism. The rewrite is the standard surrogate pipeline (greedy
+# reduced basis over a waveform manifold + smooth coefficient fits),
+# and the certificate is the field's own practice made honest:
+# accuracy studies against held-out truth, upgraded to a
+# distribution-free conformal guarantee — the worst mismatch over
+# n_cal held-out parameter draws bounds a fresh draw from the SAME
+# distribution with P(miss) <= 1/(n_cal+1), by exchangeability alone.
+# Tier EMPIRICAL with the fail probability printed; refusal outside
+# the training hull and below the calibrated mismatch. The truth
+# family here is a declared Newtonian-chirp-shaped model (the demo's
+# stand-in for numerical relativity); nothing in the pipeline peeks
+# at closed forms — only waveform evaluations, as with real NR data.
+
+
+_GW_T = np.linspace(0.0, 1.0, 4096, endpoint=False)
+
+
+def _gw_chirp(lam: float) -> np.ndarray:
+    """Model waveform family, complex analytic signal: a Newtonian
+    chirp phase plus a PN-flavored correction with a different lam
+    power, amplitude rising to merger with its own lam dependence.
+    lam plays chirp mass: ~40 cycles at lam=1 down to ~26 at lam=2,
+    so raw waveforms decorrelate strongly across the range — the
+    surrogate must discover the smooth amplitude/phase structure from
+    data, exactly as with numerical-relativity input."""
+    tau = 1.02 - _GW_T
+    phase = -250.0 * (tau / lam) ** 0.625 - 40.0 * tau ** 0.375 / lam ** 1.125
+    amp = tau ** -0.25 * (1.0 + 0.15 * np.sqrt(tau) / lam)
+    return amp * np.exp(1j * phase)
+
+
+def _gw_mismatch(a: np.ndarray, b: np.ndarray) -> float:
+    """1 - |<a,b>| / (||a|| ||b||): the |.| maximizes the overlap over
+    a global phase (no time marginalization — declared)."""
+    return float(1.0 - abs(np.vdot(a, b))
+                 / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def gw_surrogate_build(lam_range=(1.0, 2.0), n_train: int = 48,
+                       eps_build: float = 1e-8, n_cal: int = 49,
+                       fit_degree: int = 14, seed: int = 0) -> dict:
+    """Offline stage, the gwsurrogate architecture in miniature. Raw
+    waveforms decorrelate wildly in lam (hundreds of radians of
+    dephasing), so no basis fits them directly — but amplitude and
+    unwrapped phase are SMOOTH in lam. Fix the free global phase by
+    rotating each training waveform to h(0) real-positive (mismatch
+    maximizes over that phase anyway), unwrap the phase along t, then
+    SVD each of the amplitude and phase matrices, keeping modes while
+    the relative singular-value tail exceeds eps_build; Chebyshev-fit
+    the mode coefficients over lam. Conformal calibration on n_cal
+    fresh uniform draws records the worst mismatch m_cal. All
+    expensive truth evaluations happen offline, never online."""
+    lo, hi = lam_range
+    lams = np.linspace(lo, hi, n_train)
+    H = np.stack([_gw_chirp(l) for l in lams])
+    H *= np.exp(-1j * np.angle(H[:, 0]))[:, None]
+    A = np.abs(H)
+    Phi = np.unwrap(np.angle(H), axis=1)
+    from numpy.polynomial import chebyshev
+    x = (2 * lams - lo - hi) / (hi - lo)
+    deg = min(fit_degree, n_train - 1)
+
+    def svd_fit(M):
+        U, s, Vt = np.linalg.svd(M, full_matrices=False)
+        k = max(1, int(np.sum(s > eps_build * s[0])))
+        return [(chebyshev.chebfit(x, U[:, i] * s[i], deg), Vt[i])
+                for i in range(k)]
+
+    sur = {"range": (lo, hi), "amp": svd_fit(A), "phase": svd_fit(Phi),
+           "n_cal": n_cal}
+    sur["basis"] = [v for _, v in sur["amp"]] \
+        + [v for _, v in sur["phase"]]
+    rng = np.random.default_rng(seed)
+    m_cal = 0.0
+    for lam in rng.uniform(lo, hi, n_cal):
+        m = _gw_mismatch(_gw_surrogate_raw(sur, float(lam)),
+                         _gw_chirp(float(lam)))
+        m_cal = max(m_cal, m)
+    sur["m_cal"] = m_cal
+    return sur
+
+
+def _gw_surrogate_raw(sur, lam):
+    lo, hi = sur["range"]
+    from numpy.polynomial import chebyshev
+    x = (2 * lam - lo - hi) / (hi - lo)
+    amp = sum(chebyshev.chebval(x, c) * v for c, v in sur["amp"])
+    phi = sum(chebyshev.chebval(x, c) * v for c, v in sur["phase"])
+    h = amp * np.exp(1j * phi)
+    return h / np.linalg.norm(h)
+
+
+def gw_surrogate_eval(sur, lam: float) -> Certified:
+    """Online query: the surrogate waveform at lam with the conformal
+    mismatch certificate. err is the 2-norm bound sqrt(2 m_cal) up to
+    a global phase (min over phase of ||h_sur - e^{i theta} h_true||),
+    valid for lam drawn from the calibration distribution — declared,
+    like every EMPIRICAL certificate."""
+    lo, hi = sur["range"]
+    if not lo <= lam <= hi:
+        raise ValueError(f"lam={lam:g} outside the training hull "
+                         f"[{lo:g}, {hi:g}]")
+    h = _gw_surrogate_raw(sur, lam)
+    return Certified(
+        h, math.sqrt(2.0 * sur["m_cal"]), Tier.EMPIRICAL,
+        (f"gw-surrogate n_basis={len(sur['basis'])} lam={lam:g} "
+         f"mismatch<={sur['m_cal']:.3g} conformal n_cal={sur['n_cal']} "
+         "uniform draws, no time-marginalization",),
+        fail_p=1.0 / (sur["n_cal"] + 1))
+
+
+def gw_surrogate_dispatch(sur, lam: float, tol: float) -> Certified:
+    """The crisp-epsilon dispatch: serve the query iff the calibrated
+    mismatch meets the detector's tolerance, else refuse with the
+    price of improvement."""
+    if sur["m_cal"] > tol:
+        raise ValueError(
+            f"gw-dispatch: calibrated mismatch {sur['m_cal']:.3g} > "
+            f"tol={tol:g}; rebuild with tighter eps_build / more "
+            f"training points (currently {len(sur['basis'])} basis "
+            f"vectors from eps_build offline tolerance)")
+    return gw_surrogate_eval(sur, lam)

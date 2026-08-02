@@ -1719,3 +1719,61 @@ def test_lorenz_bound_dominates_attractor():
     c4 = sf.lorenz_mean_z_bracket(degree=4)
     assert 22.0 < mean_z < 25.0                       # on the attractor
     assert mean_z <= c4.value + c4.err
+
+
+def test_gw_surrogate_certified_mismatch():
+    """The last TARGETS domain: a reduced-basis waveform surrogate with
+    a distribution-free conformal certificate. 200 fresh parameter
+    draws: the calibrated mismatch bound must hold at close to the
+    declared rate, and the certificate must say EMPIRICAL, not more."""
+    sur = sf.gw_surrogate_build(seed=7)
+    rng = np.random.default_rng(1234)
+    exceed, mms = 0, []
+    for lam in rng.uniform(1.0, 2.0, 200):
+        c = sf.gw_surrogate_eval(sur, float(lam))
+        m = sf._gw_mismatch(c.value, sf._gw_chirp(float(lam)))
+        mms.append(m)
+        if m > sur["m_cal"]:
+            exceed += 1
+        assert c.tier == sf.Tier.EMPIRICAL
+        assert c.fail_p == pytest.approx(1.0 / (sur["n_cal"] + 1))
+        assert c.err == pytest.approx(math.sqrt(2.0 * sur["m_cal"]))
+    # declared exceedance rate is 1/(n_cal+1) = 2%; allow sampling slack
+    assert exceed <= 16
+    assert np.median(mms) < sur["m_cal"]
+
+
+def test_gw_surrogate_tightens_with_build_eps():
+    """A tighter offline build must calibrate to a tighter certificate."""
+    loose = sf.gw_surrogate_build(seed=7, eps_build=1e-3)
+    tight = sf.gw_surrogate_build(seed=7, eps_build=1e-9)
+    assert tight["m_cal"] < loose["m_cal"]
+    assert len(tight["basis"]) > len(loose["basis"])
+
+
+def test_gw_surrogate_refuses():
+    """Outside the training hull, and below the calibrated mismatch:
+    refusal, with the price of improvement named."""
+    sur = sf.gw_surrogate_build(seed=7)
+    with pytest.raises(ValueError, match="hull"):
+        sf.gw_surrogate_eval(sur, 2.5)
+    with pytest.raises(ValueError, match="calibrated"):
+        sf.gw_surrogate_dispatch(sur, 1.5, tol=sur["m_cal"] / 10)
+    c = sf.gw_surrogate_dispatch(sur, 1.5, tol=max(2 * sur["m_cal"], 1e-9))
+    assert c.tier == sf.Tier.EMPIRICAL
+
+
+def test_gw_mismatch_metric_sanity():
+    """The mismatch functional itself: zero on itself, invariant under
+    a global phase, and consistent with the 2-norm error statement
+    err = sqrt(2 m) for normalized waveforms."""
+    h = sf._gw_chirp(1.3)
+    assert sf._gw_mismatch(h, h) == pytest.approx(0.0, abs=1e-12)
+    assert sf._gw_mismatch(h, np.exp(1j * 0.7) * h) == \
+        pytest.approx(0.0, abs=1e-12)
+    g = sf._gw_chirp(1.31)
+    m = sf._gw_mismatch(h, g)
+    hn, gn = h / np.linalg.norm(h), g / np.linalg.norm(g)
+    best = min(np.linalg.norm(hn - np.exp(1j * th) * gn)
+               for th in np.linspace(0, 2 * math.pi, 20000))
+    assert math.sqrt(2 * m) == pytest.approx(best, rel=1e-4)

@@ -699,6 +699,111 @@ tubes around the reduced-model trajectories of both slow variables">
 
 
 # ======================================================================
+def gw_case():
+    import time as _time
+    tight = sf.gw_surrogate_build(seed=7)
+    loose = sf.gw_surrogate_build(seed=7, eps_build=1e-3)
+    lams = np.linspace(1.0, 2.0, 120)
+    sweeps = {}
+    for name, sur in (("tight", tight), ("loose", loose)):
+        sweeps[name] = [max(sf._gw_mismatch(sf._gw_surrogate_raw(sur, float(l)),
+                                            sf._gw_chirp(float(l))), 1e-17)
+                        for l in lams]
+    rng = np.random.default_rng(99)
+    fresh = rng.uniform(1.0, 2.0, 200)
+    exceed = sum(sf._gw_mismatch(sf._gw_surrogate_raw(tight, float(l)),
+                                 sf._gw_chirp(float(l))) > tight["m_cal"]
+                 for l in fresh)
+    t0 = _time.time()
+    for l in fresh[:50]:
+        sf._gw_surrogate_raw(tight, float(l))
+    t_sur = (_time.time() - t0) / 50
+    t0 = _time.time()
+    for l in fresh[:50]:
+        sf._gw_chirp(float(l))
+    t_truth = (_time.time() - t0) / 50
+
+    ax = Axes((1.0, 2.0), (1e-17, 1.0), h=340, logy=True)
+    parts = []
+    for name, cls in (("loose", "rust"), ("tight", "blue")):
+        sur = tight if name == "tight" else loose
+        parts.append(
+            f'<path d="{ax.path(lams, sweeps[name])}" fill="none" '
+            f'class="{cls}-ink" stroke-width="1.8" opacity="0.9"/>'
+            f'<line x1="{ax.ml}" y1="{ax.Y(max(sur["m_cal"], 1e-17)):.1f}" '
+            f'x2="{640 - ax.mr}" y2="{ax.Y(max(sur["m_cal"], 1e-17)):.1f}" '
+            f'class="{cls}-ink" stroke-width="1.4" stroke-dasharray="6 4"/>')
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Surrogate
+mismatch across the parameter range for two build tolerances, each under
+its conformal calibrated bound">
+{ax.grid((1e-15, 1e-11, 1e-7, 1e-3), (1.0, 1.25, 1.5, 1.75, 2.0),
+         xfmt=lambda v: f"λ = {v:g}", yfmt=pow10)}
+{"".join(parts)}
+<text x="{ax.ml + 10}" y="{ax.Y(loose["m_cal"]) - 8:.1f}" class="board-text"
+      font-size="10.5" fill="var(--rust)">3-mode build: calibrated mismatch
+ {loose["m_cal"]:.1e} (dashed = the certificate)</text>
+<text x="{ax.ml + 10}" y="{ax.Y(max(tight["m_cal"], 1e-17)) - 8:.1f}"
+      class="board-text" font-size="10.5" fill="var(--blue)">4-mode build:
+ calibrated {tight["m_cal"]:.0e} — the manifold's true rank, found from data</text>
+</svg>'''
+
+    return page(
+        "Case: gravitational-wave surrogates with a conformal mismatch "
+        "certificate",
+        "certified case",
+        "The purest ε in physics, served by a surrogate that names "
+        "its odds",
+        "Waveforms need only match to the detector's mismatch "
+        "tolerance — an ε set by instrument and SNR. A reduced-order "
+        "surrogate answers any parameter in microseconds, and its "
+        "certificate is the field's own validation practice upgraded "
+        "to a distribution-free guarantee with the failure probability "
+        "printed.",
+        [
+            "<h2>The theory, a priori</h2>"
+            "<p>Raw waveforms decorrelate wildly across parameter space "
+            "(hundreds of radians of dephasing), but amplitude and "
+            "unwrapped phase are smooth — the gwsurrogate insight, "
+            "reproduced here from waveform evaluations alone: fix the "
+            "free global phase, unwrap, reduce each piece by SVD, fit "
+            "the mode coefficients. The certificate is conformal: the "
+            "worst mismatch over n_cal held-out draws bounds a fresh "
+            "draw from the same distribution with P(miss) ≤ 1/(n_cal+1) "
+            "— by exchangeability alone, no smoothness assumed, the "
+            "same theorem behind the Mori–Zwanzig empirical tier. "
+            "Refusal outside the training hull, and dispatch refuses "
+            "when the calibrated mismatch exceeds the detector's ε.</p>",
+            code_section(sf._gw_chirp, sf._gw_mismatch,
+                         sf.gw_surrogate_build, sf._gw_surrogate_raw,
+                         sf.gw_surrogate_eval, sf.gw_surrogate_dispatch),
+            "<h2>The certification, executed and drawn</h2>"
+            f"<figure>{svg}<figcaption>Measured mismatch across 120 "
+            "parameters (solid) for two offline builds, each under its "
+            "conformal bound (dashed). The 4-mode surrogate finds the "
+            "waveform manifold's exact amplitude/phase rank and hits "
+            "machine precision; the deliberately loose 3-mode build "
+            "shows what the certificate does with an imperfect "
+            "surrogate: reports it, honestly, at 10⁻².</figcaption>"
+            "</figure>",
+            "<h2>Verified in this run</h2><ul>"
+            f"<li>Fresh-draw exceedances of the calibrated bound: "
+            f"<strong>{exceed}/200</strong> (declared rate "
+            f"1/{tight['n_cal'] + 1} ≈ {200 // (tight['n_cal'] + 1)}/200)."
+            "</li>"
+            f"<li>Online cost: <strong>{1e6 * t_sur:.0f} µs</strong> per "
+            "waveform, independent of what truth costs. No speedup "
+            f"here — this model family is itself cheap "
+            f"({1e6 * t_truth:.0f} µs) — the architecture is the "
+            "point: with numerical-relativity truth at ~10⁵ CPU-hours "
+            "per waveform, offline-only truth evaluation IS the "
+            "product.</li>"
+            "<li>Dispatch refuses below the calibrated mismatch and "
+            "outside the training hull (both exercised in the suite)."
+            "</li></ul>",
+        ])
+
+
+# ======================================================================
 def sos_case():
     c2 = sf.lorenz_mean_z_bracket(degree=2)
     c4 = sf.lorenz_mean_z_bracket(degree=4)
@@ -1098,6 +1203,7 @@ CASES = {
     "lr-dispatch.html": lr_case,
     "plasma-hierarchy.html": plasma_case,
     "sos-transport.html": sos_case,
+    "gw-surrogate.html": gw_case,
 }
 
 if __name__ == "__main__":

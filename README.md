@@ -7,7 +7,7 @@ the certificate.*
 Working research code. One module of certified rewrites
 ([`sufficit.py`](sufficit.py)), one test suite in which every claimed bound is
 checked against brute force, exact solutions, or independent constructions
-([`test_sufficit.py`](test_sufficit.py) — 96 checks, several of which exist to
+([`test_sufficit.py`](test_sufficit.py) — 100 checks, several of which exist to
 commemorate a mistake). **The certificate is the product**: every answer ships
 as `value ± err` where the `±` is a theorem (or carries a printed failure
 probability), never a hope.
@@ -47,6 +47,7 @@ Requirements: `numpy`, `scipy`, `mpmath` (tests only), `cvxpy-base`+`scs` (SOS s
 | TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s (Lieb–Robinson cone) | a-posteriori boundary-commutator certificate; refuses when the light cone outruns the budget |
 | Guiding-center drift (plasma hierarchy) | first ASYMPTOTIC-tier certificate: exponent proven, constant measured on a cheap large-ε ladder, extrapolated down | refuses when the measured constant contradicts the claimed order |
 | Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001] — sharp to the fixed-point witness | Gram identity + PSD proven in exact rational arithmetic; SDP solver used for search only |
+| Gravitational-wave surrogates | any parameter in ~0.3 ms, mismatch calibrated to machine precision on the demo family | distribution-free conformal bound, fail_p = 1/(n_cal+1) printed; refuses outside hull or above the detector's ε |
 | Smeared spectral functions (HLT mold) | resolution is part of the query | error bounded by the data itself; degrades honestly to statistics |
 | Mori–Zwanzig closures | certified linear tier + conformal empirical tier | gap-dependent bound, or distribution-free `fail_p = 1/(n+1)` |
 
