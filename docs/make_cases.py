@@ -756,7 +756,8 @@ def sph_case():
         return float(np.sum(o["F"]) * (o["ts"][1] - o["ts"][0]))
 
     hs = [1 / 16, 1 / 24, 1 / 36]
-    cJ = sf.gci_extrapolate([J(n) for n in (16, 24, 36)], hs)
+    cJ = sf.gci_extrapolate([J(n) for n in (16, 24, 36)], hs,
+                        p_floor=0.3)
     contained = abs(J(48) - cJ.value) <= cJ.err
     peaks = {n: float(np.max(runs[n]["F"])) for n in runs}
     try:
