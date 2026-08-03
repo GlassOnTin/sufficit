@@ -4618,6 +4618,9 @@ def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
     rungs = []
     for N in Ns:
         g, c = _hlt_solve(N, omega, sigma)
+        # mirrors smeared_spectral's exported sensitivity; drifting
+        # from it costs mis-priced rungs, never truth, because the run
+        # converts the tail through the certificate's own bound
         S = math.hypot(c, float(np.linalg.norm(g)))
         V = np.asarray(cov1(N), float)
         amp = c * math.sqrt(float(V[0, 0])) \
