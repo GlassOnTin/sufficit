@@ -3014,10 +3014,23 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                             blocks[blk[p]].index(s2)
                         iq, ir = blocks[blk[q]].index(q), \
                             blocks[blk[q]].index(r)
+                        # the spin-free two-electron operator contracts
+                        # p with r at one spin and q with s at another,
+                        # independently, so the two spin indices run
+                        # CROSSED through the pair of blocks. Matched
+                        # spins alone would drop every term an
+                        # alpha-beta coherence contributes, and an
+                        # odd-atom block has that coherence: its ground
+                        # state is a spin doublet and any member of it
+                        # will do. Measured at n=6, dropping them put
+                        # this bound 1.1 mHa above the product state's
+                        # own energy at ell=3 -- loose, not wrong, and
+                        # invisible to every containment test.
                         for sp in range(2):
-                            upper -= 0.5 * g \
-                                * gA[2 * ip + sp, 2 * is2 + sp] \
-                                * gB[2 * iq + sp, 2 * ir + sp]
+                            for sq in range(2):
+                                upper -= 0.5 * g \
+                                    * gA[2 * ip + sp, 2 * is2 + sq] \
+                                    * gB[2 * iq + sq, 2 * ir + sp]
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "

@@ -1406,6 +1406,52 @@ def test_h_chain_bracket_vs_exact_when_formable():
     assert 2 * c.err < 0.3 * abs(truth)      # 143 mHa/atom with CS absorption
 
 
+def test_block_product_upper_is_the_exact_rayleigh_quotient():
+    """The h-chain's upper bound claims to be the energy of a product
+    of block ground states, with the cross terms factorized exactly.
+    Then it must equal what you get by building that product state in
+    the full Fock space and taking its Rayleigh quotient, or the word
+    exact is doing work it cannot support.
+
+    It did not, for a while. The spin-free two-electron operator
+    contracts p with r at one spin and q with s at another,
+    independently, so the cross-block exchange of two blocks carries
+    crossed-spin terms whenever a block has alpha-beta coherence. The
+    sum ran over matched spins only. Odd-atom blocks carry exactly
+    that coherence -- their ground state is a spin doublet and ARPACK
+    returns some member of it, measured 0.31 of coherence at H3 -- and
+    the factorization then sat 1.1 mHa ABOVE the product state's true
+    energy at ell=3. Loose, not wrong, and the containment tests could
+    not see it. Even-atom blocks are singlets with no coherence, which
+    is why ell=2 and ell=4 agreed to 1e-12 all along."""
+    from scipy.sparse.linalg import eigsh
+    n, d = 6, 1.8
+    T, V, eri, _ = sf._h_chain_basis(n, d)
+    enuc = sum(1.0 / (d * (j - i))
+               for i in range(n) for j in range(n) if j > i)
+    H = sf._fock_hamiltonian(np.eye(n), T + V.sum(0), eri, enuc, dense=False)
+
+    def block_vec(b):
+        idx = np.ix_(b, b)
+        h_own = T[idx] + sum(V[c][idx] for c in b)
+        e_b = sum(1.0 / (d * (j - i)) for i in b for j in b if j > i)
+        Hb = sf._fock_hamiltonian(np.eye(len(b)), h_own,
+                                  eri[np.ix_(b, b, b, b)], e_b, dense=False)
+        _, Vec = eigsh(Hb, k=1, which="SA", v0=sf._arpack_v0(Hb.shape[0]))
+        return Vec[:, 0] / np.linalg.norm(Vec[:, 0])
+
+    for ell, blocks in ((3, ([0, 1, 2], [3, 4, 5])),
+                        (4, ([0, 1, 2, 3], [4, 5]))):
+        psi = None
+        for b in blocks:
+            v = block_vec(b)
+            psi = v if psi is None else np.kron(psi, v)
+        psi = psi / np.linalg.norm(psi)
+        rayleigh = float(psi @ (H @ psi))
+        c = sf.h_chain_bracket(n, d, ell, 0)
+        assert (c.value + c.err) == pytest.approx(rayleigh, abs=1e-9)
+
+
 def test_h_chain_bracket_past_formable():
     """H10: a 2^20-dimensional molecular Fock space, bracketed at window
     cost. No dense truth exists; the checks are internal consistency and
