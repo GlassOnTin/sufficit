@@ -1138,25 +1138,54 @@ def test_dual_exhausted_at_fixed_ell():
     assert bundle >= joint - 1e-3
 
 
+def test_bracket_is_reproducible():
+    """A certificate that changes between calls is not a certificate.
+    eigsh, left to itself, draws its ARPACK start vector from numpy's
+    global random stream, so a bracket's value depended on how many
+    eigsh calls had run before it in the same process: measured, the
+    ell=7 Heisenberg window at N=10 came back 0.382, 0.332 and 0.379
+    on three consecutive calls, while the gapped ell=6 and ell=8 did
+    not move. Odd widths have a ground DOUBLET, and the block upper
+    bound reads edge spins, which the two members carry opposite. The
+    interleaving is the point of this test -- each width is asked for
+    twice with other ARPACK work in between."""
+    ells = (6, 7, 8)
+    first = [sf.heisenberg_chain_bracket(10, e, 0) for e in ells]
+    again = [sf.heisenberg_chain_bracket(10, e, 0) for e in ells]
+    assert [c.value for c in first] == [c.value for c in again]
+    assert [c.err for c in first] == [c.err for c in again]
+    # the h-chain bracket reaches ARPACK by its own route; same rule
+    a = sf.h_chain_bracket(6, 1.8, 3, 0)
+    b = sf.h_chain_bracket(6, 1.8, 3, 0)
+    assert (a.value, a.err) == (b.value, b.err)
+
+
 def test_correction_ascent_converges_by_ten_calls():
-    """Why the default is ten oracle calls and not eighty. Measured at
-    two chain lengths and three window widths, ten calls buy at least
-    93% of the bracket tightening that eighty buy -- and at some rungs
-    eighty is the WORSE bracket, which is not a contradiction: the
-    ascent optimizes the dual of the uniform-weight window, while the
-    bracket applies the resulting C to the weighted sliding windows,
-    so a better dual value is not obliged to give a tighter bracket.
-    Eighty calls cost 20-36x more than ten, because the bundle grows
-    toward its cut cap and the master QP grows with it."""
-    worst = 1.0
+    """Why the default is ten oracle calls and not eighty. Measured on
+    two numpy stacks, at three chain lengths across six widths, ten
+    calls buy 98-107% of the bracket tightening that eighty buy, and
+    the bracket they return sits within 1.1% of the eighty-call
+    bracket in either direction. Above 100% means eighty is the WORSE
+    bracket, which is not a contradiction: the ascent optimizes the
+    dual of the uniform-weight window, while the bracket applies the
+    resulting C to the weighted sliding windows, so a better dual
+    value is not obliged to give a tighter bracket. Eighty calls cost
+    20-36x more than ten, because the bundle grows toward its cut cap
+    and the master QP grows with it. An earlier version of this test
+    read 94.5% here and failed on another machine at 51.7%; both were
+    the wandering ARPACK start vector, not the ascent -- see
+    test_bracket_is_reproducible."""
+    worst_gain, worst_ratio = 1.0, 0.0
     for N in (10, 60):
         for ell in (4, 7, 8):
             off = sf.heisenberg_chain_bracket(N, ell, 0).err
             ten = sf.heisenberg_chain_bracket(N, ell, 10).err
             eighty = sf.heisenberg_chain_bracket(N, ell, 80).err
             assert off > eighty              # the ascent buys something
-            worst = min(worst, (off - ten) / (off - eighty))
-    assert worst >= 0.93                     # measured 0.945, N=10 ell=7
+            worst_gain = min(worst_gain, (off - ten) / (off - eighty))
+            worst_ratio = max(worst_ratio, ten / eighty)
+    assert worst_gain >= 0.97      # measured 0.984, N=60 ell=8
+    assert worst_ratio <= 1.03     # measured 1.011, N=60 ell=8
 
 
 def test_chain_bracket_tightens_with_ell():

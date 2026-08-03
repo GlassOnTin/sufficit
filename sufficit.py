@@ -1552,6 +1552,37 @@ def use_gpu(on: bool = True):
     _GPU["on"] = bool(on)
 
 
+def _arpack_v0(n):
+    """A fixed start vector for ARPACK, because the ground state it is
+    asked for is not always unique. A Heisenberg window on an odd
+    number of sites has a spin-1/2 ground DOUBLET: measured, the gap
+    above the ground energy is 4e-16 at ell=5 and 7e-16 at ell=7,
+    against 1e-1 at ell=6 and 6e-2 at ell=8. Every member of that
+    doublet has the same energy -- ARPACK converges to within 1e-15 of
+    the true value at every width -- but the block upper bound needs
+    more than the energy. It reads the edge spin expectations to price
+    the bond between neighbouring blocks, and the two members of a
+    doublet carry opposite edge magnetization, so which one comes back
+    moves the bracket.
+
+    Left to itself, eigsh draws its start from numpy's global random
+    stream, so which member came back depended on how many other eigsh
+    calls had run earlier in the same process: measured, the ell=7
+    window at N=10 returned 0.382, 0.332 and 0.379 on three
+    consecutive calls, while the gapped ell=6 and ell=8 did not move.
+    That is a variational trial vector, so an unlucky member loosens a
+    bracket and cannot invalidate one -- but an unrepeatable
+    certificate is the worse failure here. Seeded PCG64: generic
+    overlap, same answer every run, and the same stream on every numpy
+    since 1.17. Which member a given LAPACK picks from the degenerate
+    subspace is still its own business, so ell=5 and ell=7 can differ
+    between scipy versions where the gapped widths agree exactly.
+    Choosing the member that minimizes the upper bound, rather than
+    accepting the one handed over, is an available tightening that
+    nobody has cashed in."""
+    return np.random.default_rng(0).standard_normal(n)
+
+
 def eigen_bracket(H: np.ndarray, tol: float = None,
                   fp32: bool = False) -> Certified:
     """Certified bracket on lambda_min(H), H Hermitian: value +- err
@@ -1570,7 +1601,7 @@ def eigen_bracket(H: np.ndarray, tol: float = None,
     else:
         from scipy.sparse.linalg import eigsh
         try:
-            _, V = eigsh(H, k=1, which="SA")
+            _, V = eigsh(H, k=1, which="SA", v0=_arpack_v0(n))
             v = V[:, 0]
         except Exception:                   # heuristic source; bracket
             v = np.ones(n)                  # stays valid, just looser
@@ -1707,16 +1738,19 @@ def _chain_correction(ell, iters):
     cut weights, solved by exponentiated gradient. iters = oracle calls
     (eigendecompositions); certification happens downstream, so this is
     pure quality. Ten is the default because ten is where the quality
-    stops arriving. Measured at N = 10, 40 and 60 across ell = 4..9,
-    ten calls buy 94-101% of the bracket tightening that eighty buy,
-    and the rungs above 100% are ones where eighty is the WORSE
-    bracket. That is not a contradiction: the ascent optimizes the
-    dual of the uniform-weight window, while the bracket applies the
-    resulting C to the weighted sliding windows, so a better dual
-    value on the reference window is not obliged to give a tighter
-    bracket. At ell = 3 the ascent moves nothing at all, at any N.
-    Eighty calls cost 20-36x more than ten rather than 8x, because the
-    bundle grows toward its cut cap and the master QP grows with it."""
+    stops arriving. Measured on two numpy stacks at N = 10, 40 and 60
+    across ell = 4..9, ten calls buy 98-107% of the bracket tightening
+    that eighty buy, and the bracket they return sits within 1.1% of
+    the eighty-call bracket in either direction. Above 100% means
+    eighty is the WORSE bracket, which is not a contradiction: the
+    ascent optimizes the dual of the uniform-weight window, while the
+    bracket applies the resulting C to the weighted sliding windows,
+    so a better dual value on the reference window is not obliged to
+    give a tighter bracket. At ell = 3 the ascent moves nothing at
+    all, at any N. Eighty calls cost 20-36x more than ten rather than
+    8x, because the bundle grows toward its cut cap and the master QP
+    grows with it. These numbers only became measurable once the
+    ARPACK start vector was pinned -- see _arpack_v0."""
     Hw = _heis_window((1.0 / (ell - 1),) * (ell - 1))
     d = 2 ** (ell - 1)
     I2 = np.eye(2)
@@ -1804,7 +1838,8 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
     for size in sizes:
         if size not in block:
             Hb = _heis_window((1.0,) * (size - 1))
-            _, V = eigsh(Hb, k=1, which="SA")
+            _, V = eigsh(Hb, k=1, which="SA",
+                         v0=_arpack_v0(Hb.shape[0]))
             v = V[:, 0] / np.linalg.norm(V[:, 0])
             e = float(v @ (Hb @ v))
             pad = 8 * (2 ** size + 2) * np.finfo(float).eps \
@@ -2437,7 +2472,7 @@ def _ground_vec(M):
                                  if not isinstance(M, np.ndarray) else M)
         return lam[0], Vv[:, 0]
     from scipy.sparse.linalg import eigsh
-    lam, Vv = eigsh(M, k=1, which="SA")
+    lam, Vv = eigsh(M, k=1, which="SA", v0=_arpack_v0(M.shape[0]))
     return float(lam[0]), Vv[:, 0]
 
 
@@ -2908,7 +2943,8 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
         enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj > ii)
         Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b,
                                dense=False)
-        _, Vec = eigsh(Hb, k=1, which="SA")
+        _, Vec = eigsh(Hb, k=1, which="SA",
+                       v0=_arpack_v0(Hb.shape[0]))
         v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
         e = float(v @ (Hb @ v))
         upper += e + 8 * (Hb.shape[0] + 2) * np.finfo(float).eps \
@@ -3024,7 +3060,7 @@ def reduced_basis_surrogate(H0, H1, thetas):
             _, V = np.linalg.eigh(H)
             vs.append(V[:, 0])
         else:
-            _, V = eigsh(H, k=1, which="SA")
+            _, V = eigsh(H, k=1, which="SA", v0=_arpack_v0(len(H)))
             vs.append(V[:, 0])
     B, _ = np.linalg.qr(np.column_stack(vs))
     n = len(H0)
