@@ -1946,9 +1946,9 @@ def test_planner_loose_tol_picks_cheap():
     assert "tried 1 rung;" in c.provenance[-1]
     assert c.err <= 0.2 * 39
     # measured cost lands as structure, not prose
-    name, knob, predicted, secs, rulers, verdict = c.receipt[-1]
+    name, knob, predicted, secs, verdict = c.receipt[-1]
     assert (name, knob, predicted) == ("window", 2, 4.0)
-    assert secs >= 0.0 and rulers >= 0.0 and verdict == c.err
+    assert secs >= 0.0 and verdict == c.err
 
 
 def test_planner_escalation_monotone():
@@ -2071,27 +2071,20 @@ def test_trace_deterministic_receipt_measured():
     assert all(isinstance(r[3], float) and r[3] >= 0 for r in a.receipt)
 
 
-def test_ruler_is_a_time():
-    """The ruler is one 256-dim symmetric eigendecomposition, median
-    of three: positive, finite, and in the band real machines occupy
-    (a few milliseconds, not a microsecond and not a minute)."""
-    r = sf.ruler()
-    assert math.isfinite(r) and 1e-5 < r < 10.0
-
-
-def test_receipt_rows_in_ruler_units():
-    """Seconds do not travel between machines, so every receipt row
-    also states its measured cost in ruler units. All rows of one
-    receipt share the one ruler measured for that plan: dividing
-    seconds by rulers recovers the same number on every row."""
+def test_receipt_rows_are_seconds():
+    """Attack kept as a test: measured cost was briefly also stated in
+    'ruler units', seconds divided by a fixed microbenchmark, on the
+    theory that the ratio travels between machines. Measured, it does
+    not -- a 256-dim benchmark and a 1024-dim rung respond differently
+    to contention and to cache state, so the ratio moved more than the
+    seconds did. Rows carry seconds, and nothing claims they are
+    portable."""
     with pytest.raises(sf.Refusal) as ei:
         sf.heisenberg_energy_dispatch(40, tol=1e-12, correction_iters=0,
                                       ell_max=6)
     rows = ei.value.tried
-    assert len(rows) >= 2 and all(len(r) == 6 for r in rows)
-    implied = [r[3] / r[4] for r in rows]
-    assert all(math.isfinite(i) and 1e-5 < i < 10.0 for i in implied)
-    assert max(implied) - min(implied) <= 1e-9 * max(implied)
+    assert len(rows) >= 2 and all(len(r) == 5 for r in rows)
+    assert all(isinstance(r[3], float) and r[3] >= 0.0 for r in rows)
 
 
 def test_sensitivity_composes_add_sub():

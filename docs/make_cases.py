@@ -42,12 +42,25 @@ STAMP = _stamp()
 
 
 def _ruler():
-    """Print the library's own ruler beside the commit stamp, so the
-    seconds in the receipts are comparable across builders."""
-    return f"{sf.ruler() * 1e3:.1f} ms"
+    """A description of this builder, printed beside the commit stamp:
+    one 256x256 symmetric eigendecomposition, warmed up first and then
+    the fastest of five. Warm-and-fastest because cold medians on this
+    benchmark swing four-fold between processes on an idle machine --
+    measured. It describes the machine; it is not a unit the receipts
+    above can be divided by."""
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((256, 256))
+    A = A + A.T
+    np.linalg.eigh(A)
+    ts = []
+    for _ in range(5):
+        t0 = time.perf_counter()
+        np.linalg.eigh(A)
+        ts.append(time.perf_counter() - t0)
+    return min(ts)
 
 
-RULER = _ruler()
+RULER = f"{_ruler() * 1e3:.1f} ms"
 
 
 def check_counts():
@@ -78,8 +91,9 @@ def page(title, eyebrow, h1, dek, sections):
 {body}
 <hr>
 <p class="note">Every number and figure above comes from the run that
-built this page: {STAMP}. Ruler for any timings: one 256&#215;256
-symmetric eigendecomposition took {RULER} on this builder.</p>
+built this page: {STAMP}. This builder, for scale: one 256&#215;256
+symmetric eigendecomposition took {RULER}. Any seconds above are this
+machine's, at that moment, and are not divided by it.</p>
 </main>'''
 
 
@@ -1685,15 +1699,15 @@ def compiler_case():
     extreme = sf.heisenberg_energy_dispatch(N, tol=1e-9)
     # the receipt is structure, so the audit reads fields, not prose:
     # window@9 against the chosen dense, and window@2 cold vs warm
-    secs = {(n, k): s for n, k, _, s, *_ in extreme.receipt}
+    secs = {(n, k): s for n, k, _, s, _ in extreme.receipt}
     w9s = f"{secs.get(('window', 9), 0):.2g}s"
     ds = f"{extreme.receipt[-1][3]:.2g}s"
     w2_cold = f"{sweep[0][3].receipt[0][3]:.2g}s"
     w2_warm = f"{secs.get(('window', 2), 0):.2g}s"
     receipt_lines = "\n".join(
-        f"{n}@{k}: predicted {p:g}, measured {s:.2g}s = {ru:.1f} rulers, "
+        f"{n}@{k}: predicted {p:g}, measured {s:.2g}s, "
         + (f"err {v:.3g}" if isinstance(v, float) else str(v))
-        for n, k, p, s, ru, v in extreme.receipt)
+        for n, k, p, s, v in extreme.receipt)
     headline = [sweep[0][3], sweep[3][3], extreme]
     contained = sum(abs(c.value - truth) <= c.err for c in headline)
 
@@ -1868,17 +1882,35 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "the certificate's structured receipt — here is the "
             "tightest run's, one rung per line:</p>"
             f"<pre>{esc(receipt_lines)}</pre>"
-            "<p>Each row prices its run twice. Seconds are honest "
-            "but do not travel: another machine, or this one an hour "
-            "busier, gives different numbers for the same work. So "
-            "the planner also divides by a ruler — the footer's "
-            "256-dimensional eigendecomposition, timed inside the "
-            "same process moments before the rungs, sharing their "
-            "caches and BLAS threading — and states the cost in "
-            "rulers. A row's (predicted, rulers) pair is then a "
-            "labeled training point that survives the trip between "
-            "machines, and calibrating the cost model collapses to "
-            "learning one ratio per rewrite.</p>",
+            "<p>Those seconds are honest but local: another machine, "
+            "or this one an hour busier, gives different numbers for "
+            "the same work. The tempting fix is a ruler — divide "
+            "every measurement by a fixed microbenchmark timed on the "
+            "same machine, and the ratio should travel. This library "
+            "shipped that for a few hours and then measured it, which "
+            "is the only reason to write anything down here: it does "
+            "not work, at least not with a small benchmark against "
+            "these rungs. Under three competing processes the "
+            "256-dimensional benchmark slowed by 480&#215; while the "
+            "1024-dimensional rung it was supposed to price slowed by "
+            "35&#215;; on an idle machine, across four fresh "
+            "processes, the rung's raw seconds spanned 1.7&#215; and "
+            "the same seconds divided by the benchmark spanned "
+            "5.6&#215;. The yardstick moved more than the thing being "
+            "measured. A short dense benchmark and a long one do not "
+            "share a cost direction — they differ in how much they "
+            "depend on cache residency and on getting all their "
+            "threads scheduled at once — so dividing by it removes "
+            "one machine and introduces another.</p>"
+            "<p>So the rows carry seconds, and the receipt claims "
+            "only what it can support: on <em>this</em> machine, this "
+            "prediction went with that measurement. That is still the "
+            "pair a cost model learns from; it is just learned per "
+            "machine. Making predictions portable is a job for a cost "
+            "model written over each rewrite's own parameters — "
+            "dimensions, iteration counts, the sizes the algorithm "
+            "already knows — not for a yardstick held up beside "
+            "it.</p>",
             "<h2>The phase map</h2>"
             "<p>The staircase is one slice of a bigger object. Sweep "
             "both knobs — chain length and tolerance — and the plan "
@@ -1924,7 +1956,15 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "corrections were cached by then. Cost is "
             "state-dependent; the predictions are not; only logging "
             "both exposes it. These pairs, kept in every run, are "
-            "the calibration data for better cost models.</li>"
+            "the calibration data for better cost models — on the "
+            "machine that produced them.</li>"
+            "<li>A negative result, kept because it cost something to "
+            "learn: normalizing those seconds by a fixed "
+            "microbenchmark, so they would travel between machines, "
+            "was built, shipped, measured, and removed the same day. "
+            "The benchmark is 480&#215; contention-sensitive where "
+            "the rung is 35&#215;, so the ratio is noisier than the "
+            "raw seconds it replaced.</li>"
             f"<li>The phase map ran {len(grid)} dispatches: "
             f"<strong>{len(grid) - n_refused}</strong> certified "
             f"cells, <strong>{n_refused}</strong> structured "
