@@ -1138,6 +1138,37 @@ def test_dual_exhausted_at_fixed_ell():
     assert bundle >= joint - 1e-3
 
 
+def test_block_orientation_lowers_the_upper_bound():
+    """The product-state upper bound joins neighbouring blocks with a
+    bond <S>.<S> read off their edge spins, and at odd block widths
+    those come from an arbitrary member of a degenerate ground
+    doublet. The isotropic Hamiltonian is invariant under a global
+    spin flip, so the flipped block is an equally exact ground state
+    at the same energy with both edge components negated -- which
+    means every junction can be made to lower the bound instead of
+    raising it. Greedy left to right is optimal here: the junctions
+    form an open chain with no field, so each choice is free given the
+    one before. Measured gain per bond at N=200: 0.0726 at ell=3,
+    0.0257 at ell=5, 0.0120 at ell=7. Even widths gain exactly
+    nothing -- their singlet blocks carry no edge magnetization at
+    all, so there is nothing to orient."""
+    # value + err IS the upper bound, and corrections only move the
+    # lower one, so iters=0 keeps this about the junctions alone
+    for ell, ceiling in ((3, -0.371), (5, -0.400), (7, -0.413)):
+        c = sf.heisenberg_chain_bracket(200, ell, 0)
+        assert (c.value + c.err) / 199 <= ceiling
+    # even widths: singlet blocks, so the bound is the block energies
+    # summed and nothing else -- 50 blocks of 4 sites at N=200
+    e4 = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * 3))[0])
+    c4 = sf.heisenberg_chain_bracket(200, 4, 0)
+    assert (c4.value + c4.err) == pytest.approx(50 * e4, abs=1e-9)
+    # and the odd widths still bracket the truth where it is knowable
+    truth = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0])
+    for ell in (5, 7):
+        c = sf.heisenberg_chain_bracket(10, ell)
+        assert c.value - c.err <= truth <= c.value + c.err
+
+
 def test_bracket_is_reproducible():
     """A certificate that changes between calls is not a certificate.
     eigsh, left to itself, draws its ARPACK start vector from numpy's

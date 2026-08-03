@@ -1803,7 +1803,24 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
                              correction_iters: int = 10) -> Certified:
     """Certified two-sided bracket on the ground energy of the spin-1/2
     Heisenberg open chain of N sites, at cost 2^ell independent of N.
-    correction_iters=0 disables the SDP-dual multiplier ascent."""
+    correction_iters=0 disables the SDP-dual multiplier ascent.
+
+    The upper bound is the energy of a product of per-block ground
+    states, so every term in it is an explicit Rayleigh quotient. The
+    blocks meet at junctions, and a junction costs <S>.<S> between the
+    two edge sites facing each other. A block of odd width has a
+    degenerate ground doublet, and its two members carry opposite edge
+    magnetization, so that junction term arrives with an arbitrary
+    sign -- ARPACK's, in effect. It need not: a global spin flip is a
+    symmetry of the isotropic Hamiltonian, so the flipped block is an
+    equally exact ground state at exactly the same energy with both
+    edge components negated. Flipping whenever a junction would be
+    positive makes every junction help. Greedy left to right is the
+    best any orientation can do, because the junctions form an open
+    chain with no field, so each choice is free given the one before.
+    Measured gain, per bond, at N=200: 0.0726 at ell=3, 0.0257 at
+    ell=5, 0.0120 at ell=7 -- and exactly zero at every even width,
+    whose singlet blocks have no edge magnetization to orient."""
     if N <= ell:
         c = eigen_bracket(_heis_window((1.0,) * (N - 1)))
         return replace(c, provenance=(f"chain-bracket exact N={N}",))
@@ -1849,7 +1866,10 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
         e, left, right = block[size]
         upper += e
         if prev_edge is not None:     # cross-block bond <S>.<S>
-            upper += prev_edge[0] * left[0] + prev_edge[1] * left[1]
+            bond = prev_edge[0] * left[0] + prev_edge[1] * left[1]
+            if bond > 0:              # flip this block; both edges negate
+                bond, right = -bond, [-x for x in right]
+            upper += bond
         prev_edge = right
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
