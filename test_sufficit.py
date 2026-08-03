@@ -2715,7 +2715,15 @@ def test_gap_refuses_naming_the_binding_branch():
     msg = str(exc.value)
     assert "compressed is the binding stage" in msg
     assert "compressed=5, stretched=5" in msg     # both ladders spent
-    assert "floors at 0.239" in msg
+    # the floor is NOT pinned to a value here. ell=5 is an odd width,
+    # so its block ground state is a degenerate doublet and which
+    # member LAPACK returns is its own business -- 0.239 on one scipy,
+    # 0.238 on another. What is stack-independent is the claim the
+    # sentence makes: the stage it names carries most of the wall.
+    m = re.search(r"floors at ([\d.]+); compressed is the binding "
+                  r"stage, contributing ([\d.]+)", msg)
+    floor, share = float(m.group(1)), float(m.group(2))
+    assert share > 0.5 * floor
 
 
 def test_gap_brackets_intersect_across_tolerances():
