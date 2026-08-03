@@ -1800,6 +1800,48 @@ def _chain_correction(ell, iters):
 
 
 @functools.lru_cache(maxsize=None)
+def _window_lower(N, width, iters):
+    """Certified lower bound on the N-site chain from sliding windows
+    of the given width: weighted windows summing exactly to H, plus
+    exactly telescoping corrections (+C on a window's left overlap, -C
+    on its neighbour's right overlap).
+
+    The width need not be the rung's ell. Any width bounds the chain,
+    and a narrower one is cheaper, so ell caps the width rather than
+    fixing it -- which matters because this relaxation has a PARITY
+    structure and a wider window is not always a better one. Measured
+    at N=40 with corrections off: -19.616 at width 3 against -21.169 at
+    width 4, -19.044 at 5 against -19.710 at 6, -18.766 at 7 against
+    -19.136 at 8. Every even width is beaten by the odd width below it.
+    The reason is not numerical: an even-site open segment can close
+    into a complete singlet covering, so its ground energy per bond
+    sits lower, and a bound that sums window minima is looser the lower
+    those minima go. The multiplier ascent knows it and works harder on
+    even widths -- it buys 1.49 at width 4 against 0.56 at width 5 --
+    without ever closing the gap.
+
+    Memoized on (N, width, iters) because the planner walks the ladder
+    and each width would otherwise be recomputed at every rung above
+    it."""
+    C = _chain_correction(width, iters) if iters else None
+    m = [min(N - width, i) - max(0, i - width + 2) + 1 for i in range(N - 1)]
+    cache, lower = {}, 0.0
+    for w in range(N - width + 1):
+        key = (tuple(1.0 / m[w + j] for j in range(width - 1)),
+               w >= 1, w <= N - width - 1)
+        if key not in cache:
+            Hw = _heis_window(key[0])
+            if C is not None and key[1]:
+                Hw = Hw + np.kron(C, np.eye(2))
+            if C is not None and key[2]:
+                Hw = Hw - np.kron(np.eye(2), C)
+            c = eigen_bracket(Hw)
+            cache[key] = c.value - c.err
+        lower += cache[key]
+    return lower
+
+
+@functools.lru_cache(maxsize=None)
 def _heis_block(size):
     """Ground state of an isolated size-site Heisenberg segment, with
     the two edge spin expectations the product bound joins blocks by.
@@ -1886,25 +1928,12 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
     if N <= ell:
         c = eigen_bracket(_heis_window((1.0,) * (N - 1)))
         return replace(c, provenance=(f"chain-bracket exact N={N}",))
-    C = _chain_correction(ell, correction_iters) if correction_iters else None
-    # lower: weighted sliding windows summing exactly to H, plus exactly
-    # telescoping corrections (+C on a window's left overlap, -C on its
-    # neighbour's right overlap)
-    m = [min(N - ell, i) - max(0, i - ell + 2) + 1 for i in range(N - 1)]
-    cache = {}
-    lower = 0.0
-    for w in range(N - ell + 1):
-        key = (tuple(1.0 / m[w + j] for j in range(ell - 1)),
-               w >= 1, w <= N - ell - 1)
-        if key not in cache:
-            Hw = _heis_window(key[0])
-            if C is not None and key[1]:
-                Hw = Hw + np.kron(C, np.eye(2))
-            if C is not None and key[2]:
-                Hw = Hw - np.kron(np.eye(2), C)
-            c = eigen_bracket(Hw)
-            cache[key] = c.value - c.err
-        lower += cache[key]
+    # lower: the best relaxation the rung can afford. A width narrower
+    # than ell bounds the chain just as validly and is cheaper, so ell
+    # caps the width rather than fixing it, and the maximum of valid
+    # lower bounds is a valid lower bound.
+    lower = max(_window_lower(N, w, correction_iters)
+                for w in range(2, ell + 1))
     # upper: product of per-block Lanczos states; all terms are explicit
     # Rayleigh quotients of the product state
     def product_upper(sizes):

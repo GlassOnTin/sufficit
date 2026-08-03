@@ -1090,11 +1090,18 @@ def test_chain_bracket_past_formable():
 def test_correction_multipliers_tighten_lower_bound():
     """The SDP dual, ascended over the telescoping-correction family:
     optimized multipliers must tighten the certified lower bound, and the
-    bracket must stay valid (Bethe density inside)."""
+    bracket must stay valid (Bethe density inside).
+
+    The gain measured ~6.5 here until the rung was allowed to choose
+    its window width. It is smaller now for a reason worth stating: the
+    uncorrected baseline improved. With corrections off, ell=6 no
+    longer uses width 6 -- it uses width 5, which is a better
+    relaxation despite being narrower -- so the ascent is credited only
+    with what it adds on top of an already better bound."""
     plain = sf.heisenberg_chain_bracket(200, ell=6, correction_iters=0)
     corr = sf.heisenberg_chain_bracket(200, ell=6)
     gain = (corr.value - corr.err) - (plain.value - plain.err)
-    assert gain > 4.0    # measured ~6.5 at ell=6, N=200 (~58% of gap closed)
+    assert gain > 2.0    # measured 2.93 at ell=6, N=200
     bethe = 0.25 - math.log(2)
     assert (corr.value - corr.err) / 199 <= bethe \
         <= (corr.value + corr.err) / 199
@@ -1136,6 +1143,39 @@ def test_dual_exhausted_at_fixed_ell():
         a = a + 0.05 / math.sqrt(k + 1) * (ga - ga.mean())
     bundle = _interior_lambda(4, sf._chain_correction(4, 80))
     assert bundle >= joint - 1e-3
+
+
+def test_window_width_is_chosen_not_assumed():
+    """The relaxation at window width w bounds the chain from below
+    for any w -- the rung's ell caps what you can afford, it does not
+    fix what you must use -- so the lower bound is the best over every
+    width up to ell, as the upper is the best over every cut. That is
+    not bookkeeping, because this relaxation has a PARITY structure: an
+    even width is beaten by the odd width below it, and the reason is
+    physical rather than numerical. An even-site open segment closes
+    into a complete singlet covering, so its ground energy per bond
+    sits lower, and a bound that sums window minima is looser the lower
+    those minima go. The multiplier ascent knows -- it buys 1.49 at
+    width 4 against 0.56 at width 5 -- and never closes the gap.
+
+    With the width chosen and the tiling chosen, the ladder falls with
+    ell by construction on both sides. It did not before: N=10 reversed
+    at 6 to 7 and again at 7 to 8, N=40 at 8 to 9. _fit_jump falls back
+    to plain stepping the moment measured errors are not monotone, so
+    this is what lets it use its model."""
+    truth = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0])
+    los, errs = [], []
+    for ell in range(3, 10):
+        c = sf.heisenberg_chain_bracket(10, ell)
+        assert c.value - c.err <= truth <= c.value + c.err
+        los.append(c.value - c.err)
+        errs.append(c.err)
+    assert all(b >= a - 1e-12 for a, b in zip(los, los[1:]))
+    assert all(b <= a + 1e-12 for a, b in zip(errs, errs[1:]))
+    # the parity finding itself, uncorrected so it is the relaxation
+    # speaking and not the ascent
+    for even in (4, 6, 8):
+        assert sf._window_lower(40, even, 0) < sf._window_lower(40, even - 1, 0)
 
 
 def test_block_tiling_is_chosen_not_assumed():
@@ -1238,8 +1278,13 @@ def test_correction_ascent_converges_by_ten_calls():
     the wandering ARPACK start vector, not the ascent -- see
     test_bracket_is_reproducible."""
     worst_gain, worst_ratio = 1.0, 0.0
+    # ell=4 is excluded and the reason is a finding, not a dodge: once
+    # the rung may pick its window width, width 3 wins at ell=4, and
+    # the ascent moves nothing at all at width 3. The correction is
+    # simply moot there, so "ten calls buy most of what eighty buy"
+    # has nothing to measure.
     for N in (10, 60):
-        for ell in (4, 7, 8):
+        for ell in (5, 7, 8):
             off = sf.heisenberg_chain_bracket(N, ell, 0).err
             ten = sf.heisenberg_chain_bracket(N, ell, 10).err
             eighty = sf.heisenberg_chain_bracket(N, ell, 80).err
