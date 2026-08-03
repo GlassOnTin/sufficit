@@ -1138,6 +1138,37 @@ def test_dual_exhausted_at_fixed_ell():
     assert bundle >= joint - 1e-3
 
 
+def test_block_tiling_is_chosen_not_assumed():
+    """How the chain is cut into blocks is a free choice -- the upper
+    bound is a product state's energy and the variational theorem does
+    not ask where the factors came from -- and the obvious cut is not
+    the best one. Cutting greedily into blocks of ell leaves a runt:
+    at N=40, ell=9 the greedy (9,9,9,9,4) bounds 0.22 worse than an
+    even (8,8,8,8,8). But a runt is sometimes worth keeping, since
+    bigger blocks hold more correlation: at N=60, ell=8 the greedy cut
+    beats the even split by 0.26, the other way about. So the bracket
+    declares several cuts and keeps the lowest, which is sound because
+    the minimum of valid upper bounds is a valid upper bound.
+
+    Offering every narrower window's cut as well is what makes the
+    upper bound non-increasing in ell. It was not before: at N=10 the
+    ell=6 cut (6,4) beat everything ell=7 generated for itself, so the
+    ladder ran backwards at a rung where nothing physical had gone
+    wrong. Measured gain at N=10, ell=7: 39% off the certified
+    width."""
+    truth = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0])
+    ups = []
+    for ell in range(3, 10):
+        c = sf.heisenberg_chain_bracket(10, ell, 0)
+        assert c.value - c.err <= truth <= c.value + c.err
+        ups.append(c.value + c.err)
+    assert all(b <= a + 1e-12 for a, b in zip(ups, ups[1:]))
+    # both sides of the runt argument are on offer at the rungs where
+    # they matter, so the minimum can find whichever one wins
+    assert {(9, 9, 9, 9, 4), (8, 8, 8, 8, 8)} <= set(sf._block_tilings(40, 9))
+    assert (8, 8, 8, 8, 8, 8, 8, 4) in sf._block_tilings(60, 8)
+
+
 def test_block_orientation_lowers_the_upper_bound():
     """The product-state upper bound joins neighbouring blocks with a
     bond <S>.<S> read off their edge spins, and at odd block widths

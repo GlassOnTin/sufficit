@@ -24,7 +24,7 @@ and a search that uses the graph's shape rather than only its cost.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 155 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 156 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -45,7 +45,7 @@ import sufficit as sf
 c = sf.h2_energy_bracket(1.4)          # bond length in bohr
 print(c.value, c.err)                  # -1.137275944 +/- 1.5e-13 hartree
 
-# A Heisenberg chain with 4^2000 quantum states, bracketed in ~4 seconds,
+# A Heisenberg chain with 4^2000 quantum states, bracketed in ~1 second,
 # because window cost does not depend on chain length
 h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4572, -0.4221]
 ```

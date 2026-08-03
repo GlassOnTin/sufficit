@@ -1799,6 +1799,68 @@ def _chain_correction(ell, iters):
     return best[1]
 
 
+@functools.lru_cache(maxsize=None)
+def _heis_block(size):
+    """Ground state of an isolated size-site Heisenberg segment, with
+    the two edge spin expectations the product bound joins blocks by.
+    It depends on nothing but the size, and the tiling search asks for
+    the same handful of sizes over and over -- across candidate cuts,
+    across window widths, across chain lengths -- so it is memoized
+    once for the process rather than recomputed per bracket."""
+    from scipy.sparse.linalg import eigsh
+    Hb = _heis_window((1.0,) * (size - 1))
+    _, V = eigsh(Hb, k=1, which="SA", v0=_arpack_v0(Hb.shape[0]))
+    v = V[:, 0] / np.linalg.norm(V[:, 0])
+    e = float(v @ (Hb @ v))
+    pad = 8 * (2 ** size + 2) * np.finfo(float).eps \
+        * (float(np.linalg.norm(Hb, 1)) + abs(e))
+    return (e + pad, _site_spin_expect(v, size, 0),
+            _site_spin_expect(v, size, size - 1))
+
+
+def _block_tilings(N, ell):
+    """Ways to cut N sites into blocks for the product upper bound.
+
+    Any cut gives a valid bound -- the bound is the energy of a
+    product state, and the variational theorem does not care how the
+    factors were chosen -- so this is a free choice, and the obvious
+    one is not always the best. Cutting greedily into blocks of ell
+    leaves a remainder, and a runt block is a poor bargain: at N=40,
+    ell=9 the greedy [9,9,9,9,4] bounds 0.22 worse than an even
+    [8,8,8,8,8]. But bigger blocks capture more correlation, so the
+    runt is sometimes worth its keep: at N=60, ell=8 the greedy
+    [8]*7+[4] beats the even split by 0.26, the other way. No rule
+    wins both, which is why this returns candidates rather than an
+    answer -- the caller takes the lowest, and the minimum of valid
+    upper bounds is a valid upper bound.
+
+    The narrower windows' cuts are candidates too, and that is not
+    generosity: it is what stops a wider window from bounding worse
+    than a narrower one. At N=10 the ell=6 cut (6,4) beat everything
+    ell=7 generated for itself, so the ladder ran backwards at a rung
+    where nothing physical had gone wrong -- the wider window simply
+    was not offered the narrower one's cut, though it can afford it.
+    Offering every cut up to ell makes the upper bound non-increasing
+    in ell by construction. Cost stays inside the rung: a block of
+    size s costs 2^s and no candidate is wider than the greedy cut's
+    widest."""
+    def greedy(width):
+        g = [width] * (N // width)
+        if N % width == 1:      # a lone site is worse than one long block
+            g[-1] += 1
+        elif N % width:
+            g.append(N % width)
+        return tuple(g)
+
+    out = [greedy(w) for w in range(2, ell + 1)]
+    wide = max(out[-1])
+    for k in (-(-N // ell), -(-N // ell) + 1):
+        q, r = divmod(N, k)
+        if q >= 2 and (q + 1 if r else q) <= wide:
+            out.append(tuple([q + 1] * r + [q] * (k - r)))
+    return list(dict.fromkeys(out))
+
+
 def heisenberg_chain_bracket(N: int, ell: int = 8,
                              correction_iters: int = 10) -> Certified:
     """Certified two-sided bracket on the ground energy of the spin-1/2
@@ -1845,32 +1907,20 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
         lower += cache[key]
     # upper: product of per-block Lanczos states; all terms are explicit
     # Rayleigh quotients of the product state
-    from scipy.sparse.linalg import eigsh
-    sizes = [ell] * (N // ell)
-    if N % ell == 1:
-        sizes[-1] += 1
-    elif N % ell:
-        sizes.append(N % ell)
-    upper, prev_edge, block = 0.0, None, {}
-    for size in sizes:
-        if size not in block:
-            Hb = _heis_window((1.0,) * (size - 1))
-            _, V = eigsh(Hb, k=1, which="SA",
-                         v0=_arpack_v0(Hb.shape[0]))
-            v = V[:, 0] / np.linalg.norm(V[:, 0])
-            e = float(v @ (Hb @ v))
-            pad = 8 * (2 ** size + 2) * np.finfo(float).eps \
-                * (float(np.linalg.norm(Hb, 1)) + abs(e))
-            block[size] = (e + pad, _site_spin_expect(v, size, 0),
-                           _site_spin_expect(v, size, size - 1))
-        e, left, right = block[size]
-        upper += e
-        if prev_edge is not None:     # cross-block bond <S>.<S>
-            bond = prev_edge[0] * left[0] + prev_edge[1] * left[1]
-            if bond > 0:              # flip this block; both edges negate
-                bond, right = -bond, [-x for x in right]
-            upper += bond
-        prev_edge = right
+    def product_upper(sizes):
+        upper, prev_edge = 0.0, None
+        for size in sizes:
+            e, left, right = _heis_block(size)
+            upper += e
+            if prev_edge is not None:     # cross-block bond <S>.<S>
+                bond = prev_edge[0] * left[0] + prev_edge[1] * left[1]
+                if bond > 0:              # flip this block; edges negate
+                    bond, right = -bond, [-x for x in right]
+                upper += bond
+            prev_edge = right
+        return upper
+
+    upper = min(product_upper(s) for s in _block_tilings(N, ell))
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"chain-bracket marginal-lower ell={ell} N={N} "
