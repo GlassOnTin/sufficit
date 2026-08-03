@@ -2337,8 +2337,9 @@ its own smearing bill, with the plan's chosen splits marked">
     g_order = sorted(((a, b) for a in gell for b in gell),
                      key=lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1])
     def g_split(c):
-        line = next(p for p in c.provenance if p.startswith("gap split"))
-        m = re.match(r"gap split at ell_near=(\d+) ell_far=(\d+)", line)
+        line = next(p for p in c.provenance
+                    if p.startswith("h-chain-gap split at"))
+        m = re.search(r"compressed=(\d+) stretched=(\d+)", line)
         return int(m.group(1)), int(m.group(2))
 
     g_pick = {g_split(c) for c in (g_a, g_b)}
@@ -2551,19 +2552,46 @@ its own smearing bill, with the plan's chosen splits marked">
             "<li>Below every rung's smearing bill the plan refuses "
             "before spending a single sample: "
             f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
-            "<li>What this is not, yet: every plan on this page is "
-            "wired by hand inside its own front door. The four of "
-            "them now pin down what a general combinator has to be. "
-            "It cannot be a pipeline: the last one is a fan-in, so "
-            "the object is a graph of certificates, with "
-            "sensitivities on the edges that carry error and plain "
-            "addition where two branches meet. And it cannot assume "
-            "the split is computable in advance — two of these divide "
-            "the budget by a closed form, one by a pilot fit, and the "
-            "fan-in only by searching the product ladder, because "
-            "nothing predicts what its branches will certify. A "
-            "combinator that handles all four is the remaining "
-            "debt.</li></ul>",
+            "<li>The combinator these four plans specified now exists, "
+            "and two of them are wired through it. A plan is declared "
+            "as stages and one assemble function: each stage names the "
+            "stages it consumes, so the object is a graph, and "
+            "assemble joins the certificates with <code>through</code>, "
+            "<code>+</code> or <code>&minus;</code>, whichever the "
+            "graph calls for. The split is not assumed computable — a "
+            "stage that can solve for its knob given a budget is "
+            "solved, in the order the budget is spent, and a stage "
+            "that cannot is enumerated and walked cheapest-first. The "
+            "fan-in uses two searched stages joined by subtraction; "
+            "the equilibrium pipeline uses one enumerated mesh and one "
+            "solved profile joined by a sensitivity. Both keep the "
+            "rungs and the numbers they had when they were wired by "
+            "hand.</li>"
+            "<li>One sentence stopped being hand-written. Every front "
+            "door used to name its own binding stage in the refusal, "
+            "which means it could only ever describe the shape its "
+            "author had in mind. The combinator derives it: zero each "
+            "stage's error in turn, reassemble, and see which one the "
+            "composed error was leaning on. Along a line that drop is "
+            "the error converted through the sensitivity; at a fan-in "
+            "it is the branch's own error; the assembly does the "
+            "arithmetic either way, and it costs nothing, because "
+            "every certificate is already in hand.</li>"
+            "<li>What this is not, yet: the other two plans still "
+            "allocate inside their own front doors, because a closed "
+            "form beats a search when you have one and neither needed "
+            "the graph. And the walk is still the cost ladder. An "
+            "escalate-the-binding-stage search was prototyped and "
+            "measured: on the fan-in it reached a certifying pair in "
+            "4&ndash;7 runs against the ladder's 8&ndash;16, but "
+            "counted in the thing that costs — brackets computed, not "
+            "assemblies, the branches being shared — it was 5 against "
+            "6, then 6 against 6, then 7 against 6. A wash or worse, "
+            "and twice it returned a dearer assignment because it "
+            "never revisited what it stepped over. The memo had "
+            "already made the ladder cheap. It would pay on a graph "
+            "too wide to enumerate; there is not one here "
+            "yet.</li></ul>",
         ])
 
 

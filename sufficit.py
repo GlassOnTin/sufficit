@@ -4444,6 +4444,217 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
                   "; ".join(prices) or "no rung remains", context)
 
 
+@dataclass(frozen=True)
+class Stage:
+    """One node of a composed plan: a rewrite with its own ladder of
+    effort, named so the assembly can find its certificate. run(knob)
+    returns that node's certificate and cost(knob) its declared price,
+    in whatever unit the front door chose -- one unit per plan, since
+    the stage prices are summed.
+
+    solve is the difference between a stage that must be searched and
+    one that can be reasoned about. Given a slice of the error budget
+    and the knobs already chosen upstream, solve returns the cheapest
+    knob whose contribution fits, or None if none does. A stage that
+    can answer that does not belong in a product ladder: the h-chain
+    window cannot (what a width certifies is whatever the run
+    measures), while a Legendre tail priced by orthogonality or a
+    sample count following the 1/sqrt(m) law can, and searching those
+    would be absurd -- m runs to a million. share is the fraction of
+    the remaining budget such a stage may claim, left below 1 where
+    the estimate it solves against is a guess worth padding.
+
+    predict is the other half, and it is independent of solve: what
+    this stage will spend of the budget at a given knob. An enumerated
+    stage can still be predictable -- a mesh is chosen from a ladder,
+    not solved for, yet its solve bill is guessed first-order from a
+    pilot -- and declaring that is what leaves the right slack for the
+    stages after it. Stages are consulted in declaration order, which
+    is the order the budget is spent.
+
+    inputs names the stages this one consumes, and it is what makes
+    the plan a graph rather than a list. run is called with the knob
+    and with those inputs' certificates, so a stage along a line can
+    work from its predecessor's value. It also decides what may be
+    shared: a node is memoized on its own knob AND on its inputs'
+    knobs, so the two branches of a fan-in, which name no inputs, are
+    each computed once however many pairs get walked -- that memo is
+    what makes the product ladder cost the sum of the branches rather
+    than their product -- while a mesh that consumed a profile is
+    recomputed when the profile changes, as it must be."""
+    name: str
+    knobs: Tuple
+    run: Callable
+    cost: Callable
+    solve: Callable = None
+    predict: Callable = None
+    share: float = 1.0
+    inputs: Tuple = ()
+
+
+def _binding_stage(certs, assemble):
+    """Which node's error is doing the damage. Zero each stage's error
+    in turn, reassemble, and see how far the composed error falls: the
+    stage whose removal helps most is the one worth buying next. This
+    needs no knowledge of the graph's shape. Along a line the drop is
+    the stage's error converted through the sensitivity that carries
+    it; at a fan-in it is simply that branch's own error; and the
+    assembly does that arithmetic either way, so the same three lines
+    answer for both. It is also free -- every certificate is already
+    in hand and reassembly is arithmetic, not computation."""
+    total = assemble(certs).err
+    drops = {}
+    for name, c in certs.items():
+        drops[name] = total - assemble({**certs, name: replace(c, err=0.0)}).err
+    return max(drops, key=drops.get), drops
+
+
+def compose(slug: str, tol: float, stages, assemble: Callable,
+            context: str = "") -> Certified:
+    """A plan over a graph of certificates rather than a single ladder.
+
+    The four composed plans in this library are wired by hand, each
+    inside its own front door, and between them they say what a
+    general combinator has to be. It cannot be a pipeline, because one
+    of them is a fan-in: the object is a graph, with sensitivities on
+    the edges that carry error and plain addition where two branches
+    meet. And it cannot assume the split is computable in advance,
+    because for one of them it is not.
+
+    So the graph is declared as stages and one assemble function, and
+    composition stays where it already worked -- assemble receives the
+    stages' certificates by name and combines them with `through`, `+`
+    or `-`, whichever the graph calls for. What this adds is the
+    search. Stages that can solve for a knob given a budget are
+    solved, in declaration order, each taking its share of what is
+    left; stages that cannot are enumerated, their product priced by
+    the sum of the stage costs and walked cheapest-first by plan().
+    Sharing the node results across the walk is what keeps that sum
+    from becoming a product: escalating one branch reuses the other.
+
+    The refusal names the binding stage, and derives it rather than
+    being told: see _binding_stage. Every front door here used to
+    write that sentence by hand, and hand-written it can only describe
+    the shape its author had in mind.
+
+    A note on what this does not do. An earlier design escalated only
+    the binding stage instead of walking the cost ladder, which on the
+    fan-in reached a certifying pair in 4-7 runs where the ladder
+    takes 8-16. Measured in the thing that costs -- brackets computed,
+    not assemblies, since the branches are shared -- it was 5 against
+    6, then 6 against 6, then 7 against 6: a wash or worse, and it
+    twice returned a dearer assignment because it never revisited what
+    it stepped over. The memo had already made the ladder cheap. It
+    would pay on a graph too wide to enumerate; there is no such graph
+    here yet, so it is not built."""
+    solved = {}
+    at = {st.name: i for i, st in enumerate(stages)}
+    order = _topo(stages)
+
+    def certs_at(assign):
+        """Evaluate the graph in edge order, which is not the order the
+        stages were declared in: declaration order is the order the
+        BUDGET is spent, and the two need not agree. A mesh whose bill
+        is predicted first may still consume a profile computed
+        before it. Each node is keyed on its own knob and its inputs',
+        so independent branches are shared and dependent ones are
+        recomputed when what they consumed changes."""
+        out = {}
+        for st in order:
+            k = assign[at[st.name]]
+            key = (st.name, k, tuple(assign[at[i]] for i in st.inputs))
+            if key not in solved:
+                solved[key] = st.run(k, {i: out[i] for i in st.inputs})
+            out[st.name] = solved[key]
+        return out
+
+    searched = [st for st in stages if st.solve is None]
+
+    def fill(chosen):
+        """Spend the budget in declaration order. An enumerated stage
+        reports what its knob will cost; a solvable one is handed its
+        share of what remains and returns the cheapest knob that
+        fits. Either can run the budget out, and that is a rung that
+        never existed rather than a rung that fails."""
+        left = tol
+        for st in stages:
+            if st.name in chosen:
+                if st.predict:
+                    left -= st.predict(chosen[st.name], chosen)
+            else:
+                budget = st.share * left
+                k = st.solve(budget, chosen)
+                if k is None:
+                    return None
+                chosen = {**chosen, st.name: k}
+                left -= budget
+            if left <= 0:
+                return None
+        return chosen
+
+    rungs = []
+    for combo in _product(tuple(st.knobs for st in searched)):
+        chosen = fill(dict(zip((st.name for st in searched), combo)))
+        if chosen is not None:
+            rungs.append(tuple(chosen[st.name] for st in stages))
+
+    def price(assign):
+        return sum(st.cost(k) for st, k in zip(stages, assign))
+
+    def run(assign):
+        certs = certs_at(assign)
+        out = assemble(certs)
+        _, drops = _binding_stage(certs, assemble)
+        note = (f"{slug} split at "
+                + " ".join(f"{st.name}={k}"
+                           for st, k in zip(stages, assign))
+                + ": " + " + ".join(f"{n} {d:.3g}" for n, d in drops.items())
+                + f" against tol={tol:g}")
+        return replace(out, provenance=out.provenance + (note,))
+
+    def beyond():
+        top = tuple(st.knobs[-1] for st in stages)
+        certs = certs_at(top)
+        who, drops = _binding_stage(certs, assemble)
+        return ("every stage is at its widest declared rung ("
+                + ", ".join(f"{st.name}={k}" for st, k in zip(stages, top))
+                + f"), where the composed error floors at "
+                f"{assemble(certs).err:.3g}; {who} is the binding stage, "
+                f"contributing {drops[who]:.3g} of that")
+
+    rw = Rewrite("+".join(st.name for st in stages),
+                 tuple(sorted(rungs, key=price)), price, run, beyond)
+    return plan(slug, tol, [rw], jump=False, context=context)
+
+
+def _product(ladders):
+    """itertools.product, spelled out to keep the module's imports as
+    short as its dependency list."""
+    out = [()]
+    for ladder in ladders:
+        out = [row + (k,) for row in out for k in ladder]
+    return out
+
+
+def _topo(stages):
+    """Evaluation order for the graph: every stage after the stages it
+    names as inputs. Declaration order cannot serve, because that is
+    the order the error budget is spent and a stage may well be
+    charged before the stage it consumes is computed."""
+    done, order, todo = set(), [], list(stages)
+    while todo:
+        ready = [st for st in todo if all(i in done for i in st.inputs)]
+        if not ready:
+            raise ValueError("compose: stage inputs do not form a DAG "
+                             f"({', '.join(st.name for st in todo)} "
+                             "cannot be ordered)")
+        for st in ready:
+            order.append(st)
+            done.add(st.name)
+            todo.remove(st)
+    return tuple(order)
+
+
 def heisenberg_energy_dispatch(N: int, tol: float,
                                correction_iters: int = 10,
                                dense_max: int = 12, ell_max: int = None,
@@ -4597,35 +4808,29 @@ def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
     S = r0["Q"].sensitivity.bound
     e0 = r0["Q"].err
 
-    rungs = []
-    for n in meshes:
-        slack = tol - e0 * meshes[0] / n     # first-order mesh guess
-        if slack <= 0:
-            continue
-        k = next((k for k in range(1, k_max + 1)
-                  if S * legendre_source_profile(A, rho, k).err
-                  <= 0.8 * slack), None)
-        if k is not None:
-            rungs.append((n, k))
-
-    def run(nk):
-        n, k = nk
-        prof = legendre_source_profile(A, rho, k)
-        r = gs_equilibrium_certified(n=n, c=c,
-                                     source_coeffs=tuple(prof.value))
-        return r["Q"].through(prof)
-
-    def beyond():
-        floor = S * legendre_source_profile(A, rho, k_max).err
-        return (f"the finest declared mesh n={max(meshes)} predicts a "
-                f"solve bill near {e0 * meshes[0] / max(meshes):.2g}; "
-                f"the profile is not the wall (k_max={k_max} leaves "
-                f"{floor:.2g} of converted tail)")
-
-    rw = Rewrite("profile+mesh", tuple(rungs),
-                 lambda nk: float(nk[0]) ** 3 + nk[1], run, beyond)
-    return plan("gs-flux", tol, [rw], jump=False,
-                context=f"c={c:g} A={A:g} rho={rho:g}")
+    stages = (
+        Stage("mesh", tuple(meshes),
+              run=lambda n, up: gs_equilibrium_certified(
+                  n=n, c=c, source_coeffs=tuple(up["profile"].value))["Q"],
+              cost=lambda n: float(n) ** 3,
+              predict=lambda n, _ch: e0 * meshes[0] / n,
+              inputs=("profile",)),
+        Stage("profile", tuple(range(1, k_max + 1)),
+              run=lambda k, _up: legendre_source_profile(A, rho, k),
+              cost=float,
+              solve=lambda budget, _ch: next(
+                  (k for k in range(1, k_max + 1)
+                   if S * legendre_source_profile(A, rho, k).err <= budget),
+                  None),
+              share=0.8),
+    )
+    # profile is declared second because the budget is spent in that
+    # order -- the mesh bill is predicted first and the truncation gets
+    # a share of what survives -- but it is evaluated first, since the
+    # mesh names it as an input and the graph runs in edge order
+    return compose("gs-flux", tol, stages,
+                   lambda cs: cs["mesh"].through(cs["profile"]),
+                   context=f"c={c:g} A={A:g} rho={rho:g}")
 
 
 def pole_correlator(A: float, rho: float, E0: float, dE: float,
@@ -4781,35 +4986,12 @@ def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
     buys width where width is scarce. A single shared knob cannot say
     that."""
     ells = tuple(range(2, min(n - 1, ell_max) + 1))
-    solved = {}
 
-    def branch(d, ell):
-        if (d, ell) not in solved:
-            solved[(d, ell)] = h_chain_bracket(n, d, ell, correction_iters)
-        return solved[(d, ell)]
+    def branch(d):
+        return lambda ell, _up: h_chain_bracket(n, d, ell, correction_iters)
 
-    def run(ab):
-        a, b = ab
-        near, far = branch(d_near, a), branch(d_far, b)
-        gap = far - near
-        note = (f"gap split at ell_near={a} ell_far={b}: compressed "
-                f"{near.err:.3g} + stretched {far.err:.3g} "
-                f"against tol={tol:g}")
-        return replace(gap, provenance=gap.provenance + (note,))
-
-    def beyond():
-        top = ells[-1]
-        near, far = branch(d_near, top).err, branch(d_far, top).err
-        which = "compressed" if near >= far else "stretched"
-        return (f"both branches are at their widest declared window "
-                f"ell={top}, where the compressed geometry floors at "
-                f"{near:.3g} and the stretched at {far:.3g}; the "
-                f"{which} branch alone is the wall, and the pair "
-                f"cannot go below {near + far:.3g}")
-
-    rungs = sorted(((a, b) for a in ells for b in ells),
-                   key=lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1])
-    rw = Rewrite("near+far", tuple(rungs),
-                 lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1], run, beyond)
-    return plan("h-chain-gap", tol, [rw], jump=False,
-                context=f"n={n} d={d_near:g}->{d_far:g}")
+    stages = (Stage("compressed", ells, branch(d_near), lambda e: 4.0 ** e),
+              Stage("stretched", ells, branch(d_far), lambda e: 4.0 ** e))
+    return compose("h-chain-gap", tol, stages,
+                   lambda c: c["stretched"] - c["compressed"],
+                   context=f"n={n} d={d_near:g}->{d_far:g}")

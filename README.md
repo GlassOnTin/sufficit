@@ -12,13 +12,19 @@ sensitivities — two stages for the equilibrium solve, three for the
 smeared spectral value, where each resolution rung reprices the model
 stage before it, and a fan-in where one budget divides between two
 branches that never feed each other and no formula predicts what
-either will certify. A general combinator over that graph is the
-remaining debt: every plan is still wired by hand inside its own
-front door.
+either will certify. Those four specified a combinator, which now
+exists: a plan is declared as stages and one assemble function, each
+stage naming the stages it consumes, so the object is a graph; stages
+that can solve for a knob given a budget are solved and the rest are
+enumerated and walked cheapest-first. Two plans are wired through it
+so far, and the refusal's binding stage is now derived from the graph
+rather than hand-written per front door. The remaining debt is the
+other two plans, which still allocate inside their own front doors,
+and a search that uses the graph's shape rather than only its cost.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 151 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 154 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.

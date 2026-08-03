@@ -2439,11 +2439,15 @@ def test_gs_flux_pipeline_certified():
 def test_gs_flux_pipeline_refuses():
     """Below the finest declared mesh's predicted bill the pipeline
     refuses, and the receipt names the mesh -- not the profile -- as
-    the wall."""
+    the wall. That sentence used to be hand-written per front door;
+    compose derives it by zeroing each stage's error in turn and
+    seeing which one the composed error was leaning on."""
     pytest.importorskip("dolfinx")
     with pytest.raises(sf.Refusal, match="gs-flux") as exc:
         sf.gs_flux_dispatch(0.05)
-    assert "profile is not the wall" in str(exc.value)
+    msg = str(exc.value)
+    assert "mesh is the binding stage" in msg
+    assert "mesh=32, profile=12" in msg      # both ladders exhausted
 
 
 def _pole_bench():
@@ -2568,10 +2572,73 @@ def test_pipeline_trace_deterministic():
     assert a.provenance == b.provenance
 
 
+def _toy(name, seen, err_of, **kw):
+    """A stage whose certificate is whatever err_of says, so the graph
+    mechanics can be checked without paying for physics."""
+    def run(k, up):
+        seen.append((name, k))
+        return sf.Certified(float(k), err_of(k), sf.Tier.RIGOROUS,
+                            (f"{name}={k}",),
+                            sensitivity=sf.Sensitivity(1.0, sf.Tier.RIGOROUS,
+                                                       "x"))
+    return sf.Stage(name, kw.pop("knobs"), run, float, **kw)
+
+
+def test_compose_shares_independent_nodes():
+    """What makes a fan-in's product ladder cost the sum of its
+    branches rather than their product: stages that name no inputs are
+    independent, so each is computed once per knob however many
+    assignments get walked. Sixteen pairs exist here; eight nodes is
+    the ceiling."""
+    seen, ks = [], (1, 2, 3, 4)
+    stages = (_toy("a", seen, lambda k: 1.0 / k, knobs=ks),
+              _toy("b", seen, lambda k: 1.0 / k, knobs=ks))
+    c = sf.compose("toy-fan", 0.6, stages, lambda d: d["a"] + d["b"])
+    assert c.err <= 0.6
+    assert len(seen) == len(set(seen))       # nothing computed twice
+    assert len(seen) <= 2 * len(ks)          # one per (stage, knob) at most
+    assert "toy-fan split at a=" in c.provenance[-2]
+
+
+def test_compose_runs_in_edge_order_not_declaration_order():
+    """Declaration order is the order the budget is spent; evaluation
+    order is the order the edges impose. Here the consumer is declared
+    first and must still run second, because it needs what it
+    consumes."""
+    seen = []
+    src = _toy("src", seen, lambda k: 0.1, knobs=(5,))
+
+    def sink_run(k, up):
+        seen.append(("sink", k, up["src"].value))
+        return sf.Certified(up["src"].value, 1.0 / k, sf.Tier.RIGOROUS,
+                            (f"sink={k}",),
+                            sensitivity=sf.Sensitivity(1.0, sf.Tier.RIGOROUS,
+                                                       "x"))
+
+    sink = sf.Stage("sink", (1, 2), sink_run, float, inputs=("src",))
+    c = sf.compose("toy-line", 10.0, (sink, src),
+                   lambda d: d["sink"].through(d["src"]))
+    assert seen[0][0] == "src"               # declared second, run first
+    assert seen[1][2] == 5.0                 # and its value reached the sink
+    assert c.err <= 10.0
+
+
+def test_compose_refuses_a_cycle():
+    """A graph, not a list, means the edges can be nonsense; say so
+    rather than looping."""
+    seen = []
+    a = _toy("a", seen, lambda k: 1.0, knobs=(1,), inputs=("b",))
+    b = _toy("b", seen, lambda k: 1.0, knobs=(1,), inputs=("a",))
+    with pytest.raises(ValueError, match="DAG"):
+        sf.compose("toy-cycle", 1.0, (a, b), lambda d: d["a"] + d["b"])
+
+
 def _gap_split(cert):
-    """Parse (ell_near, ell_far) out of the fan-in's split note."""
-    line = next(p for p in cert.provenance if p.startswith("gap split"))
-    m = re.match(r"gap split at ell_near=(\d+) ell_far=(\d+)", line)
+    """Parse (ell_compressed, ell_stretched) out of the split note
+    compose writes for any graph -- one name=knob per stage."""
+    line = next(p for p in cert.provenance
+                if p.startswith("h-chain-gap split at"))
+    m = re.search(r"compressed=(\d+) stretched=(\d+)", line)
     return int(m.group(1)), int(m.group(2))
 
 
@@ -2586,7 +2653,7 @@ def test_gap_fan_in_certified():
     stack = "\n".join(c.provenance)
     for part in ("h-chain marginal-lower ell=4 n=6 d=1.8",
                  "h-chain marginal-lower ell=3 n=6 d=3", "sub",
-                 "gap split at ell_near=", "plan h-chain-gap"):
+                 "h-chain-gap split at compressed=", "plan h-chain-gap"):
         assert part in stack
     # a difference of two independent brackets exports no amplification
     assert c.sensitivity is None
@@ -2639,12 +2706,16 @@ def test_gap_refuses_naming_the_binding_branch():
     """Below the pair floor the fan-in refuses, and the receipt names
     which branch is the wall -- the fan-in's version of pricing the
     next rung, since with two branches 'what to buy next' has two
-    possible answers and only one of them would help."""
+    possible answers and only one of them would help. compose derives
+    that name for any graph shape rather than being told it: zero each
+    stage's error in turn and see which one the composed error was
+    leaning on."""
     with pytest.raises(sf.Refusal, match="h-chain-gap") as exc:
         sf.h_chain_gap_dispatch(6, tol=0.2)
     msg = str(exc.value)
-    assert "compressed branch alone is the wall" in msg
-    assert "cannot go below" in msg
+    assert "compressed is the binding stage" in msg
+    assert "compressed=5, stretched=5" in msg     # both ladders spent
+    assert "floors at 0.239" in msg
 
 
 def test_gap_brackets_intersect_across_tolerances():
