@@ -1686,6 +1686,16 @@ def compiler_case():
     N = 10
     truth = float(np.linalg.eigvalsh(sf._heis_window((1.0,) * (N - 1)))[0])
 
+    # the pair that caught a cost model lying, timed first so both are
+    # cold: the widest window against the dense rung the old model
+    # quoted at twice its price
+    t0 = time.perf_counter()
+    sf.heisenberg_chain_bracket(N, 9)
+    w9_secs = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    sf.heisenberg_chain_bracket(N, ell=N)
+    dense_secs = time.perf_counter() - t0
+
     # one question, a sweep of tolerances: the planner picks the
     # algorithm anew at each, and the trace says why
     tols = (0.3, 0.1, 3e-2, 1e-2, 3e-3)
@@ -1700,8 +1710,6 @@ def compiler_case():
     # the receipt is structure, so the audit reads fields, not prose:
     # window@9 against the chosen dense, and window@2 cold vs warm
     secs = {(n, k): s for n, k, _, s, _ in extreme.receipt}
-    w9s = f"{secs.get(('window', 9), 0):.2g}s"
-    ds = f"{extreme.receipt[-1][3]:.2g}s"
     w2_cold = f"{sweep[0][3].receipt[0][3]:.2g}s"
     w2_warm = f"{secs.get(('window', 2), 0):.2g}s"
     receipt_lines = "\n".join(
@@ -1734,11 +1742,15 @@ def compiler_case():
     brk = functools.lru_cache(maxsize=None)(sf.heisenberg_chain_bracket)
     map_Ns = (6, 8, 10, 12, 14, 16, 18, 20)
     map_tols = (0.3, 0.1, 0.03, 0.01, 3e-3, 1e-3, 1e-4, 1e-8)
+    # the cost models are read off the dispatch, not retyped, so the map
+    # cannot quietly price the race differently from the library
+    ITERS = inspect.signature(sf.heisenberg_energy_dispatch) \
+        .parameters["correction_iters"].default
 
     def cell(n, tol_bond):
         ells = tuple(range(2, min(n - 1, 9) + 1))
-        rws = [sf.Rewrite("window", ells, lambda l: 2.0 ** l,
-                          lambda l: brk(n, l))]
+        rws = [sf.Rewrite("window", ells, lambda l: ITERS * 2.0 ** l,
+                          lambda l: brk(n, l, ITERS))]
         if n <= 12:
             rws.append(sf.Rewrite("dense", (n,), lambda _: 2.0 ** n,
                                   lambda _: brk(n, n)))
@@ -1864,11 +1876,17 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
                          sf.heisenberg_energy_dispatch),
             "<h2>The result</h2>"
             f"<figure>{svg}<figcaption>The staircase. Loose questions "
-            "are served by short windows at cost 2<sup>ℓ</sup>; as "
-            "the tolerance tightens the planner climbs the ladder, "
+            "are served by short windows, priced at the ascent's "
+            "eigendecompositions times 2<sup>ℓ</sup>; as the "
+            "tolerance tightens the planner climbs the ladder, "
             "and past the wall the window widths floor out on the "
             "relaxation gap, so the dense 1024-dimensional bracket — "
             "exact, and priced 2<sup>N</sup> — wins the competition. "
+            "The window band is short here because ten sites is small "
+            "enough to diagonalize: once the two rewrites are priced "
+            "in the same unit, the honest advice at this size is "
+            "mostly <em>form the matrix</em>. The map below shows "
+            "where that stops being true. "
             "The wall belongs to this 10-site chain; on a 10⁶-site "
             "chain there is no dense column to flee to. And chosen is "
             "not optimal: the y-axis is the cheapest plan found among "
@@ -1947,17 +1965,39 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "</li>"
             "<li>An impossible question refuses with a receipt: "
             f"<code>{esc(str(receipt)[:160])}&hellip;</code></li>"
-            "<li>The receipt audits its own cost model: window@9 "
-            f"measured <strong>{esc(w9s)}</strong> against dense's "
-            f"<strong>{esc(ds)}</strong>, under a model that priced "
-            "them 512 against 1024. And the same window@2 rung, "
-            f"priced 4 in both plans, measured {esc(w2_cold)} in the "
-            f"first plan and {esc(w2_warm)} in the last — its "
-            "corrections were cached by then. Cost is "
-            "state-dependent; the predictions are not; only logging "
-            "both exposes it. These pairs, kept in every run, are "
-            "the calibration data for better cost models — on the "
-            "machine that produced them.</li>"
+            "<li>A default that was buying nothing. The window "
+            "bound's multiplier ascent ran eighty oracle calls; "
+            "measured at three chain lengths across six window "
+            "widths, ten calls already buy <strong>94&#8211;101%"
+            "</strong> of the tightening eighty buy, and the rungs "
+            "above 100% are ones where eighty is the <em>worse</em> "
+            "bracket. That is not a contradiction: the ascent "
+            "optimizes the dual of the uniform-weight window while "
+            "the bracket applies its answer to weighted sliding "
+            "windows, so a better dual value is not obliged to give "
+            "a tighter bracket. Eighty calls cost 20&#8211;36&#215; "
+            "more than ten rather than 8&#215;, because the bundle "
+            "grows toward its cut cap and the master problem grows "
+            "with it. Ten is now the default.</li>"
+            "<li>The receipts audited a cost model and caught it "
+            "lying. Window rungs were priced 2<sup>ℓ</sup> against "
+            "the dense rung's 2<sup>N</sup>, so the model quoted the "
+            "widest window at half the dense price. Measured cold on "
+            f"this machine, window@9 takes <strong>{w9_secs:.2g}s"
+            f"</strong> against dense's <strong>{dense_secs:.2g}s"
+            "</strong> — nearly twice as dear, not half. The missing "
+            "term was the multiplier ascent, which a window rung runs "
+            "before it brackets anything and the dense rung does not "
+            "run at all, so the two rewrites that race here were "
+            "quoted in different currencies. Both are now priced in "
+            "eigendecompositions times dimension.</li>"
+            "<li>And the same window@2 rung, priced 40 in both plans, "
+            f"measured {esc(w2_cold)} in the first plan and "
+            f"{esc(w2_warm)} in the last — its corrections were "
+            "cached by then. Cost is state-dependent; the predictions "
+            "are not; only logging both exposes it. These pairs, kept "
+            "in every run, are the calibration data for better cost "
+            "models — on the machine that produced them.</li>"
             "<li>A negative result, kept because it cost something to "
             "learn: normalizing those seconds by a fixed "
             "microbenchmark, so they would travel between machines, "

@@ -1138,6 +1138,27 @@ def test_dual_exhausted_at_fixed_ell():
     assert bundle >= joint - 1e-3
 
 
+def test_correction_ascent_converges_by_ten_calls():
+    """Why the default is ten oracle calls and not eighty. Measured at
+    two chain lengths and three window widths, ten calls buy at least
+    93% of the bracket tightening that eighty buy -- and at some rungs
+    eighty is the WORSE bracket, which is not a contradiction: the
+    ascent optimizes the dual of the uniform-weight window, while the
+    bracket applies the resulting C to the weighted sliding windows,
+    so a better dual value is not obliged to give a tighter bracket.
+    Eighty calls cost 20-36x more than ten, because the bundle grows
+    toward its cut cap and the master QP grows with it."""
+    worst = 1.0
+    for N in (10, 60):
+        for ell in (4, 7, 8):
+            off = sf.heisenberg_chain_bracket(N, ell, 0).err
+            ten = sf.heisenberg_chain_bracket(N, ell, 10).err
+            eighty = sf.heisenberg_chain_bracket(N, ell, 80).err
+            assert off > eighty              # the ascent buys something
+            worst = min(worst, (off - ten) / (off - eighty))
+    assert worst >= 0.93                     # measured 0.945, N=10 ell=7
+
+
 def test_chain_bracket_tightens_with_ell():
     """Cost scales with the precision of the question: a longer window
     (2^ell diagonalizations) buys a tighter certified bracket."""
@@ -1947,7 +1968,7 @@ def test_planner_loose_tol_picks_cheap():
     assert c.err <= 0.2 * 39
     # measured cost lands as structure, not prose
     name, knob, predicted, secs, verdict = c.receipt[-1]
-    assert (name, knob, predicted) == ("window", 2, 4.0)
+    assert (name, knob, predicted) == ("window", 2, 40.0)
     assert secs >= 0.0 and verdict == c.err
 
 
@@ -1965,12 +1986,13 @@ def test_planner_escalation_monotone():
 
 
 def test_planner_dense_dethrones_windows():
-    """Competition flips on the tolerance. At 3e-2/bond a window wins
-    and the dense rewrite never runs; at 1e-9/bond every window rung
-    floors out on the relaxation gap and the dense bracket -- exact,
-    1024-dimensional, priced accordingly -- is the one that
-    certifies. Both contain the eigh truth."""
-    loose = sf.heisenberg_energy_dispatch(10, tol=3e-2)
+    """Competition flips on the tolerance. At 0.1/bond a short window
+    wins and the dense rewrite, declared and in the race, never runs;
+    at 1e-9/bond the window ladder floors out on the relaxation gap
+    and the dense bracket -- exact, 1024-dimensional, priced
+    accordingly -- is the one that certifies. Both contain the eigh
+    truth."""
+    loose = sf.heisenberg_energy_dispatch(10, tol=0.1)
     assert "chose window@" in loose.provenance[-1]
     assert "dense" not in loose.provenance[-1]
     tight = sf.heisenberg_energy_dispatch(10, tol=1e-9)
@@ -1978,6 +2000,37 @@ def test_planner_dense_dethrones_windows():
     truth = np.linalg.eigvalsh(sf._heis_window((1.0,) * 9))[0]
     assert abs(loose.value - truth) <= loose.err
     assert abs(tight.value - truth) <= tight.err
+
+
+def test_planner_prices_both_rewrites_in_one_unit():
+    """Two rewrites that race must be quoted in the same currency, or
+    the comparison means nothing. A window rung pays the multiplier
+    ascent before it brackets anything, so its price carries the
+    iteration count: the same rung at ten calls and at eighty is not
+    the same purchase. With the ascent off it is one bracket, and the
+    price floors at the dimension alone."""
+    for iters, price in ((10, 40.0), (80, 320.0), (0, 4.0)):
+        c = sf.heisenberg_energy_dispatch(40, tol=0.2,
+                                          correction_iters=iters)
+        assert c.receipt[-1][:3] == ("window", 2, price)
+
+
+def test_planner_reaches_dense_without_the_widest_windows():
+    """What the shared currency buys. At N=10 the window ladder floors
+    out on the relaxation gap, so a tight question has exactly one
+    answer. Priced at 2^ell alone the widest window looked half the
+    cost of the dense rung, though it measures nearly twice as dear,
+    so the planner climbed the whole ladder before trying the answer.
+    Priced in eigendecompositions times dimension, dense outranks the
+    wide windows and is reached with none of them run."""
+    c = sf.heisenberg_energy_dispatch(10, tol=1e-9)
+    assert "chose dense@10" in c.provenance[-1]
+    widths = [k for n, k, *_ in c.receipt if n == "window"]
+    assert widths and max(widths) <= 6
+    # and the flip is a property of N, not of the tolerance alone: at
+    # N=12 the dense rung costs 4096 and a window wins the same question
+    at12 = sf.heisenberg_energy_dispatch(12, tol=3e-2)
+    assert "chose window@" in at12.provenance[-1]
 
 
 def test_planner_containment():
