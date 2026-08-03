@@ -1860,7 +1860,7 @@ def _heis_block(size):
             _site_spin_expect(v, size, size - 1))
 
 
-def _block_tilings(N, ell):
+def _block_tilings(N, ell, merge_lone=True):
     """Ways to cut N sites into blocks for the product upper bound.
 
     Any cut gives a valid bound -- the bound is the energy of a
@@ -1888,11 +1888,17 @@ def _block_tilings(N, ell):
     widest."""
     def greedy(width):
         g = [width] * (N // width)
-        if N % width == 1:      # a lone site is worse than one long block
-            g[-1] += 1
+        if N % width == 1 and merge_lone:
+            g[-1] += 1          # a lone site is worse than one long block
         elif N % width:
             g.append(N % width)
         return tuple(g)
+
+    # merge_lone widens one block past ell to swallow a lone remainder,
+    # which the spin chain has always done and which costs it a factor
+    # of two. On the hydrogen chain the same block costs a factor of
+    # four, and it is not worth it: the search below already offers
+    # cuts that beat a lone atom without going over budget.
 
     out = [greedy(w) for w in range(2, ell + 1)]
     wide = max(out[-1])
@@ -3025,91 +3031,94 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
     # upper: product of exactly solved blocks, cross energy by exact
     # factorization of block-diagonal spin-orbital 1-RDMs
     from scipy.sparse.linalg import eigsh
-    sizes = [ell] * (n // ell)
-    if n % ell:
-        sizes.append(n % ell)
-    blocks, start = [], 0
-    for size in sizes:
-        blocks.append(list(range(start, start + size)))
-        start += size
-    blk = {i: bi for bi, b in enumerate(blocks) for i in b}
-    upper = 0.0
-    gammas = {}
-    for bi, b in enumerate(blocks):
-        idx = np.ix_(b, b)
-        h_own = T[idx] + sum(V[c][idx] for c in b)
-        eri_b = eri[np.ix_(b, b, b, b)]
-        enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj > ii)
-        Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b,
-                               dense=False)
-        _, Vec = eigsh(Hb, k=1, which="SA",
-                       v0=_arpack_v0(Hb.shape[0]))
-        v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
-        e = float(v @ (Hb @ v))
-        upper += e + 8 * (Hb.shape[0] + 2) * np.finfo(float).eps \
-            * (float(np.abs(Hb).sum(axis=0).max()) + abs(e))
-        ann = _jw_ann(2 * len(b))
-        gam = np.zeros((2 * len(b), 2 * len(b)))
-        for P in range(2 * len(b)):
-            for R in range(2 * len(b)):
-                gam[P, R] = float(v @ (ann[P].T @ (ann[R] @ v)))
-        gammas[bi] = gam
-    # cross one-electron: block density in the field of other nuclei,
-    # plus kinetic/attraction cross matrix elements vanish (<a'a> = 0)
-    for bi, b in enumerate(blocks):
-        gam = gammas[bi]
-        for c in range(n):
-            if blk[c] == bi:
-                continue
-            for ii, p in enumerate(b):
-                for jj, r in enumerate(b):
-                    upper += V[c, p, r] * (gam[2 * ii, 2 * jj]
-                                           + gam[2 * ii + 1, 2 * jj + 1])
-        for other in range(bi + 1, len(blocks)):
-            upper += sum(1.0 / (d * abs(jj - ii))
-                         for ii in b for jj in blocks[other])
-    # cross two-electron by exact product-state factorization
-    for p in range(n):
-        for q in range(n):
-            if blk[p] == blk[q]:
-                continue
-            for r in range(n):
-                for s2 in range(n):
-                    g = eri[p, r, q, s2]
-                    if abs(g) < 1e-14:
-                        continue
-                    if blk[r] == blk[p] and blk[s2] == blk[q]:
-                        gA, gB = gammas[blk[p]], gammas[blk[q]]
-                        ip, ir = blocks[blk[p]].index(p), \
-                            blocks[blk[p]].index(r)
-                        iq, is2 = blocks[blk[q]].index(q), \
-                            blocks[blk[q]].index(s2)
-                        dA = gA[2 * ip, 2 * ir] + gA[2 * ip + 1, 2 * ir + 1]
-                        dB = gB[2 * iq, 2 * is2] + gB[2 * iq + 1, 2 * is2 + 1]
-                        upper += 0.5 * g * dA * dB
-                    if blk[s2] == blk[p] and blk[r] == blk[q]:
-                        gA, gB = gammas[blk[p]], gammas[blk[q]]
-                        ip, is2 = blocks[blk[p]].index(p), \
-                            blocks[blk[p]].index(s2)
-                        iq, ir = blocks[blk[q]].index(q), \
-                            blocks[blk[q]].index(r)
-                        # the spin-free two-electron operator contracts
-                        # p with r at one spin and q with s at another,
-                        # independently, so the two spin indices run
-                        # CROSSED through the pair of blocks. Matched
-                        # spins alone would drop every term an
-                        # alpha-beta coherence contributes, and an
-                        # odd-atom block has that coherence: its ground
-                        # state is a spin doublet and any member of it
-                        # will do. Measured at n=6, dropping them put
-                        # this bound 1.1 mHa above the product state's
-                        # own energy at ell=3 -- loose, not wrong, and
-                        # invisible to every containment test.
-                        for sp in range(2):
-                            for sq in range(2):
-                                upper -= 0.5 * g \
-                                    * gA[2 * ip + sp, 2 * is2 + sq] \
-                                    * gB[2 * iq + sq, 2 * ir + sp]
+
+    def product_upper(sizes):
+        blocks, start = [], 0
+        for size in sizes:
+            blocks.append(list(range(start, start + size)))
+            start += size
+        blk = {i: bi for bi, b in enumerate(blocks) for i in b}
+        upper = 0.0
+        gammas = {}
+        for bi, b in enumerate(blocks):
+            idx = np.ix_(b, b)
+            h_own = T[idx] + sum(V[c][idx] for c in b)
+            eri_b = eri[np.ix_(b, b, b, b)]
+            enuc_b = sum(1.0 / (d * (jj - ii)) for ii in b for jj in b if jj > ii)
+            Hb = _fock_hamiltonian(np.eye(len(b)), h_own, eri_b, enuc_b,
+                                   dense=False)
+            _, Vec = eigsh(Hb, k=1, which="SA",
+                           v0=_arpack_v0(Hb.shape[0]))
+            v = Vec[:, 0] / np.linalg.norm(Vec[:, 0])
+            e = float(v @ (Hb @ v))
+            upper += e + 8 * (Hb.shape[0] + 2) * np.finfo(float).eps \
+                * (float(np.abs(Hb).sum(axis=0).max()) + abs(e))
+            ann = _jw_ann(2 * len(b))
+            gam = np.zeros((2 * len(b), 2 * len(b)))
+            for P in range(2 * len(b)):
+                for R in range(2 * len(b)):
+                    gam[P, R] = float(v @ (ann[P].T @ (ann[R] @ v)))
+            gammas[bi] = gam
+        # cross one-electron: block density in the field of other nuclei,
+        # plus kinetic/attraction cross matrix elements vanish (<a'a> = 0)
+        for bi, b in enumerate(blocks):
+            gam = gammas[bi]
+            for c in range(n):
+                if blk[c] == bi:
+                    continue
+                for ii, p in enumerate(b):
+                    for jj, r in enumerate(b):
+                        upper += V[c, p, r] * (gam[2 * ii, 2 * jj]
+                                               + gam[2 * ii + 1, 2 * jj + 1])
+            for other in range(bi + 1, len(blocks)):
+                upper += sum(1.0 / (d * abs(jj - ii))
+                             for ii in b for jj in blocks[other])
+        # cross two-electron by exact product-state factorization
+        for p in range(n):
+            for q in range(n):
+                if blk[p] == blk[q]:
+                    continue
+                for r in range(n):
+                    for s2 in range(n):
+                        g = eri[p, r, q, s2]
+                        if abs(g) < 1e-14:
+                            continue
+                        if blk[r] == blk[p] and blk[s2] == blk[q]:
+                            gA, gB = gammas[blk[p]], gammas[blk[q]]
+                            ip, ir = blocks[blk[p]].index(p), \
+                                blocks[blk[p]].index(r)
+                            iq, is2 = blocks[blk[q]].index(q), \
+                                blocks[blk[q]].index(s2)
+                            dA = gA[2 * ip, 2 * ir] + gA[2 * ip + 1, 2 * ir + 1]
+                            dB = gB[2 * iq, 2 * is2] + gB[2 * iq + 1, 2 * is2 + 1]
+                            upper += 0.5 * g * dA * dB
+                        if blk[s2] == blk[p] and blk[r] == blk[q]:
+                            gA, gB = gammas[blk[p]], gammas[blk[q]]
+                            ip, is2 = blocks[blk[p]].index(p), \
+                                blocks[blk[p]].index(s2)
+                            iq, ir = blocks[blk[q]].index(q), \
+                                blocks[blk[q]].index(r)
+                            # the spin-free two-electron operator contracts
+                            # p with r at one spin and q with s at another,
+                            # independently, so the two spin indices run
+                            # CROSSED through the pair of blocks. Matched
+                            # spins alone would drop every term an
+                            # alpha-beta coherence contributes, and an
+                            # odd-atom block has that coherence: its ground
+                            # state is a spin doublet and any member of it
+                            # will do. Measured at n=6, dropping them put
+                            # this bound 1.1 mHa above the product state's
+                            # own energy at ell=3 -- loose, not wrong, and
+                            # invisible to every containment test.
+                            for sp in range(2):
+                                for sq in range(2):
+                                    upper -= 0.5 * g \
+                                        * gA[2 * ip + sp, 2 * is2 + sq] \
+                                        * gB[2 * iq + sq, 2 * ir + sp]
+        return upper
+
+    upper = min(product_upper(s)
+                for s in _block_tilings(n, ell, merge_lone=False))
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
@@ -5074,7 +5083,7 @@ def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
     n atoms and a window of ell misses more of that, while the
     stretched chain is nearly decoupled and a window of the same ell
     captures almost everything. Measured at n=6, the compressed
-    bracket is 3-4.6x the stretched one at equal ell, so the budget
+    bracket is 3-4.3x the stretched one at equal ell, so the budget
     buys width where width is scarce. A single shared knob cannot say
     that."""
     ells = tuple(range(2, min(n - 1, ell_max) + 1))

@@ -1516,16 +1516,21 @@ def test_block_product_upper_is_the_exact_rayleigh_quotient():
         _, Vec = eigsh(Hb, k=1, which="SA", v0=sf._arpack_v0(Hb.shape[0]))
         return Vec[:, 0] / np.linalg.norm(Vec[:, 0])
 
-    for ell, blocks in ((3, ([0, 1, 2], [3, 4, 5])),
-                        (4, ([0, 1, 2, 3], [4, 5]))):
-        psi = None
-        for b in blocks:
-            v = block_vec(b)
-            psi = v if psi is None else np.kron(psi, v)
-        psi = psi / np.linalg.norm(psi)
-        rayleigh = float(psi @ (H @ psi))
+    # the bound is the LOWEST such energy over the cuts on offer, so
+    # check both halves of that: every candidate's factorized value is
+    # its product state's true energy, and the bracket reports the best
+    for ell in (3, 4, 5):
+        quotients = []
+        for sizes in sf._block_tilings(n, ell, merge_lone=False):
+            psi, start = None, 0
+            for size in sizes:
+                v = block_vec(list(range(start, start + size)))
+                psi = v if psi is None else np.kron(psi, v)
+                start += size
+            psi = psi / np.linalg.norm(psi)
+            quotients.append(float(psi @ (H @ psi)))
         c = sf.h_chain_bracket(n, d, ell, 0)
-        assert (c.value + c.err) == pytest.approx(rayleigh, abs=1e-9)
+        assert (c.value + c.err) == pytest.approx(min(quotients), abs=1e-9)
 
 
 def test_h_chain_bracket_past_formable():
@@ -2816,8 +2821,8 @@ def test_gap_branches_are_shared():
         c = sf.h_chain_gap_dispatch(6, tol=0.3)
     finally:
         sf.h_chain_bracket = orig
-    assert _gap_split(c) == (5, 4)
-    assert len(c.receipt) == 15            # pairs walked in cost order
+    assert _gap_split(c) == (5, 3)
+    assert len(c.receipt) == 13            # pairs walked in cost order
     assert len(calls) == len(set(calls)) == 8   # 2 branches x 4 widths
     # the cached pair is free: every branch of (3,3) was solved earlier
     secs = {k: s for _, k, _, s, _ in c.receipt}
@@ -2832,8 +2837,10 @@ def test_gap_refuses_naming_the_binding_branch():
     that name for any graph shape rather than being told it: zero each
     stage's error in turn and see which one the composed error was
     leaning on."""
+    # the wall used to sit at tol=0.2; choosing the block tiling moved
+    # it to 0.129, so this asks a question that is still impossible
     with pytest.raises(sf.Refusal, match="h-chain-gap") as exc:
-        sf.h_chain_gap_dispatch(6, tol=0.2)
+        sf.h_chain_gap_dispatch(6, tol=0.1)
     msg = str(exc.value)
     assert "compressed is the binding stage" in msg
     assert "compressed=5, stretched=5" in msg     # both ladders spent
