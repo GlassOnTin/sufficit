@@ -2453,3 +2453,99 @@ def test_pipeline_trace_deterministic():
     b = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
                                       1.0, 0.5, tol=0.5)
     assert a.provenance == b.provenance
+
+
+def _gap_split(cert):
+    """Parse (ell_near, ell_far) out of the fan-in's split note."""
+    line = next(p for p in cert.provenance if p.startswith("gap split"))
+    m = re.match(r"gap split at ell_near=(\d+) ell_far=(\d+)", line)
+    return int(m.group(1)), int(m.group(2))
+
+
+def test_gap_fan_in_certified():
+    """A budget split across a fan-in, not along a line. The gap
+    between two geometries is a difference of two brackets that never
+    see each other, so the errors simply add -- no sensitivity, no
+    exchange rate -- and one certificate covers both branches."""
+    c = sf.h_chain_gap_dispatch(6, tol=0.5)
+    assert c.err <= 0.5
+    assert c.tier == sf.Tier.RIGOROUS
+    stack = "\n".join(c.provenance)
+    for part in ("h-chain marginal-lower ell=4 n=6 d=1.8",
+                 "h-chain marginal-lower ell=3 n=6 d=3", "sub",
+                 "gap split at ell_near=", "plan h-chain-gap"):
+        assert part in stack
+    # a difference of two independent brackets exports no amplification
+    assert c.sensitivity is None
+
+
+def test_gap_split_is_asymmetric():
+    """The point of a fan-in: the branches are not equally hard, so
+    the budget buys window width where width is scarce. The compressed
+    chain delocalizes over all six atoms and a window of ell misses
+    more of it; the stretched chain is nearly decoupled. At tol=0.5
+    that buys ell=4 near and only ell=3 far -- predicted cost 320,
+    against 512 for the cheapest pair a single shared knob could
+    reach (ell=4 on both)."""
+    c = sf.h_chain_gap_dispatch(6, tol=0.5)
+    near, far = _gap_split(c)
+    assert (near, far) == (4, 3)
+    assert 4.0 ** near + 4.0 ** far < 2 * 4.0 ** near   # beats shared ell=4
+    # and the asymmetry is the measured hardness, not an accident
+    a = sf.h_chain_bracket(6, 1.8, 4)
+    b = sf.h_chain_bracket(6, 3.0, 4)
+    assert a.err > 3 * b.err
+
+
+def test_gap_branches_are_shared():
+    """A fan-in's product ladder costs the SUM of its branches, not
+    their product, because escalating one branch reuses the other.
+    Sixteen pairs, but never more than two branches times four window
+    widths of actual work -- and a pair whose branches are both
+    already solved costs one subtraction."""
+    orig, calls = sf.h_chain_bracket, []
+
+    def counted(n, d, ell, iters=60, *a, **k):
+        calls.append((d, ell))
+        return orig(n, d, ell, iters, *a, **k)
+
+    sf.h_chain_bracket = counted
+    try:
+        c = sf.h_chain_gap_dispatch(6, tol=0.3)
+    finally:
+        sf.h_chain_bracket = orig
+    assert _gap_split(c) == (5, 4)
+    assert len(c.receipt) == 15            # pairs walked in cost order
+    assert len(calls) == len(set(calls)) == 8   # 2 branches x 4 widths
+    # the cached pair is free: every branch of (3,3) was solved earlier
+    secs = {k: s for _, k, _, s, _ in c.receipt}
+    assert secs[(3, 3)] < 0.01 < secs[(2, 2)]
+
+
+def test_gap_refuses_naming_the_binding_branch():
+    """Below the pair floor the fan-in refuses, and the receipt names
+    which branch is the wall -- the fan-in's version of pricing the
+    next rung, since with two branches 'what to buy next' has two
+    possible answers and only one of them would help."""
+    with pytest.raises(sf.Refusal, match="h-chain-gap") as exc:
+        sf.h_chain_gap_dispatch(6, tol=0.2)
+    msg = str(exc.value)
+    assert "compressed branch alone is the wall" in msg
+    assert "cannot go below" in msg
+
+
+def test_gap_brackets_intersect_across_tolerances():
+    """Each run encloses the same true gap, so the brackets must
+    overlap however the split moved. They do -- and the tighter
+    half-width is not automatically the stronger statement: at
+    tol=0.35 the bracket excludes zero, while the narrower tol=0.3
+    bracket does not, because the midpoint moved as well. The sign is
+    settled by intersecting certified enclosures, not by keeping the
+    narrowest one."""
+    a = sf.h_chain_gap_dispatch(6, tol=0.35)
+    b = sf.h_chain_gap_dispatch(6, tol=0.3)
+    lo, hi = max(a.value - a.err, b.value - b.err), \
+        min(a.value + a.err, b.value + b.err)
+    assert lo <= hi
+    assert b.err < a.err                     # narrower half-width
+    assert a.value - a.err > 0 > b.value - b.err   # but weaker on sign

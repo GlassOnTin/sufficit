@@ -4668,3 +4668,74 @@ def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
                  run, beyond)
     return plan("spectral-pipeline", tol, [rw], jump=False,
                 context=f"omega={omega:g} sigma={sigma:g}")
+
+
+def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
+                         d_far: float = 3.0, ell_max: int = 5,
+                         correction_iters: int = 60) -> Certified:
+    """A budget split across a fan-in rather than along a chain.
+    The other pipelines here are lines: one stage's answer becomes the
+    next stage's input, and the sensitivity is the exchange rate that
+    converts error along the line. This query has no line. It asks for
+    the energy gap of the n-atom hydrogen chain between two geometries
+    -- how much it costs to stretch the chain from d_near to d_far --
+    and that is a difference of two brackets that never see each
+    other. Errors add, with no exchange rate to convert; the only
+    question is how to divide one tolerance between two independent
+    branches.
+
+    That division cannot be done by formula here. Every other
+    allocation in this library leans on something known before the run
+    -- a geometric tail summed exactly, a 1/sqrt(m) statistics law, a
+    first-order mesh decay fitted from a pilot -- and the h-chain
+    window ladder offers none of them: what a window of width ell
+    certifies is whatever the run measures. So the
+    allocation is a search. Every pair of window widths is a rung,
+    priced 4^ell_near + 4^ell_far, and the planner walks the product
+    ladder in cost order until a pair certifies. The certificates
+    arbitrate, exactly as along a line.
+
+    Two things follow that a line does not show. Branches are shared,
+    so a memo makes the product ladder cost the SUM of the two
+    ladders, not their product -- escalating one branch reuses the
+    other. And the winning pair is asymmetric, because the branches
+    are not equally hard: the compressed chain delocalizes across all
+    n atoms and a window of ell misses more of that, while the
+    stretched chain is nearly decoupled and a window of the same ell
+    captures almost everything. Measured at n=6, the compressed
+    bracket is 3-4.6x the stretched one at equal ell, so the budget
+    buys width where width is scarce. A single shared knob cannot say
+    that."""
+    ells = tuple(range(2, min(n - 1, ell_max) + 1))
+    solved = {}
+
+    def branch(d, ell):
+        if (d, ell) not in solved:
+            solved[(d, ell)] = h_chain_bracket(n, d, ell, correction_iters)
+        return solved[(d, ell)]
+
+    def run(ab):
+        a, b = ab
+        near, far = branch(d_near, a), branch(d_far, b)
+        gap = far - near
+        note = (f"gap split at ell_near={a} ell_far={b}: compressed "
+                f"{near.err:.3g} + stretched {far.err:.3g} "
+                f"against tol={tol:g}")
+        return replace(gap, provenance=gap.provenance + (note,))
+
+    def beyond():
+        top = ells[-1]
+        near, far = branch(d_near, top).err, branch(d_far, top).err
+        which = "compressed" if near >= far else "stretched"
+        return (f"both branches are at their widest declared window "
+                f"ell={top}, where the compressed geometry floors at "
+                f"{near:.3g} and the stretched at {far:.3g}; the "
+                f"{which} branch alone is the wall, and the pair "
+                f"cannot go below {near + far:.3g}")
+
+    rungs = sorted(((a, b) for a in ells for b in ells),
+                   key=lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1])
+    rw = Rewrite("near+far", tuple(rungs),
+                 lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1], run, beyond)
+    return plan("h-chain-gap", tol, [rw], jump=False,
+                context=f"n={n} d={d_near:g}->{d_far:g}")

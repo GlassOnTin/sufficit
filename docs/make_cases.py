@@ -2257,6 +2257,136 @@ its own smearing bill, with the plan's chosen splits marked">
         f"{esc(str(p3_refusal)[-150:])}</code></li></ul>",
     ]
 
+    # act four: a fan-in. Two branches that never feed each other, so
+    # the split has no exchange rate to compute it and no curve to
+    # look it up in -- the planner searches the product ladder.
+    gell = (2, 3, 4, 5)
+    gnear = {e: sf.h_chain_bracket(6, 1.8, e) for e in gell}
+    gfar = {e: sf.h_chain_bracket(6, 3.0, e) for e in gell}
+    g_a = sf.h_chain_gap_dispatch(6, tol=0.5)
+    g_b = sf.h_chain_gap_dispatch(6, tol=0.3)
+    try:
+        sf.h_chain_gap_dispatch(6, tol=0.2)
+        g_refusal = None
+    except ValueError as exc:
+        g_refusal = exc
+    g_order = sorted(((a, b) for a in gell for b in gell),
+                     key=lambda ab: 4.0 ** ab[0] + 4.0 ** ab[1])
+    def g_split(c):
+        line = next(p for p in c.provenance if p.startswith("gap split"))
+        m = re.match(r"gap split at ell_near=(\d+) ell_far=(\d+)", line)
+        return int(m.group(1)), int(m.group(2))
+
+    g_pick = {g_split(c) for c in (g_a, g_b)}
+
+    # the product ladder as a grid: rows are the compressed branch,
+    # columns the stretched one, each cell the pair's total error,
+    # numbered in the cost order the planner walks.
+    cw, ch, ox, oy = 74, 46, 62, 34
+    g_cells = []
+    for g_i, (g_a_ell, g_b_ell) in enumerate(g_order, 1):
+        gx, gy = ox + (g_b_ell - 2) * cw, oy + (g_a_ell - 2) * ch
+        g_tot = gnear[g_a_ell].err + gfar[g_b_ell].err
+        g_on = (g_a_ell, g_b_ell) in g_pick
+        g_fill = "var(--panel)" if g_tot <= 0.5 else "none"
+        g_edge = "var(--blue)" if g_on else "var(--hairline)"
+        g_cells.append(
+            f'<rect x="{gx}" y="{gy}" width="{cw - 4}" height="{ch - 4}" '
+            f'fill="{g_fill}" stroke="{g_edge}" stroke-width="'
+            f'{2 if g_on else 1}"/>'
+            f'<text x="{gx + 6}" y="{gy + 16}" font-size="10" '
+            f'fill="var(--muted)">{g_i}</text>'
+            f'<text x="{gx + (cw - 4) / 2}" y="{gy + 31}" font-size="12" '
+            f'text-anchor="middle" fill="var(--ink)">{g_tot:.3g}</text>')
+    for g_e in gell:
+        g_cells.append(
+            f'<text x="{ox + (g_e - 2) * cw + (cw - 4) / 2}" y="{oy - 10}" '
+            f'font-size="11" text-anchor="middle" fill="var(--muted)">'
+            f'&#8467;={g_e}</text>'
+            f'<text x="{ox - 10}" y="{oy + (g_e - 2) * ch + 28}" '
+            f'font-size="11" text-anchor="end" fill="var(--muted)">'
+            f'&#8467;={g_e}</text>')
+    gsvg = (f'<svg viewBox="0 0 {ox + 4 * cw + 12} {oy + 4 * ch + 26}" '
+            'width="100%" role="img" aria-label="the product ladder of '
+            'window widths, numbered in cost order">'
+            f'<text x="4" y="{oy - 10}" font-size="11" fill="var(--muted)">'
+            'stretched &#8594;</text>'
+            f'<text x="4" y="{oy + 4 * ch + 18}" font-size="11" '
+            f'fill="var(--muted)">compressed &#8595;</text>'
+            + "".join(g_cells) + "</svg>")
+
+    fan_in = [
+        "<h2>Two branches, one budget</h2>"
+        "<p>Every chain above is a <em>line</em>: one stage's answer "
+        "is the next stage's input, and the sensitivity is the "
+        "exchange rate that carries error along it. This last query "
+        "has no line in it. It asks what it costs to stretch the "
+        "six-atom hydrogen chain from d = 1.8 to d = 3.0 bohr — the "
+        "difference of two ground-state brackets that never see each "
+        "other. Nothing converts into anything; the errors simply "
+        "add. The only question left is how to divide one tolerance "
+        "between two independent branches.</p>"
+        "<p>And here the arithmetic that priced every earlier split "
+        "runs out. Those splits worked because a curve was known "
+        "ahead of the run — a geometric tail summed exactly, a "
+        "1/&#8730;m law — so the budget could be divided by formula "
+        "before spending anything. The h-chain window bracket obeys "
+        "no such law: what a window of width &#8467; certifies is "
+        "whatever the run measures. So the allocation becomes a "
+        "<em>search</em>. Every pair of widths is a rung, priced "
+        "4<sup>&#8467;near</sup>&nbsp;+&nbsp;4<sup>&#8467;far</sup>, "
+        "and the planner walks the product ladder in cost order until "
+        "a pair certifies — the same frontier, the same referee, a "
+        "different shape of plan.</p>",
+        code_section(sf.h_chain_gap_dispatch),
+        "<h2>The fan-in's result</h2>"
+        f"<figure>{gsvg}<figcaption>The product ladder. Each cell is "
+        "a pair of window widths and its total certified error; the "
+        "small number is the order the planner tries them in, by "
+        "predicted cost. Rows are the compressed branch, columns the "
+        "stretched one — and the grid is visibly not symmetric, "
+        "because the two branches are not equally hard. Outlined "
+        "cells are the pairs chosen at tol = 0.5 and tol = "
+        "0.3.</figcaption></figure>"
+        "<p>The compressed chain delocalizes across all six atoms, so "
+        "a window of width &#8467; misses more of it; the stretched "
+        "chain is nearly decoupled and a window of the same width "
+        "catches almost everything. Measured, the compressed bracket "
+        f"runs {gnear[3].err / gfar[3].err:.1f}&#215; the stretched "
+        f"one at &#8467; = 3 and {gnear[5].err / gfar[5].err:.1f}"
+        "&#215; at &#8467; = 5. So the budget buys width where width "
+        "is scarce:</p>"
+        f"<pre>{esc(chr(10).join(g_a.provenance[-2:]))}</pre>"
+        "<ul>"
+        f"<li>At tol = 0.5 the plan splits <strong>asymmetrically</strong>"
+        " — &#8467; = 4 on the compressed branch, 3 on the stretched, "
+        "predicted cost 320. The cheapest pair a single shared knob "
+        "could reach is &#8467; = 4 on both, predicted 512: "
+        "<strong>1.6&#215;</strong> the price for the same "
+        "tolerance.</li>"
+        "<li>A fan-in's product ladder costs the <strong>sum</strong> "
+        "of its branches, not their product, because escalating one "
+        "branch reuses the other. At tol = 0.3 the plan walked "
+        f"<strong>{len(g_b.receipt)}</strong> pairs but paid for only "
+        "<strong>8</strong> brackets — two branches &#215; four "
+        "widths. A pair whose branches are both already solved costs "
+        "one subtraction: rung (3,&nbsp;3) measured "
+        f"{min(s for _, k, _, s, _ in g_b.receipt if k == (3, 3)):.1e}"
+        " s.</li>"
+        "<li>Past the pair floor the refusal names <em>which branch "
+        "is the wall</em> — with two branches, “what to buy next” has "
+        "two answers and only one of them helps: <code>"
+        f"{esc(str(g_refusal)[-190:])}</code></li>"
+        "<li>An honest wrinkle. Both runs enclose the same true gap, "
+        "so their brackets must overlap, and they do. But the "
+        f"narrower one is not the stronger statement: tol = 0.5 "
+        f"gives {g_a.value:.3f} &#177; {g_a.err:.3f} and tol = 0.3 "
+        f"gives {g_b.value:.3f} &#177; {g_b.err:.3f} — a smaller "
+        "half-width whose midpoint also moved. Whether the gap is "
+        "positive is settled by intersecting certified enclosures, "
+        "not by keeping the narrowest.</li></ul>",
+    ]
+
     return page(
         "Case: the composed plan",
         "certified case",
@@ -2332,6 +2462,7 @@ its own smearing bill, with the plan's chosen splits marked">
             f"verbatim:</p><pre>{traces}</pre>",
             *pipeline,
             *deeper,
+            *fan_in,
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment: <strong>{contained}/3</strong> "
             "certificates contain the exact smeared truth — computable "
@@ -2356,12 +2487,19 @@ its own smearing bill, with the plan's chosen splits marked">
             "<li>Below every rung's smearing bill the plan refuses "
             "before spending a single sample: "
             f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
-            "<li>What this is not, yet: every chain on this page is "
-            "wired by hand inside its own front door. The three-stage "
-            "chain shows the shape a general pipeline combinator must "
-            "have — stages that export sensitivities, budgets split "
-            "by marginal cost, a planner refereeing rungs — but that "
-            "combinator is the remaining debt.</li></ul>",
+            "<li>What this is not, yet: every plan on this page is "
+            "wired by hand inside its own front door. The four of "
+            "them now pin down what a general combinator has to be. "
+            "It cannot be a pipeline: the last one is a fan-in, so "
+            "the object is a graph of certificates, with "
+            "sensitivities on the edges that carry error and plain "
+            "addition where two branches meet. And it cannot assume "
+            "the split is computable in advance — two of these divide "
+            "the budget by a closed form, one by a pilot fit, and the "
+            "fan-in only by searching the product ladder, because "
+            "nothing predicts what its branches will certify. A "
+            "combinator that handles all four is the remaining "
+            "debt.</li></ul>",
         ])
 
 

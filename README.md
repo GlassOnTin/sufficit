@@ -10,12 +10,15 @@ error budget between two stages priced by a sensitivity the certificate
 exports, and pipelines of different rewrites chained by exported
 sensitivities — two stages for the equilibrium solve, three for the
 smeared spectral value, where each resolution rung reprices the model
-stage before it. A general pipeline combinator is the remaining debt:
-every chain is still wired by hand inside its own front door.
+stage before it, and a fan-in where one budget divides between two
+branches that never feed each other and no formula predicts what
+either will certify. A general combinator over that graph is the
+remaining debt: every plan is still wired by hand inside its own
+front door.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 141 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 146 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
