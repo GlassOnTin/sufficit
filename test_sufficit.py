@@ -3158,3 +3158,191 @@ def test_diffusion_is_the_approximation_transport_is_not():
     assert gaps[0] > 1000.0                  # small slab: diffusion fails
     assert gaps[1] < 500.0                   # large slab: diffusion is fine
     assert gaps[0] > 10 * gaps[1]
+
+
+# ---------------------------------------------------------------- pn
+# junction: Newton-Kantorovich enclosure. What is being tested is not
+# accuracy but existence -- that an exact solution of the discrete
+# equations is proven to sit inside the stated radius.
+
+
+def _junction_converged(dev, volts, m=400):
+    """The reference answer: the same Newton iteration run far past
+    where it stops moving. Not a certificate, and the certificate never
+    calls it -- it is what the enclosure is checked against."""
+    return sf.junction_charge_bracket(
+        dev, volts, sf.junction_potential(dev, volts, m)).value
+
+
+def _junction_transition(dev, volts, m_max=90):
+    """(last refusing rung, first certifying rung, its Certified)."""
+    last = None
+    for m in range(1, m_max):
+        psi = sf.junction_potential(dev, volts, m)
+        try:
+            return last, m, sf.junction_charge_bracket(dev, volts, psi)
+        except ValueError:
+            last = m
+    raise AssertionError("never certified")
+
+
+def test_junction_enclosure_contains_the_converged_answer():
+    """Kantorovich's radius is a containment claim, so check it
+    contains something: at four biases, the charge from a fully
+    converged Newton run must lie inside every certified rung's
+    bracket."""
+    dev = sf.pn_junction()
+    for volts in (0.0, 1.0, 2.0, 3.0):
+        truth = _junction_converged(dev, volts)
+        _, m0, _ = _junction_transition(dev, volts)
+        for m in range(m0, m0 + 6):
+            c = sf.junction_charge_bracket(
+                dev, volts, sf.junction_potential(dev, volts, m))
+            assert c.value - c.err <= truth <= c.value + c.err
+            assert c.tier == sf.Tier.RIGOROUS
+
+
+def test_junction_certificate_arrives_in_one_step():
+    """The ladder's shape is the domain's point. Below the critical
+    rung Kantorovich returns nothing at all; one Newton step later it
+    certifies, and the step after that improves the bound by orders of
+    magnitude, because quadratic convergence squares the residual. An
+    error ladder that is flat and then falls off a cliff is not what
+    the other rewrites in this library produce."""
+    dev = sf.pn_junction()
+    last, m0, c0 = _junction_transition(dev, 1.0)
+    assert last == m0 - 1                     # refusal ends abruptly
+    c1 = sf.junction_charge_bracket(
+        dev, 1.0, sf.junction_potential(dev, 1.0, m0 + 1))
+    assert c1.err < c0.err / 1000.0
+
+
+def test_junction_residual_is_not_the_error():
+    """The reason a residual-based stopping rule is a guess. At the
+    first certifying rung the residual looks like machine noise and the
+    certified charge error does not: the gap is the inverse Jacobian
+    times the functional's gradient, and neither is visible in the
+    residual. Measured here as a ratio above 10^4."""
+    dev = sf.pn_junction()
+    _, m0, c0 = _junction_transition(dev, 1.0)
+    psi = sf.junction_potential(dev, 1.0, m0)
+    r, e = sf._poisson_residual(dev, psi, 1.0 / sf._VT)
+    res = float((abs(r) + e).max())
+    assert res < 1e-5
+    assert c0.err / res > 1e4
+
+
+def test_junction_charge_approaches_the_depletion_approximation():
+    """The independent check, from a closed form that uses none of the
+    discretized operators. The textbook depletion approximation sweeps
+    the junction perfectly clean of carriers, which overstates the
+    charge; the error must be small and must SHRINK as reverse bias
+    widens the region the approximation is wrong about."""
+    dev = sf.pn_junction()
+    ratios = []
+    for volts in (0.0, 1.0, 2.0, 3.0):
+        w = sf.depletion_width_analytic(dev, volts)
+        q_an = sf._QE * dev["Nd"] * (w * 1e-7 / 2) * 1e9
+        c = sf.junction_dispatch(dev, volts, 0.05)
+        ratios.append(c.value / q_an)
+    assert all(0.95 < r < 1.0 for r in ratios)   # close, and an overestimate
+    assert ratios == sorted(ratios)              # improves with bias
+
+
+def test_junction_mesh_is_the_model_boundary():
+    """What the certificate certifies is the discrete solution, and the
+    distance to the continuum one is the model's. Measured second order
+    in h, and at the default mesh it is a thousand times the certified
+    radius -- so on this problem the certificate is never the weak
+    link, which is only known because both were measured."""
+    qs = [sf.junction_dispatch(sf.pn_junction(N=n), 1.0, 1e-3)
+          for n in (100, 200, 400, 800)]
+    d = [abs(b.value - a.value) for a, b in zip(qs, qs[1:])]
+    assert all(3.0 < a / b < 6.0 for a, b in zip(d, d[1:]))   # second order
+    assert d[0] > 1e5 * qs[0].err
+
+
+def test_junction_dispatch_reaches_its_tolerance():
+    """The front door: a tolerance in the unit the field reads, and a
+    receipt naming the rung that met it."""
+    dev = sf.pn_junction()
+    truth = _junction_converged(dev, 1.0)
+    for tol in (0.5, 1e-3):
+        c = sf.junction_dispatch(dev, 1.0, tol)
+        assert c.err <= tol
+        assert c.value - c.err <= truth <= c.value + c.err
+        assert c.receipt and c.receipt[-1][0] == "newton"
+
+
+def test_junction_dispatch_refuses_two_ways():
+    """Two different walls, two different prices. A tolerance below the
+    arithmetic floor cannot be bought with any number of steps; a
+    ladder too short for the bias cannot travel the potential, because
+    the damping cap limits each step to three thermal volts."""
+    dev = sf.pn_junction()
+    with pytest.raises(sf.Refusal, match="depletion-charge"):
+        sf.junction_dispatch(dev, 1.0, 1e-12)
+    with pytest.raises(sf.Refusal, match="depletion-charge") as ex:
+        sf.junction_dispatch(dev, 5.0, 0.05, m_max=20)
+    assert "thermal volts" in ex.value.next_price
+
+
+def test_newton_enclosure_refuses_a_positive_offdiagonal():
+    """beta comes from the M-matrix witness, so the Z-matrix hypothesis
+    is load-bearing here exactly as it is for the reactor: flip one
+    off-diagonal of the Jacobian positive and the enclosure is refused
+    rather than quietly computed from an inverse that may have negative
+    entries."""
+    dev = sf.pn_junction(N=40)
+    psi = sf.junction_potential(dev, 1.0, 40)
+    J = sf._poisson_jacobian(dev, psi, 1.0 / sf._VT)
+    J[5, 9] = +0.01
+    with pytest.raises(ValueError, match="Z-matrix"):
+        sf.newton_enclosure(1e-12, J, lambda r: 1.0)
+
+
+def test_newton_enclosure_radius_tracks_the_residual():
+    """Below the critical rung the radius is essentially beta times the
+    residual, since h is small and the Kantorovich prefactor tends to
+    1. Halving the residual must halve the radius."""
+    dev = sf.pn_junction(N=40)
+    psi = sf.junction_potential(dev, 1.0, 60)
+    J = sf._poisson_jacobian(dev, psi, 1.0 / sf._VT)
+    a, b = (sf.newton_enclosure(res, J, lambda r: dev["a"] * 3.0)
+            for res in (1e-9, 5e-10))
+    assert 1.99 < a / b < 2.01
+
+
+def test_junction_jacobian_is_an_m_matrix_everywhere():
+    """Why the discrete solution is unique, checked rather than
+    asserted. The nonlinearity is strictly increasing, so the Jacobian
+    is a nonsingular M-matrix at EVERY potential, not just at the
+    answer -- a strictly monotone operator has one root, so the
+    enclosure is around the solution and not merely around a
+    solution."""
+    dev = sf.pn_junction(N=40)
+    rng = np.random.default_rng(7)
+    for _ in range(8):
+        psi = rng.uniform(-20.0, 20.0, dev["N"] + 1)
+        u = sf.mmatrix_witness(sf._poisson_jacobian(dev, psi, 1.0 / sf._VT))
+        assert (u > 0).all()
+
+
+def test_witness_normalization_survives_ill_conditioning():
+    """A lesson bought once. The witness used to nudge u up by a fixed
+    10^-9, which silently assumes the solve behind it was accurate to
+    better than that. The unscaled nonlinear Poisson Jacobian has a
+    condition number near 10^9, the solve is wrong in the eighth digit,
+    and the fixed nudge left L u short of 1 -- a refusal with no
+    mathematical cause. Scaling by the measured shortfall has no
+    constant to outgrow."""
+    dev = sf.pn_junction(N=100)
+    psi = sf.junction_potential(dev, 0.0, 40)
+    J = sf._poisson_jacobian(dev, psi, 0.0)
+    J[1:-1, :] *= dev["lam2"] / dev["h"] ** 2      # the undivided equation
+    assert np.linalg.cond(J) > 1e7
+    u = sf.mmatrix_witness(J)
+    w, e = sf._fl_matvec(J, u)
+    assert (u > 0).all() and (w - e >= 1.0).all()
+    naive = np.linalg.solve(J, np.ones(len(J))) * (1.0 + 1e-9)
+    assert (J @ naive < 1.0).any()            # the old fixed nudge falls short

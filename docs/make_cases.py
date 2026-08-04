@@ -2899,7 +2899,286 @@ error, {mesh[2][1]:.2f} pcm</text>
 
 
 # ======================================================================
+def junction_case():
+    dev = sf.pn_junction()
+    volts = 1.0
+    v = volts / sf._VT
+    truth = sf.junction_charge_bracket(
+        dev, volts, sf.junction_potential(dev, volts, 400)).value
+
+    # the ladder: residual and certified error after each Newton step
+    rungs = []
+    for m in range(1, 21):
+        psi = sf.junction_potential(dev, volts, m)
+        r, e = sf._poisson_residual(dev, psi, v)
+        res = float((abs(r) + e).max())
+        try:
+            c = sf.junction_charge_bracket(dev, volts, psi)
+            rungs.append((m, res, c.value, c.err))
+        except ValueError:
+            rungs.append((m, res, None, None))
+    first = min(m for m, _, _, w in rungs if w is not None)
+    certd = [(m, res, q, w) for m, res, q, w in rungs if w is not None]
+    contained = sum(1 for _, _, q, w in certd if q - w <= truth <= q + w)
+    r0 = next(x for x in rungs if x[0] == first)
+    rlast = next(x for x in rungs if x[0] == first - 1)
+    drop = r0[3] / next(x[3] for x in rungs if x[0] == first + 1)
+
+    # the three numbers Kantorovich runs on, at the certifying rung
+    psi0 = sf.junction_potential(dev, volts, first)
+    beta = float(sf.mmatrix_witness(sf._poisson_jacobian(dev, psi0, v)).max())
+
+    # the front door
+    lines, chosen = [], []
+    for vv in (0.0, 1.0, 3.0):
+        c = sf.junction_dispatch(dev, vv, 1e-3)
+        chosen.append(c)
+        lines.append(f"junction_dispatch(pn_junction(), {vv:g}, "
+                     f"tol_nC=1e-3)\n  -> {c.value:.6f} +/- {c.err:.3g} "
+                     f"nC/cm2   [{c.tier.name}]\n  {c.provenance[-1]}")
+    try:
+        sf.junction_dispatch(dev, 5.0, 0.05, m_max=20)
+        short = "NOT REFUSED"
+    except sf.Refusal as exc:
+        short = str(exc).split("; measured")[0] + "\n  next: " + exc.next_price
+    lines.append("\njunction_dispatch(pn_junction(), 5.0, tol_nC=0.05, "
+                 "m_max=20)\n  -> " + short)
+
+    # what the certificate is about: the mesh
+    mesh = [(n, sf.junction_dispatch(sf.pn_junction(N=n), volts, 1e-3))
+            for n in (100, 200, 400, 800)]
+    mdiff = [abs(b[1].value - a[1].value) for a, b in zip(mesh, mesh[1:])]
+
+    # the independent check: the depletion approximation
+    dep = []
+    for vv in (0.0, 1.0, 2.0, 3.0):
+        w = sf.depletion_width_analytic(dev, vv)
+        q_an = sf._QE * dev["Nd"] * (w * 1e-7 / 2) * 1e9
+        c = sf.junction_dispatch(dev, vv, 1e-3)
+        dep.append((vv, w, q_an, c.value, c.value / q_an))
+
+    # the witness, borrowed from the reactor, and the bug it exposed
+    Ju = sf._poisson_jacobian(dev, psi0, v).copy()
+    Ju[1:-1, :] *= dev["lam2"] / dev["h"] ** 2
+    cond = float(np.linalg.cond(Ju))
+    naive = np.linalg.solve(Ju, np.ones(len(Ju))) * (1.0 + 1e-9)
+    naive_short = float((Ju @ naive).min())
+
+    ms = [m for m, _, _, _ in rungs]
+    resid = [r for _, r, _, _ in rungs]
+    lo_y = min(min(resid), min(w for _, _, _, w in certd)) * 0.2
+    hi_y = max(resid) * 5
+    ax = Axes((1, 20), (lo_y, hi_y), h=360, logy=True, ml=68)
+    ticks = [10.0 ** e for e in range(-14, 3, 2)]
+    svg = f'''<svg viewBox="0 0 640 360" role="img" aria-label="Newton
+residual falling smoothly while the certified error does not exist at
+all until the Kantorovich condition closes, then plunges">
+{ax.grid(ticks, (1, 5, 10, 15, 20), xfmt=lambda t: f"{t:g}",
+         yfmt=lambda t: f"1e{round(math.log10(t))}")}
+<rect x="{ax.ml}" y="{ax.mt}" width="{ax.X(first - 0.5) - ax.ml:.1f}"
+      height="{ax.h - ax.mt - ax.mb}" fill="var(--rust)" opacity="0.07"/>
+<text x="{(ax.ml + ax.X(first - 0.5)) / 2:.1f}" y="{ax.mt + 16}"
+      text-anchor="middle" class="board-text" font-size="10.5"
+      opacity="0.8">no bound exists here</text>
+<path d="{ax.path(ms, resid)}" fill="none" class="board-ink"
+      stroke-width="1.8" stroke-dasharray="4 3" opacity="0.85"/>
+<path d="{ax.path([m for m, _, _, _ in certd],
+                  [w for _, _, _, w in certd])}" fill="none"
+      class="blue-ink" stroke-width="2.2"/>
+{"".join(f'<circle cx="{ax.X(m):.1f}" cy="{ax.Y(w):.1f}" r="3" '
+         f'class="blue-fill"/>' for m, _, _, w in certd)}
+<text x="{ax.X(19):.1f}" y="{ax.Y(resid[-1]) - 8:.1f}" text-anchor="end"
+      class="board-text" font-size="10.5" opacity="0.8">residual</text>
+<text x="{ax.X(18):.1f}" y="{ax.Y(certd[-1][3]) + 16:.1f}" text-anchor="end"
+      class="board-text" font-size="10.5" opacity="0.9">certified error,
+nC/cm&#178;</text>
+<text x="{ax.ml + 6}" y="{ax.h - 4}" class="board-text" font-size="10.5"
+      opacity="0.7">Newton steps</text></svg>'''
+
+    rows = "".join(
+        f"<tr><td>{m}</td><td>{res:.3e}</td>"
+        + (f"<td>{q:.6f}</td><td>{w:.3g}</td></tr>" if w is not None
+           else "<td>&#8212;</td><td>refused</td></tr>")
+        for m, res, q, w in rungs if m <= 17)
+
+    return page(
+        "Case: a pn junction, and a proof that the answer exists",
+        "certified case",
+        "A small residual is not a small error",
+        "Device simulators stop Newton's method when the residual looks "
+        "small. That is not a bound. Kantorovich's theorem turns the "
+        "residual into a proof that an exact solution exists, and a "
+        "radius that contains it.",
+        [
+            "<h2>The idea</h2>"
+            "<p>Every other certificate in this library answers <em>how "
+            "far is this number from the right one</em>. This one has "
+            "to answer something prior: is there a right one at all, "
+            "anywhere near here?</p>"
+            "<p>The question is not pedantic. A semiconductor's "
+            "carriers are exponentials of the unknown potential, and "
+            "across a junction that potential swings far enough that "
+            "the densities move through twenty orders of magnitude. "
+            "Newton's method on such a system is run with heavy damping "
+            "and stopped when the residual stops shrinking. But a small "
+            "residual is consistent with a solution nearby, with a "
+            "solution far away, and with no solution at all &#8212; "
+            "residuals are small near almost-singular points too, and "
+            "that is precisely the neighbourhood these equations "
+            "live in.</p>"
+            "<p>Kantorovich's theorem converts a residual into "
+            "existence. It needs three numbers: a bound &#946; on the "
+            "inverse Jacobian, the length &#951; of the Newton step it "
+            "implies, and a Lipschitz constant K for the Jacobian "
+            "nearby. If &#946;K&#951; &#8804; &#189;, then an exact "
+            "solution <em>exists</em> and sits within a computable "
+            "radius. If not, nothing is proven, and the honest report "
+            "is a refusal.</p>"
+            "<p>The first of those three numbers is a debt already "
+            "paid. Discretise the nonlinear Poisson equation and the "
+            "Jacobian is a Z-matrix: the second difference contributes "
+            "negative off-diagonals, the carrier response a positive "
+            "diagonal. That is the same hypothesis a reactor's loss "
+            "operator satisfies, so <code>mmatrix_witness</code> "
+            "&#8212; written for neutrons &#8212; prices "
+            "&#8214;J<sup>-1</sup>&#8214; here with no new proof. The "
+            "physics has nothing in common. The cone is the same.</p>",
+            code_section(sf.newton_enclosure, sf.pn_junction,
+                         sf.junction_charge_bracket, sf.junction_dispatch,
+                         sf.depletion_width_analytic),
+            "<h2>The run</h2>"
+            f"<p>A silicon pn junction, 1 &#181;m, 10<sup>17</sup> "
+            f"cm<sup>-3</sup> both sides, 200 cells, at {volts:g} V "
+            "reverse bias. Newton from the charge-neutral guess:</p>"
+            "<table><thead><tr><th>Newton steps</th><th>residual</th>"
+            "<th>charge (nC/cm&#178;)</th>"
+            "<th>certified error</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            f"<p class='note'>A fully converged run of the same "
+            f"iteration puts the charge at {truth:.6f} nC/cm&#178;. It "
+            f"lies inside <strong>{contained}/{len(certd)}</strong> of "
+            "the certified brackets.</p>",
+            f"<figure>{svg}<figcaption>Two curves that a residual-based "
+            "stopping rule assumes are the same curve. The dashed line "
+            "is the residual, which falls smoothly from the first step. "
+            "The solid line is the certified error, which does not "
+            f"exist until step {first} &#8212; Kantorovich either closes "
+            "or it does not &#8212; and then falls off a cliff, because "
+            "quadratic convergence squares the residual and the theorem "
+            "is linear in it.</figcaption></figure>",
+            "<h2>Five parts in a million buys half a per cent</h2>"
+            f"<p>The last refusing step has residual "
+            f"{rlast[1]:.2g}. One step later the residual is "
+            f"{r0[1]:.2g} &#8212; the sort of number that gets called "
+            f"converged &#8212; and the certificate closes at "
+            f"{r0[3]:.3g} nC/cm&#178;, which is "
+            f"{100 * r0[3] / r0[2]:.2f} per cent of the answer.</p>"
+            f"<p>The gap between those two numbers is not a detail of "
+            f"the bound; it is the problem's conditioning. "
+            f"&#8214;J<sup>-1</sup>&#8214; is {beta:.0f} here, and the "
+            "charge functional contributes its own gradient on top. "
+            "Neither factor is visible in the residual, so a stopping "
+            "rule written on the residual is guessing at their product. "
+            f"One further step and the certified error falls by a "
+            f"factor of {drop:.0f}.</p>",
+            "<h2>The front door</h2>"
+            "<p>The tolerance is stated in the unit the measurement "
+            "comes in: nC/cm&#178; of charge per unit area, which is "
+            "what a capacitance-voltage sweep integrates.</p>"
+            f"<pre>{esc(chr(10).join(lines))}</pre>"
+            "<p>The refusal at 5 V is not about the tolerance. The "
+            "potential has to travel two hundred thermal volts and the "
+            "damping cap moves it three at a time, so twenty steps "
+            "cannot arrive however loose the request &#8212; and the "
+            "refusal says that rather than reporting the iterate it "
+            "happened to reach.</p>",
+            "<h2>What is being certified</h2>"
+            "<p>The enclosure is around the exact solution of the "
+            "<em>discretised</em> equations. The distance to the "
+            "differential equation is the model's, and it is stated "
+            "rather than absorbed:</p>"
+            "<table><thead><tr><th>cells</th><th>charge "
+            "(nC/cm&#178;)</th><th>certified error</th>"
+            "<th>change from previous</th></tr></thead><tbody>"
+            + "".join(f"<tr><td>{n}</td><td>{c.value:.6f}</td>"
+                      f"<td>{c.err:.2g}</td><td>"
+                      + (f"{mdiff[i - 1]:.4g}" if i else "&#8212;")
+                      + "</td></tr>" for i, (n, c) in enumerate(mesh))
+            + "</tbody></table>"
+            f"<p>Second order in the mesh, and about "
+            f"{mdiff[0] / mesh[0][1].err:.0e} times the certified "
+            "radius at the default resolution. On this problem the "
+            "certificate is nowhere near the weak link &#8212; which is "
+            "only known because both were measured, and is the reason "
+            "to print both.</p>"
+            "<p>The independent check comes from a closed form that "
+            "uses none of the discretised operators. The textbook "
+            "depletion approximation sweeps the junction perfectly "
+            "clean of carriers, which must overstate the charge, and "
+            "must overstate it by less as reverse bias widens the "
+            "region it is wrong about:</p>"
+            "<table><thead><tr><th>bias (V)</th><th>depletion width "
+            "(nm)</th><th>textbook charge</th><th>certified charge</th>"
+            "<th>ratio</th></tr></thead><tbody>"
+            + "".join(f"<tr><td>{vv:g}</td><td>{w:.1f}</td>"
+                      f"<td>{qa:.2f}</td><td>{qc:.2f}</td>"
+                      f"<td>{ra:.4f}</td></tr>" for vv, w, qa, qc, ra in dep)
+            + "</tbody></table>"
+            f"<p>Below one at every bias, and climbing monotonically "
+            f"from {dep[0][4]:.4f} to {dep[-1][4]:.4f}. The textbook "
+            "answer is wrong in the direction and by the amount the "
+            "textbook says it should be, which is the strongest check "
+            "available here, because nothing in that formula touched "
+            "the matrices.</p>",
+            "<h2>The witness, borrowed &#8212; and the bug it found</h2>"
+            "<p>Reusing a proof across domains is the flywheel this "
+            "project is betting on, and it is worth reporting that the "
+            "reuse was not free. <code>mmatrix_witness</code> found its "
+            "witness by solving Lu = 1 and nudging the result up by a "
+            "fixed 10<sup>-9</sup> for slack. That nudge is a silent "
+            "bet that the solve behind it was accurate to better than "
+            "10<sup>-9</sup>. On a reactor it was. Written the way the "
+            "physics writes it, this Jacobian has a condition number of "
+            f"{cond:.2g}, the solve is wrong in the eighth digit, and "
+            f"the nudged vector satisfies only Lu &#8805; "
+            f"{naive_short:.10f} &#8212; short of 1, so the witness "
+            "refused a matrix that is perfectly good.</p>"
+            "<p>The fix removes the constant instead of enlarging it: "
+            "scale u by its own measured shortfall, which costs one "
+            "extra matvec and cannot be outgrown, because the shortfall "
+            "and the rounding pad both scale with u. A borrowed proof "
+            "was load-bearing enough to expose an assumption its "
+            "original caller never tested, and the reactor's own "
+            "certificates are unchanged.</p>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment against a fully converged solve: "
+            f"<strong>{contained}/{len(certd)}</strong> certified "
+            "rungs.</li>"
+            f"<li>The certificate first closes at step "
+            f"<strong>{first}</strong>; step {first - 1} is refused "
+            f"with residual {rlast[1]:.2g}.</li>"
+            f"<li>One step past the first certificate the error falls "
+            f"by <strong>{drop:.0f}&#215;</strong>, and settles at "
+            f"<strong>{certd[-1][3]:.2g} nC/cm&#178;</strong>.</li>"
+            f"<li>Mesh convergence measured second order; the "
+            f"discretisation is <strong>{mdiff[0] / mesh[0][1].err:.0e}"
+            "&#215;</strong> the certified radius.</li>"
+            f"<li>Against the depletion approximation: ratio "
+            f"<strong>{dep[0][4]:.4f}</strong> at 0 V rising to "
+            f"<strong>{dep[-1][4]:.4f}</strong> at 3 V, in the "
+            "direction the approximation is known to err.</li>"
+            "<li>A 5 V bias on a twenty-step ladder <strong>refuses"
+            "</strong>, and prices the damping cap rather than the "
+            "tolerance.</li>"
+            f"<li>The reactor's M-matrix witness ran unaltered on a "
+            f"Jacobian of condition number {cond:.2g}, after its fixed "
+            "nudge was replaced by a measured one.</li>"
+            "</ul>",
+        ])
+
+
 CASES = {
+    "junction.html": junction_case,
     "criticality.html": criticality_case,
     "tfi-reduced-basis.html": tfi_case,
     "h2-bracket.html": h2_case,

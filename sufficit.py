@@ -4457,7 +4457,7 @@ def mmatrix_witness(L: np.ndarray) -> np.ndarray:
     M-matrix, so L^-1 >= 0, and the same u bounds the inverse, since
     L^-1 e <= u componentwise.
 
-    We find u by solving L u = 1 and nudging up for slack, then VERIFY
+    We find u by solving L u = 1 and scaling up for slack, then VERIFY
     the result against a bound on the check's own rounding. How u was
     found does not matter; that L u >= 1 holds is what is checked, and
     a solver that lied would fail the check rather than corrupt the
@@ -4465,20 +4465,41 @@ def mmatrix_witness(L: np.ndarray) -> np.ndarray:
     runs on, applied to a hypothesis instead of an answer. Both tests
     are needed: flipping one off-diagonal of a reactor operator positive
     leaves a u that still passes the second check, and only the
-    Z-matrix test catches it."""
+    Z-matrix test catches it.
+
+    The scaling is measured, not guessed. A fixed nudge is a bet that
+    the solve came back accurate to better than the nudge, and the bet
+    is lost the moment L is ill-conditioned: the Jacobian of a
+    semiconductor's nonlinear Poisson equation, written the way the
+    physics writes it, has a condition number in the hundreds of
+    millions, so a solve is wrong in the eighth digit and a 10^-9
+    nudge leaves L u short of 1. Scaling u by its own measured
+    shortfall costs one extra matvec, needs no constant, and cannot be
+    outgrown, because both the shortfall and the rounding pad scale
+    with u."""
     off = L - np.diag(np.diag(L))
     if (off > 0).any():
         i, j = np.unravel_index(np.argmax(off), off.shape)
         raise ValueError(
             f"not a Z-matrix: L[{i},{j}] = {off[i, j]:g} > 0, so "
             "non-negativity of the inverse is not available")
-    u = np.linalg.solve(L, np.ones(len(L))) * (1.0 + 1e-9)
-    w, e = _fl_matvec(L, u)
-    if (u <= 0).any() or (w - e < 1.0).any():
+    u = np.linalg.solve(L, np.ones(len(L)))
+    if (u <= 0).any():
         raise ValueError(
             "no positive witness u with L u >= 1: L is not a certified "
             "nonsingular M-matrix, so L^-1 >= 0 is unproven")
-    return u
+    for _ in range(8):
+        w, e = _fl_matvec(L, u)
+        lo = float((w - e).min())
+        if lo >= 1.0:
+            return u
+        if lo <= 0.0:
+            raise ValueError(
+                "no positive witness u with L u >= 1: L is not a certified "
+                "nonsingular M-matrix, so L^-1 >= 0 is unproven")
+        u = u * ((1.0 + 8.0 * float(e.max())) / lo)
+    raise ValueError("witness normalization did not settle: L u >= 1 could "
+                     "not be verified after eight rescalings")
 
 
 def keff_bracket(L: np.ndarray, F: np.ndarray, phi: np.ndarray,
@@ -4633,6 +4654,248 @@ def slab_buckling_keff(width: float, D1: float = 1.4, D2: float = 0.4,
     the world stays stated rather than implied."""
     B2 = (math.pi / width) ** 2
     return (nf1 + nf2 * ss12 / (sa2 + D2 * B2)) / (sr1 + D1 * B2)
+
+
+# ------------------------------------------------- semiconductor
+# devices. Every certificate above answers "how far is this number
+# from the right one". This section answers a question nobody upstream
+# has had to ask: is there a right one at all?
+#
+# A device simulator solves a nonlinear system by Newton's method and
+# stops when the residual looks small. That is not a bound, and the
+# gap is not pedantic. A small residual is consistent with a solution
+# nearby, with a solution far away, and with no solution at all --
+# residuals are small near near-singular points too, which is exactly
+# where semiconductor equations live, since the carrier densities are
+# exponentials of the unknown and swing twenty orders of magnitude
+# across a junction. What is wanted is a theorem that converts a
+# computed residual into the existence of an exact solution and a
+# radius around the iterate that provably contains it. Kantorovich's
+# theorem is that converter, and it needs three numbers: a bound on
+# the inverse Jacobian, the size of the Newton step, and a Lipschitz
+# constant for the Jacobian nearby.
+#
+# The first of those is the reactor's problem again. Discretize the
+# nonlinear Poisson equation and the Jacobian comes out a Z-matrix --
+# a positive second difference off the diagonal, a positive carrier
+# response on it -- so mmatrix_witness, written to prove a reactor's
+# operator inverse-positive, prices ||J^-1|| here without a line of
+# new proof. The physics is unrelated. The cone is the same.
+
+_VT = 0.025852          # thermal voltage kT/q at 300 K, volts
+_NI = 1.0e10            # intrinsic carrier density of silicon, cm^-3
+_EPS_SI = 11.7 * 8.854e-14   # permittivity of silicon, F/cm
+_QE = 1.602176634e-19   # elementary charge, C
+
+
+def newton_enclosure(res: float, J: np.ndarray, lip) -> float:
+    """Kantorovich's theorem as a checkable predicate: turn a computed
+    residual into a proof that an exact solution EXISTS, and a radius
+    around the iterate that contains it.
+
+    Given a bound res on ||F(x)||_inf, a bound beta on ||J(x)^-1||_inf,
+    and a constant K with ||J(a) - J(b)|| <= K |a - b| throughout a
+    ball, set eta = beta * res and h = beta * K * eta. If h <= 1/2 then
+    Newton's method started at x converges, its limit is an exact root,
+    and that root lies within (1 - sqrt(1 - 2h)) * eta / h of x. The
+    conclusion is existence, not merely accuracy, which is why it can
+    be trusted at a point no one has proven is near anything.
+
+    beta comes from mmatrix_witness, so this refuses on any Jacobian
+    that is not a Z-matrix. That is a real restriction and a deliberate
+    one: the alternative route to beta, bounding ||I - RJ|| for an
+    approximate inverse R, costs a matrix product and belongs here the
+    day a caller needs it, not before.
+
+    K is supplied by the caller as a function of the ball radius,
+    because no generic code can know it -- it is a second-derivative
+    bound on the specific equations. The ball is then searched from
+    tight to loose, and the first radius whose K certifies an enclosure
+    no larger than the ball itself is the answer. Refuses when none
+    does, which is the honest report that the iterate is not yet
+    provably near a solution however small its residual looks."""
+    u = mmatrix_witness(J)
+    beta = _up(float(u.max()))
+    eta = _up(beta * _up(res))
+    worst = None
+    for ball in (1e-12, 1e-9, 1e-6, 1e-3, 1e-2, 1e-1, 1.0, 3.0):
+        k = _up(float(lip(ball)))
+        h = _up(_up(beta * k) * eta)
+        worst = (ball, k, h)
+        if h <= 0.5:
+            # the theorem's radius is eta * (1 - sqrt(1-2h))/h, which
+            # loses most of its digits to cancellation when h is small
+            # -- exactly the regime a converged Newton step lands in.
+            # Multiplying through by the conjugate gives the same
+            # number as eta * 2/(1 + sqrt(1-2h)), with no subtraction
+            # of nearly equal quantities, and shows in passing that the
+            # factor is always between 1 and 2. Rounding the
+            # denominator down keeps the radius an upper bound.
+            r = _up(eta * (2.0 / _dn(1.0 + math.sqrt(1.0 - 2.0 * h))))
+            if r <= ball:
+                return r
+    ball, k, h = worst
+    raise ValueError(
+        f"Kantorovich fails: beta={beta:.3g} eta={eta:.3g} K={k:.3g} "
+        f"gives h={h:.3g} > 1/2 even on a ball of radius {ball:g}, so "
+        f"no solution is proven to exist near this iterate; the residual "
+        f"would have to fall below {0.5 / (beta * beta * k):.3g}")
+
+
+def pn_junction(N: int = 200, length_um: float = 1.0, Na: float = 1e17,
+                Nd: float = 1e17) -> dict:
+    """A silicon pn junction, one dimension, abrupt, at room
+    temperature. The unknown is the electrostatic potential; the
+    carriers follow it through Boltzmann statistics, so Poisson's
+    equation closes on itself and becomes nonlinear:
+
+        -lambda^2 psi'' + (exp(psi - V) - exp(-psi) - C(x)) = 0
+
+    in units where potential is measured in thermal volts kT/q,
+    densities in the intrinsic concentration, and length in the device
+    length. C(x) is the doping, negative in the p region and positive
+    in the n region. V is the reverse bias, entering as the split
+    between the two carrier quasi-Fermi levels -- the standard
+    depletion-regime model, exact only where the current is negligible,
+    which is what reverse bias means.
+
+    Returned scaled so the residual is O(1): the equation is divided by
+    lambda^2/h^2, leaving a plain second difference against a small
+    multiple of the exponentials. That is not cosmetic. Undivided, the
+    two terms differ by ten orders of magnitude, the residual cannot be
+    evaluated below 10^-5 in double precision, and Kantorovich needs
+    10^-8 to close -- the certificate would fail for no reason but
+    arithmetic."""
+    L = length_um * 1e-4
+    x = np.linspace(0.0, 1.0, N + 1)
+    C = np.where(x < 0.5, -Na, Nd) / _NI
+    lam2 = _EPS_SI * _VT / (_QE * _NI * L * L)
+    h = 1.0 / N
+    return {"N": N, "x": x, "h": h, "C": C, "lam2": lam2, "L": L,
+            "a": h * h / lam2, "Na": Na, "Nd": Nd,
+            "label": f"pn junction {length_um:g}um Na={Na:.0e} "
+                     f"Nd={Nd:.0e} N={N}"}
+
+
+def _poisson_residual(dev: dict, psi: np.ndarray, v: float):
+    """Residual and a bound on its own rounding, signed so that the
+    Jacobian is a Z-matrix. Assumes exp is faithful to one ulp, the
+    same assumption the Interval class states."""
+    N, a, C = dev["N"], dev["a"], dev["C"]
+    en, ep = np.exp(psi - v), np.exp(-psi)
+    lo, hi = math.asinh(C[0] / 2), math.asinh(C[N] / 2) + v
+    r = np.empty_like(psi)
+    r[1:N] = (-(psi[:-2] - 2 * psi[1:-1] + psi[2:])
+              + a * (en[1:-1] - ep[1:-1] - C[1:-1]))
+    r[0] = psi[0] - lo
+    r[N] = psi[N] - hi
+    mag = np.zeros_like(psi)
+    mag[1:N] = (np.abs(psi[:-2]) + 2 * np.abs(psi[1:-1]) + np.abs(psi[2:])
+                + a * (en[1:-1] + ep[1:-1] + np.abs(C[1:-1])))
+    mag[0], mag[N] = abs(psi[0]) + abs(lo), abs(psi[N]) + abs(hi)
+    return r, 8.0 * np.finfo(float).eps * mag
+
+
+def _poisson_jacobian(dev: dict, psi: np.ndarray, v: float) -> np.ndarray:
+    N, a = dev["N"], dev["a"]
+    J = np.zeros((N + 1, N + 1))
+    i = np.arange(1, N)
+    J[i, i - 1] = -1.0
+    J[i, i + 1] = -1.0
+    J[i, i] = 2.0 + a * (np.exp(psi - v) + np.exp(-psi))[1:N]
+    J[0, 0] = J[N, N] = 1.0
+    return J
+
+
+def junction_potential(dev: dict, volts: float, m: int,
+                       cap: float = 3.0) -> np.ndarray:
+    """m damped Newton steps from the charge-neutral guess. The damping
+    is the one device simulators use: no node's potential may move more
+    than cap thermal volts in a step, because the residual contains
+    exp(psi) and an undamped first step overflows it. Nothing here is
+    certified -- this is the proposer. What it returns is checked."""
+    v = volts / _VT
+    psi = np.arcsinh(dev["C"] / 2) + np.where(dev["x"] < 0.5, 0.0, v)
+    for _ in range(m):
+        r, _ = _poisson_residual(dev, psi, v)
+        d = np.linalg.solve(_poisson_jacobian(dev, psi, v), -r)
+        big = float(np.abs(d).max())
+        psi = psi + d * min(1.0, cap / big) if big > 0 else psi
+    return psi
+
+
+def junction_charge_bracket(dev: dict, volts: float,
+                            psi: np.ndarray) -> Certified:
+    """The depletion charge per unit area, in nC/cm^2, with a bound
+    that covers the distance to the exact discrete solution.
+
+    Two steps, and the first is the one that matters. Kantorovich
+    certifies a radius r around psi containing an exact solution of the
+    discrete equations. The charge is a smooth functional of the
+    potential, so its own error is r times the functional's gradient,
+    bounded over the ball rather than evaluated at the iterate.
+
+    What this does NOT cover is stated rather than implied: the mesh.
+    The bound is about the exact solution of the discretized equations,
+    not of the differential equation. Measured on the default junction
+    at 1 V, the mesh costs about 7 parts in 10^4 at N=100 and falls as
+    h^2, while a converged rung's certified radius is worth 10^-8
+    nC/cm^2 -- six orders of magnitude apart, with the discretization
+    the larger. Which of the two binds does depend on the rung: at the
+    FIRST rung that certifies at all the radius is worth 0.78 nC/cm^2
+    and the mesh is the smaller of the two. Both are printed."""
+    v = volts / _VT
+    N, a, C, h = dev["N"], dev["a"], dev["C"], dev["h"]
+
+    def lip(ball):
+        # J differs from J(psi) only on the diagonal, and each entry is
+        # a * (exp(psi-v) + exp(-psi)); its derivative bounds the
+        # Lipschitz constant over the ball. The 10^-12 is slack for the
+        # exponentials' own rounding, thousands of times what a
+        # faithful exp can cost.
+        return a * float((np.exp(psi - v + ball)
+                          + np.exp(-psi + ball)).max()) * (1.0 + 1e-12)
+
+    r, e = _poisson_residual(dev, psi, v)
+    res = _up(float((np.abs(r) + e).max()))
+    rad = newton_enclosure(res, _poisson_jacobian(dev, psi, v), lip)
+    w = np.full(N + 1, h)
+    w[0] = w[N] = h / 2
+    keep = dev["x"] >= 0.5
+    en, ep = np.exp(psi - v), np.exp(-psi)
+    rho = C - en + ep
+    q = float((rho[keep] * w[keep]).sum())
+    # the gradient is summed over a few hundred terms and each is an
+    # exp, so widen it by far more than the n*eps that costs
+    grad = float((w[keep] * (np.exp(psi[keep] - v + rad)
+                             + np.exp(-psi[keep] + rad))).sum()) * (1 + 1e-12)
+    # the charge sum cancels hard: in the neutral region the doping and
+    # the majority carriers are both about 10^7 and their difference is
+    # nearly nothing, so the rounding is set by the TERMS and not by
+    # the total. Bound it on the terms.
+    terms = float((w[keep] * (np.abs(C[keep]) + en[keep] + ep[keep])).sum())
+    scale = _QE * _NI * dev["L"] * 1e9      # scaled charge -> nC/cm^2
+    err = _up(_up(rad * grad) * scale
+              + 8.0 * np.finfo(float).eps * terms * scale)
+    return Certified(q * scale, err, Tier.RIGOROUS,
+                     (f"junction-charge n={N + 1} newton-kantorovich "
+                      f"m-matrix-witness radius={rad:.3g} kT/q +fp",))
+
+
+def depletion_width_analytic(dev: dict, volts: float) -> float:
+    """The textbook answer for the same junction, in nm. Assume the
+    depletion region is swept perfectly clean of carriers and the
+    neutral regions perfectly neutral; then the charge is the doping,
+    Poisson integrates twice by hand, and the width is a square root.
+    Not a certificate and not used by one -- it is the independent
+    truth the computed model is measured against. It should be close
+    and it should not be exact: the real transition is smooth over a
+    few Debye lengths, so the true depletion charge is a little smaller
+    than this, and the gap must shrink as reverse bias widens the
+    region it is wrong about."""
+    vbi = _VT * math.log(dev["Na"] * dev["Nd"] / (_NI * _NI))
+    return math.sqrt(2 * _EPS_SI * (vbi + volts) / _QE
+                     * (1.0 / dev["Na"] + 1.0 / dev["Nd"])) * 1e7
 
 
 # ------------------------------------------------------------- The
@@ -5443,3 +5706,60 @@ def keff_continuum_bracket(width: float = 70.0, Ns=(25, 50, 100, 200),
                         f"{g.err * 1e5:.3g} pcm + finest bracket "
                         f"{fine.err * 1e5:.3g} pcm",),
                      min(1.0, g.fail_p + fine.fail_p))
+
+
+def junction_dispatch(dev: dict, volts: float, tol_nC: float,
+                      m_max: int = 80, jump: bool = True) -> Certified:
+    """The depletion charge of a junction, certified to a tolerance
+    stated in the unit a process engineer reads: nC/cm^2 of charge per
+    unit area, the quantity a capacitance-voltage measurement
+    integrates. The knob is the number of Newton steps.
+
+    This ladder has a shape none of the others has. Everywhere else in
+    this library the error shrinks smoothly and the planner walks down
+    it. Here the early rungs return NOTHING -- not a loose bound, no
+    bound at all -- because Kantorovich either closes or does not, and
+    below the critical rung it does not. Then Newton's quadratic
+    convergence squares the residual each step and the certificate
+    appears at full strength in one rung.
+
+    The measured numbers on the default junction at 1 V are worth
+    quoting, because they are the argument for doing any of this. The
+    last refusing rung has residual 1.3 * 10^-3; one Newton step later
+    the residual is 5 * 10^-6 and the certificate closes -- at 0.78
+    nC/cm^2, which is half a per cent of the answer. Five parts in a
+    million of residual buys half a per cent of charge. The gap is
+    the inverse Jacobian, about 236 here, times the charge
+    functional's own gradient, and neither is visible in the residual.
+    A stopping rule written on the residual is guessing at that
+    product; one more step, and the certified error falls to 10^-5
+    nC/cm^2.
+
+    Why the discrete solution is unique is worth saying, since
+    Kantorovich alone would only give uniqueness in a ball. The
+    nonlinearity exp(psi - V) - exp(-psi) is strictly increasing, so
+    the Jacobian is a Z-matrix with a strictly dominant diagonal
+    everywhere, not just at the answer -- a nonsingular M-matrix at
+    every potential. A strictly monotone operator has one root. The
+    enclosure is around the solution, not around a solution."""
+    knobs = tuple(range(1, m_max + 1))
+
+    def run(m):
+        # ponytail: each rung restarts from the charge-neutral guess
+        # rather than resuming the previous rung's iterate, so the
+        # declared cost -- m linear solves -- is the cost actually
+        # paid. The whole ladder is milliseconds on a few hundred
+        # unknowns.
+        return junction_charge_bracket(dev, volts,
+                                       junction_potential(dev, volts, m))
+
+    def beyond():
+        return (f"the ladder ends at {knobs[-1]} Newton steps; if the "
+                "certificate has not closed by then the damping cap is "
+                "the binding constraint, not the tolerance, since the "
+                f"potential must travel {abs(volts) / _VT:.0f} thermal "
+                "volts and each step may move it by at most three")
+
+    rw = Rewrite("newton", knobs, float, run, beyond)
+    return plan("depletion-charge", tol_nC, [rw], jump=jump,
+                context=f"{dev['label']} at {volts:g} V")

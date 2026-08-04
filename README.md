@@ -24,7 +24,7 @@ and a search that uses the graph's shape rather than only its cost.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 172 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 183 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -32,10 +32,12 @@ the provenance of the bound. The bound is the product.
 New here? Start with the
 **[tour](https://glassontin.github.io/sufficit/)**, then
 [VISION.md](VISION.md), the founding argument, and [TARGETS.md](TARGETS.md),
-the nine target domains. All nine now have entry rewrites, and a tenth has
+the nine target domains. All nine now have entry rewrites, and two more have
 been entered from that document's further-afield list — reactor criticality,
-whose certificate comes from positivity rather than from a minimum
-principle. Each has a [case page](https://glassontin.github.io/sufficit/)
+whose certificate comes from positivity rather than from a minimum principle,
+and semiconductor devices, whose certificate proves that the answer exists
+before saying how accurate it is. Each has a
+[case page](https://glassontin.github.io/sufficit/)
 that regenerates from a fresh run on every push.
 
 ## Two answers with receipts
@@ -79,6 +81,7 @@ long pole).
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
 | Reactor criticality (k_eff) | 1 pcm in 20 fission-source iterations, bracket floor ~10⁻⁶ pcm; a mesh ladder then certifies the continuum answer to 0.57 pcm, checked against the closed-form buckling value | Perron–Frobenius, not the variational theorem: the operator is not self-adjoint, so positivity brackets it instead. Four hypotheses machine-checked; the solver's own error priced by the same witness. Continuum half degrades to EMPIRICAL and says so |
 | The same bracket on S_N transport | runs unaltered on a different equation — no new proof, no new code | the certificate needs the operator to preserve a cone, not to be symmetric; upwind differencing supplies that. Having both models measures the diffusion approximation itself: −9200 pcm at 5 mean free paths, −41 at 20 |
+| pn junction (drift-diffusion Poisson) | a proof that an exact solution exists within a stated radius, not just that the residual is small | Newton–Kantorovich, with ‖J⁻¹‖ priced by the reactor's M-matrix witness on completely different physics. The last refusing rung has residual 10⁻³; one step later, at 5·10⁻⁶, the certificate closes — and still only to half a per cent, which no residual reveals |
 | The planner (first compiler slice) | one question at three tolerances → three algorithms; model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts, certificates arbitrate; every rung logs predicted cost, measured cost, and measured error — the receipt audits the cost model |
 
 ## How it stays honest
