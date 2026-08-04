@@ -4397,6 +4397,201 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
             "uh": uh, "msh": msh}
 
 
+# ------------------------------------------------- reactor criticality.
+# Every eigenvalue bracket above this line runs on the variational
+# theorem, which needs a self-adjoint operator: lambda_min is a minimum,
+# so any trial state overshoots it, and that is the whole proof. A
+# reactor is not self-adjoint. Neutrons scatter DOWN in energy and
+# almost never up, so the two-group loss operator is block
+# lower-triangular and its transpose is a different physical problem
+# (the adjoint flux, importance). The minimum principle certifies
+# nothing here, and asking LAPACK for the eigenvalue does not help
+# either: a computed eigenvalue of a non-symmetric matrix has no cheap
+# rigorous bound, because its condition number is the reciprocal of an
+# eigenvector overlap that can be arbitrarily small.
+#
+# What survives is POSITIVITY. Neutrons cannot be negative, and every
+# operator in the problem respects that: fission makes neutrons
+# (F >= 0), and the loss operator inverts to a non-negative Green's
+# function (L^-1 >= 0) because a source anywhere produces flux
+# everywhere and nowhere a deficit. An operator that maps the
+# non-negative cone into itself has a Perron-Frobenius eigenvalue, and
+# Collatz and Wielandt showed how to sandwich it: for A >= 0 and ANY
+# strictly positive x,
+#     min_i (Ax)_i / x_i  <=  rho(A)  <=  max_i (Ax)_i / x_i,
+# because Ax >= m x implies A^k x >= m^k x and likewise from above.
+# Here A = L^-1 F and rho(A) is k_eff, the number reactor physics is
+# organized around. The bracket costs one application of A, which is
+# also exactly one step of the fission-source iteration every reactor
+# code already runs. Production codes stop that iteration when k stops
+# moving, which is a hope; this stops when the sandwich closes, which
+# is a bound.
+
+
+def _fl_matvec(M, x):
+    """A matrix-vector product and a rigorous bound on its own rounding
+    error, componentwise. The classical dot-product bound says a sum of
+    m products computed in floating point lands within gamma_m times the
+    sum of the absolute terms, gamma_m = m*eps/(1 - m*eps), so one extra
+    product of absolute values buys the certificate. Cheaper than
+    carrying the Interval class through a 200x200 matrix, and the same
+    trick the reduced-basis pad uses.
+
+    The factor two is not decoration. The bound is itself computed in
+    floating point -- gamma_m rounds, and so does the sum of absolute
+    terms -- so a bound quoted exactly at gamma_m could fall a few ulps
+    short of what it claims. Doubling swallows every such second-order
+    term at a cost of one bit, which on this problem is a million times
+    below anything that matters."""
+    y = M @ x
+    m = int(max(1, (M != 0).sum(1).max()))
+    return y, 2.0 * m * np.finfo(float).eps * (np.abs(M) @ np.abs(x))
+
+
+def mmatrix_witness(L: np.ndarray) -> np.ndarray:
+    """Proof that L inverts to something non-negative, which is what the
+    whole certificate rests on. Two facts do it. First, L must be a
+    Z-matrix: every off-diagonal entry non-positive, checked exactly on
+    the stored floats. Second, there must exist a strictly positive u
+    with L u >= 1 everywhere; a Z-matrix admitting one is a nonsingular
+    M-matrix, so L^-1 >= 0, and the same u bounds the inverse, since
+    L^-1 e <= u componentwise.
+
+    We find u by solving L u = 1 and nudging up for slack, then VERIFY
+    the result against a bound on the check's own rounding. How u was
+    found does not matter; that L u >= 1 holds is what is checked, and
+    a solver that lied would fail the check rather than corrupt the
+    bound -- which is the proposer/checker split the whole library
+    runs on, applied to a hypothesis instead of an answer. Both tests
+    are needed: flipping one off-diagonal of a reactor operator positive
+    leaves a u that still passes the second check, and only the
+    Z-matrix test catches it."""
+    off = L - np.diag(np.diag(L))
+    if (off > 0).any():
+        i, j = np.unravel_index(np.argmax(off), off.shape)
+        raise ValueError(
+            f"not a Z-matrix: L[{i},{j}] = {off[i, j]:g} > 0, so "
+            "non-negativity of the inverse is not available")
+    u = np.linalg.solve(L, np.ones(len(L))) * (1.0 + 1e-9)
+    w, e = _fl_matvec(L, u)
+    if (u <= 0).any() or (w - e < 1.0).any():
+        raise ValueError(
+            "no positive witness u with L u >= 1: L is not a certified "
+            "nonsingular M-matrix, so L^-1 >= 0 is unproven")
+    return u
+
+
+def keff_bracket(L: np.ndarray, F: np.ndarray, phi: np.ndarray,
+                 u: np.ndarray = None) -> Certified:
+    """A two-sided bracket on a reactor's criticality eigenvalue k_eff,
+    from any strictly positive trial flux. Collatz-Wielandt on
+    A = L^-1 F: form psi = A phi and take the smallest and largest of
+    the ratios psi_i / phi_i. A bad trial flux costs width, never truth,
+    which is the same bargain the variational brackets strike, bought
+    with positivity instead of a minimum principle.
+
+    Applying A needs a linear solve, and the solve is inexact. That
+    error is absorbed rather than assumed away, by the positivity
+    already proven: with residual r = F phi - L psi_hat, the true psi
+    differs from the computed one by L^-1 r, and since L^-1 >= 0 that
+    is at most max|r| times the witness u, componentwise. So the same
+    fact that licenses the theorem also prices the solver's mistake,
+    and the bracket stays rigorous however sloppily psi was computed.
+
+    Rounding in both matrix products is carried as well, and so is the
+    arithmetic that forms the ratios, so what comes back is a bracket
+    on the eigenvalue of the matrices exactly as stored. That those
+    matrices discretize a reactor is a separate claim, and it belongs
+    to whoever built them."""
+    if (phi <= 0).any():
+        i = int(np.argmin(phi))
+        raise ValueError(
+            f"trial flux is not strictly positive (phi[{i}] = "
+            f"{phi[i]:g}): Collatz-Wielandt brackets nothing without a "
+            "vector strictly inside the cone")
+    if (F < 0).any():
+        raise ValueError("fission operator has a negative entry: F >= 0 "
+                         "is what makes A = L^-1 F non-negative")
+    if u is None:
+        u = mmatrix_witness(L)
+    eps = np.finfo(float).eps
+    b, be = _fl_matvec(F, phi)
+    psi = np.linalg.solve(L, b)
+    q, qe = _fl_matvec(L, psi)
+    rho = _up(float((np.abs(b - q) + be + qe).max()) * (1.0 + 8.0 * eps))
+    pad = rho * u
+    ratio_lo, ratio_hi = (psi - pad) / phi, (psi + pad) / phi
+    # the ratios are themselves three rounded operations deep (the pad's
+    # multiply, the shift, the divide), so widen by more than that before
+    # taking the extremes
+    slop = 4.0 * eps * float(np.abs(ratio_hi).max())
+    lo = _dn(float(ratio_lo.min()) - slop)
+    hi = _up(float(ratio_hi.max()) + slop)
+    # the midpoint rounds too, and near the floor the half-width is far
+    # smaller than an ulp of the midpoint, so err has to carry that or
+    # value +- err would not actually be [lo, hi]
+    mid = 0.5 * (hi + lo)
+    return Certified(mid, _up(_up(0.5 * (hi - lo)) + 2.0 * eps * abs(mid)),
+                     Tier.RIGOROUS,
+                     (f"keff-cw n={len(L)} collatz-wielandt "
+                      f"m-matrix-witness solve-residual={rho:.3g} +fp",))
+
+
+def slab_reactor(N: int = 100, width: float = 70.0, D1: float = 1.4,
+                 D2: float = 0.4, sr1: float = 0.030, sa2: float = 0.100,
+                 ss12: float = 0.020, nf1: float = 0.007,
+                 nf2: float = 0.130) -> dict:
+    """A two-group diffusion reactor in one dimension: the smallest
+    model that is still a reactor rather than an eigenvalue problem
+    wearing one's clothes. Fast neutrons are born from fission, leak
+    and slow down; thermal neutrons arrive only by slowing down, and
+    are where most of the fissioning happens. That one-way traffic --
+    down-scatter with no path back up -- is what makes the loss
+    operator non-symmetric.
+
+    Cell-centred finite volume, zero flux at both edges, cross sections
+    in the usual light-water range. Cheap enough to build dense, and
+    small enough that the truth can be had independently from a dense
+    eigensolver when the tests want to argue with the certificate."""
+    h = width / N
+    I, Z = np.eye(N), np.zeros((N, N))
+
+    def diffusion(D):
+        M = np.zeros((N, N))
+        for i in range(N):
+            M[i, i] = 2 * D / h ** 2
+            if i > 0:
+                M[i, i - 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2      # ghost cell: phi_0 = -phi_1
+            if i < N - 1:
+                M[i, i + 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2
+        return M
+
+    return {"L": np.block([[diffusion(D1) + sr1 * I, Z],
+                           [-ss12 * I, diffusion(D2) + sa2 * I]]),
+            "F": np.block([[nf1 * I, nf2 * I], [Z, Z]]),
+            "N": N, "width": width,
+            "label": f"slab {width:g}cm N={N}"}
+
+
+def slab_buckling_keff(width: float, D1: float = 1.4, D2: float = 0.4,
+                       sr1: float = 0.030, sa2: float = 0.100,
+                       ss12: float = 0.020, nf1: float = 0.007,
+                       nf2: float = 0.130) -> float:
+    """The continuum answer for the same slab, in closed form. The
+    fundamental mode of a bare slab is a half cosine, so the Laplacian
+    is just multiplication by the buckling B^2 = (pi/width)^2 and the
+    two-group balance collapses to arithmetic. Not a certificate and
+    not used by one -- it is the independent truth the discretized
+    model is measured against, so that the gap between the model and
+    the world stays stated rather than implied."""
+    B2 = (math.pi / width) ** 2
+    return (nf1 + nf2 * ss12 / (sa2 + D2 * B2)) / (sr1 + D1 * B2)
+
+
 # ------------------------------------------------------------- The
 # planner. Everything above this line is a library of certified
 # rewrites; this section is the first piece of the compiler the vision
@@ -5096,3 +5291,60 @@ def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
     return compose("h-chain-gap", tol, stages,
                    lambda c: c["stretched"] - c["compressed"],
                    context=f"n={n} d={d_near:g}->{d_far:g}")
+
+
+def keff_dispatch(rx: dict, tol_pcm: float, m_max: int = 40,
+                  jump: bool = True) -> Certified:
+    """k_eff for a reactor, certified to a tolerance stated the way the
+    field states it: in pcm, hundred-thousandths of k. The knob is the
+    number of fission-source iterations spent sharpening the trial
+    flux, and it is a ladder the planner can trust to be monotone,
+    because the bracket provably NESTS. If A phi >= m phi then applying
+    A to both sides preserves the inequality, since A >= 0, so the
+    lower bound can only rise and the upper only fall. Nothing here can
+    get worse by working harder.
+
+    The ladder ends at a floor, not at a wall. Past some rung the
+    sandwich is thinner than the certified error of the linear solve
+    inside it, and further iterations buy nothing; the refusal says so,
+    and prices the next move as precision rather than effort. Measured
+    on the default slab that floor is around 10^-6 pcm: a million
+    times below the 1 pcm the field argues about, and a million times
+    below the discretization error that separates this model from a
+    reactor. On this problem the certificate is never the weak link,
+    which is worth saying out loud, because a bound whose own limit
+    nobody has looked for is a bound nobody knows the strength of.
+
+    One rewrite, one knob, and deliberately no competitor. The obvious
+    rival is to hand the matrix to a dense eigensolver, and it is not a
+    rewrite this planner can race, because it returns an eigenvalue
+    without a bound and no cheap bound exists for a non-symmetric one.
+    An entry with no certificate is not a cheaper answer to the same
+    question; it is an answer to a different one."""
+    from scipy.linalg import lu_factor, lu_solve
+    L, F = rx["L"], rx["F"]
+    u = mmatrix_witness(L)
+    lu = lu_factor(L)
+    knobs = tuple(range(2, m_max + 1, 2))
+
+    def run(m):
+        # ponytail: each rung restarts from a flat flux instead of
+        # resuming a cached iterate, so the declared cost (m solves)
+        # is the cost actually measured. The whole ladder is O(m^2)
+        # back-substitutions on a few hundred unknowns -- milliseconds.
+        phi = np.ones(len(L))
+        for _ in range(m):
+            phi = lu_solve(lu, F @ phi)
+            phi /= phi.max()
+        return keff_bracket(L, F, phi, u)
+
+    def beyond():
+        return (f"the ladder ends at {knobs[-1]} iterations; past its "
+                "floor the bracket is limited by the certified residual "
+                "of the linear solve, so the next move is extended "
+                "precision or a better-conditioned discretization, not "
+                "more iterations")
+
+    rw = Rewrite("power", knobs, float, run, beyond)
+    return plan("criticality", tol_pcm * 1e-5, [rw], jump=jump,
+                context=rx["label"])

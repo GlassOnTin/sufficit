@@ -2884,3 +2884,183 @@ def test_gap_brackets_intersect_across_tolerances():
     assert lo <= hi
     assert b.err < a.err                     # narrower half-width
     assert a.value - a.err > 0 > b.value - b.err   # but weaker on sign
+
+
+def _keff_truth(rx):
+    """The independent answer: the dominant eigenvalue of L^-1 F from a
+    dense non-symmetric eigensolver, which the bracket never calls."""
+    from scipy.linalg import eig
+    A = np.linalg.solve(rx["L"], rx["F"])
+    return float(np.max(eig(A, right=False).real))
+
+
+def _keff_ladder(rx, m_max):
+    """The bracket after 0, 1, ... m_max fission-source iterations."""
+    L, F = rx["L"], rx["F"]
+    u = sf.mmatrix_witness(L)
+    phi = np.ones(len(L))
+    out = []
+    for _ in range(m_max + 1):
+        out.append(sf.keff_bracket(L, F, phi, u))
+        psi = np.linalg.solve(L, F @ phi)
+        phi = psi / psi.max()
+    return out
+
+
+def test_keff_bracket_contains_truth():
+    """Collatz-Wielandt on a reactor: at four slab widths spanning
+    subcritical to supercritical, every rung of the ladder must contain
+    the eigenvalue a dense solver reports."""
+    ks = []
+    for width in (50.0, 70.0, 90.0, 150.0):
+        rx = sf.slab_reactor(width=width)
+        k = _keff_truth(rx)
+        for c in _keff_ladder(rx, 20):
+            assert c.value - c.err <= k <= c.value + c.err
+            assert c.tier == sf.Tier.RIGOROUS
+        ks.append(k)
+    assert min(ks) < 1.0 < max(ks)          # the sweep crosses critical
+
+
+def test_keff_bracket_nests_under_iteration():
+    """The ladder is monotone by proof, not by luck: A phi >= m phi and
+    A >= 0 give A(A phi) >= m (A phi), so iterating can only raise the
+    lower bound and lower the upper. Checked on the two widest cores,
+    which stay in the geometric regime for the whole ladder -- past the
+    floor it is the solve residual, not the Collatz-Wielandt gap, that
+    sets the width, and the theorem says nothing about that."""
+    for width in (90.0, 150.0):
+        cs = _keff_ladder(sf.slab_reactor(width=width), 40)
+        los = [c.value - c.err for c in cs]
+        his = [c.value + c.err for c in cs]
+        assert all(a <= b for a, b in zip(los, los[1:]))
+        assert all(a >= b for a, b in zip(his, his[1:]))
+        assert cs[-1].err < 1e-4 * cs[0].err
+
+
+def test_keff_refuses_a_positive_offdiagonal():
+    """Both hypotheses earn their place. Flip one off-diagonal of the
+    loss operator positive and L^-1 >= 0 is no longer available -- but
+    the witness L u >= 1 STILL passes, so it is the Z-matrix test alone
+    that catches it. A single check would have shipped a bound with no
+    theorem under it."""
+    rx = sf.slab_reactor(N=20)
+    bad = rx["L"].copy()
+    bad[2, 7] = +0.05
+    with pytest.raises(ValueError, match="Z-matrix"):
+        sf.mmatrix_witness(bad)
+    u = np.linalg.solve(bad, np.ones(len(bad))) * (1 + 1e-9)
+    assert (u > 0).all() and (bad @ u >= 1.0).all()   # the witness is fooled
+
+
+def test_keff_refuses_a_nonpositive_flux():
+    """Collatz-Wielandt needs a vector strictly inside the cone. A
+    trial flux touching or crossing zero is refused, not clipped."""
+    rx = sf.slab_reactor(N=20)
+    phi = np.ones(2 * 20)
+    phi[3] = -1.0
+    with pytest.raises(ValueError, match="strictly positive"):
+        sf.keff_bracket(rx["L"], rx["F"], phi)
+    phi[3] = 0.0
+    with pytest.raises(ValueError, match="strictly positive"):
+        sf.keff_bracket(rx["L"], rx["F"], phi)
+
+
+def test_keff_contraction_is_the_dominance_ratio():
+    """How fast the sandwich closes is physics, and measurably so. A
+    flat starting flux is symmetric about the midplane, so the first
+    harmonic -- which is antisymmetric -- is absent, and the width
+    contracts at the SECOND harmonic's ratio instead. Tilt the start
+    and the first harmonic returns, contraction slows to the true
+    dominance ratio, and the ladder gets longer."""
+    from scipy.linalg import eig
+    rx = sf.slab_reactor()
+    L, F = rx["L"], rx["F"]
+    u = sf.mmatrix_witness(L)
+    mags = np.sort(np.abs(eig(np.linalg.solve(L, F), right=False)))[::-1]
+    r2, r3 = mags[1] / mags[0], mags[2] / mags[0]
+
+    def contraction(start):
+        phi, ws = start.copy(), []
+        for _ in range(26):
+            ws.append(sf.keff_bracket(L, F, phi, u).err)
+            psi = np.linalg.solve(L, F @ phi)
+            phi = psi / psi.max()
+        return float(np.mean([b / a for a, b in zip(ws[-6:], ws[-5:])]))
+
+    n = len(L)
+    assert contraction(np.ones(n)) == pytest.approx(r3, rel=0.02)
+    assert contraction(np.linspace(1.0, 2.0, n)) == pytest.approx(r2, rel=0.02)
+    assert r3 < r2
+
+
+def test_keff_operator_is_not_self_adjoint():
+    """Why positivity and not the variational theorem. Neutrons scatter
+    down in energy and not back up, so the loss operator is block
+    lower-triangular and the criticality operator is far from symmetric
+    -- there is no minimum principle to overshoot, and its eigenvector
+    is not orthogonal to the rest, which is what makes a computed
+    non-symmetric eigenvalue expensive to bound."""
+    rx = sf.slab_reactor(N=20)
+    L = rx["L"]
+    A = np.linalg.solve(L, rx["F"])
+    assert not np.allclose(L, L.T)
+    assert np.linalg.norm(A - A.T) > 0.1 * np.linalg.norm(A)
+    assert (A > 0).all()               # but strictly inside the cone
+
+
+def test_keff_dispatch_reaches_pcm():
+    """The field states its tolerance in pcm; the front door takes it
+    in pcm. Each answer must be no wider than asked and must contain
+    the truth, and the trace must name the rung that paid for it."""
+    rx = sf.slab_reactor()
+    k = _keff_truth(rx)
+    for tol in (100.0, 10.0, 1.0):
+        c = sf.keff_dispatch(rx, tol)
+        assert c.err <= tol * 1e-5
+        assert c.value - c.err <= k <= c.value + c.err
+        assert c.tier == sf.Tier.RIGOROUS
+        assert re.search(r"chose power@\d+", c.provenance[-1])
+        assert len(c.receipt) < 6          # the jump, not the whole ladder
+
+
+def test_keff_dispatch_refuses_two_ways():
+    """Two different walls, both priced. A tolerance below the
+    arithmetic floor cannot be bought at any rung; and a large core has
+    a dominance ratio so close to one that the declared ladder runs out
+    long before the floor does. Neither is answered with a guess."""
+    with pytest.raises(sf.Refusal, match="criticality") as exc:
+        sf.keff_dispatch(sf.slab_reactor(), 1e-7)
+    assert "precision" in exc.value.next_price
+    with pytest.raises(sf.Refusal, match="criticality") as big:
+        sf.keff_dispatch(sf.slab_reactor(width=150.0), 1.0)
+    best = min(t[4] for t in big.value.tried) * 1e5      # pcm
+    assert 1.0 < best < 100.0        # short of the ask, not vacuous
+
+
+def test_keff_bracket_floors_at_the_solve_residual():
+    """The certificate stops improving where the certified residual of
+    the linear solve overtakes the Collatz-Wielandt gap. That floor is
+    real and worth naming -- and it is around 7e-7 pcm, so on this
+    problem the arithmetic is never what limits the answer."""
+    cs = _keff_ladder(sf.slab_reactor(), 80)
+    tail = [c.err * 1e5 for c in cs[60:]]
+    assert max(tail) < 1e-5                       # floor, in pcm
+    assert max(tail) < 2 * min(tail)              # flat, not still falling
+    assert cs[40].err > cs[60].err                # it was still falling at 40
+
+
+def test_discrete_keff_converges_to_the_buckling():
+    """What the bracket brackets is the eigenvalue of the discretized
+    reactor, and the gap to the continuum is the model's, not the
+    certificate's. Measured against the closed-form buckling answer it
+    closes at second order in the mesh, and at the default N=100 it is
+    under a pcm -- still a million times the certificate's own floor,
+    which is the honest ordering of the two errors."""
+    errs = []
+    for N in (25, 50, 100, 200):
+        rx = sf.slab_reactor(N=N)
+        errs.append(abs(_keff_truth(rx) - sf.slab_buckling_keff(70.0)))
+    for a, b in zip(errs, errs[1:]):
+        assert 3.5 < a / b < 4.5                  # second order
+    assert errs[2] * 1e5 < 1.0                    # under a pcm at N=100

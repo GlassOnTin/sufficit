@@ -2595,7 +2595,205 @@ its own smearing bill, with the plan's chosen splits marked">
         ])
 
 
+# ======================================================================
+def criticality_case():
+    from scipy.linalg import eig
+    rx = sf.slab_reactor()
+    L, F = rx["L"], rx["F"]
+    u = sf.mmatrix_witness(L)
+    mags = np.sort(np.abs(eig(np.linalg.solve(L, F), right=False)))[::-1]
+    truth = float(mags[0])
+    buckling = sf.slab_buckling_keff(rx["width"])
+
+    # the ladder: bracket after each fission-source iteration
+    phi = np.ones(len(L))
+    rungs = []
+    for m in range(61):
+        c = sf.keff_bracket(L, F, phi, u)
+        rungs.append((m, c.value - c.err, c.value + c.err, c.err * 1e5))
+        psi = np.linalg.solve(L, F @ phi)
+        phi = psi / psi.max()
+    contained = sum(1 for _, lo, hi, _ in rungs if lo <= truth <= hi)
+    floor = min(w for _, _, _, w in rungs)
+    geometric = [w for m, _, _, w in rungs if 5 <= m <= 35]
+    rate = float(np.mean([b / a for a, b in zip(geometric, geometric[1:])]))
+    at_floor = min(m for m, _, _, w in rungs if w < floor * 1.5)
+
+    # the front door, at three tolerances the field would recognise
+    lines, chosen = [], []
+    for tol in (100.0, 10.0, 1.0):
+        c = sf.keff_dispatch(rx, tol)
+        chosen.append(c)
+        lines.append(f"keff_dispatch(slab_reactor(), tol_pcm={tol:g})\n"
+                     f"  -> {c.value:.9f} +/- {c.err * 1e5:.3f} pcm   "
+                     f"[{c.value - c.err:.9f}, {c.value + c.err:.9f}]\n"
+                     f"  {c.provenance[-1]}")
+    try:
+        sf.keff_dispatch(sf.slab_reactor(width=150.0), 1.0)
+        refused = "NOT REFUSED"
+    except sf.Refusal as exc:
+        refused = str(exc)
+    lines.append("\nkeff_dispatch(slab_reactor(width=150), tol_pcm=1)\n  -> "
+                 + refused)
+
+    # discretisation: what the bracket is a bracket OF
+    mesh = []
+    for N in (25, 50, 100, 200):
+        A = np.linalg.solve(*[sf.slab_reactor(N=N)[k] for k in ("L", "F")])
+        mesh.append((N, abs(float(np.max(eig(A, right=False).real))
+                            - buckling) * 1e5))
+
+    ms = [m for m, _, _, _ in rungs]
+    ws = [w for _, _, _, w in rungs]
+    ax = Axes((0, 60), (floor * 0.5, max(ws[1:]) * 1.6), h=340, logy=True,
+              ml=68)
+    ticks = [10.0 ** e for e in range(-7, 6)]
+    band = "".join(
+        f'<rect x="{ax.X(m) - 3:.1f}" y="{ax.Y(max(w, floor)):.1f}" '
+        f'width="6" height="{ax.Y(floor * 0.5) - ax.Y(max(w, floor)):.1f}" '
+        f'fill="var(--blue)" opacity="0.14"/>' for m, _, _, w in rungs[1:])
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Certified
+bracket half-width against fission-source iteration, contracting
+geometrically until it floors on the solve residual">
+{ax.grid(ticks, (0, 10, 20, 30, 40, 50, 60),
+         xfmt=lambda v: f"{v:g}",
+         yfmt=lambda v: (f"{v:g}" if v >= 1 else f"1e{round(math.log10(v))}"))}
+{band}
+<line x1="{ax.ml}" y1="{ax.Y(floor):.1f}" x2="{ax.w - ax.mr}"
+      y2="{ax.Y(floor):.1f}" class="rust-ink" stroke-width="1.4"
+      stroke-dasharray="5 4"/>
+<text x="{ax.w - ax.mr - 4}" y="{ax.Y(floor) - 6:.1f}" text-anchor="end"
+      class="board-text" font-size="10.5" opacity="0.85">arithmetic floor,
+{floor:.1e} pcm</text>
+<line x1="{ax.ml}" y1="{ax.Y(mesh[2][1]):.1f}" x2="{ax.w - ax.mr}"
+      y2="{ax.Y(mesh[2][1]):.1f}" class="board-ink" stroke-width="1.4"
+      stroke-dasharray="2 3" opacity="0.8"/>
+<text x="{ax.w - ax.mr - 4}" y="{ax.Y(mesh[2][1]) - 6:.1f}" text-anchor="end"
+      class="board-text" font-size="10.5" opacity="0.85">the model's own
+error, {mesh[2][1]:.2f} pcm</text>
+<path d="{ax.path(ms[1:], [max(w, floor) for w in ws[1:]])}" fill="none"
+      class="blue-ink" stroke-width="2"/>
+<text x="{ax.ml + 6}" y="{ax.h - 4}" class="board-text" font-size="10.5"
+      opacity="0.7">fission-source iterations</text></svg>'''
+
+    rows = "".join(
+        f"<tr><td>{m}</td><td>{lo:.9f}</td><td>{hi:.9f}</td>"
+        f"<td>{w:.4g}</td></tr>"
+        for m, lo, hi, w in rungs if m in (1, 5, 10, 15, 20, 25, 30, 40, 60))
+
+    return page(
+        "Case: a reactor's criticality eigenvalue, bracketed by positivity",
+        "certified case",
+        "A reactor is not symmetric, so the bracket comes from positivity",
+        "Every other eigenvalue bracket in this library needs a "
+        "self-adjoint operator. A reactor is not one. What replaces the "
+        "variational theorem is the fact that neutrons cannot be "
+        "negative.",
+        [
+            "<h2>The idea</h2>"
+            "<p>The brackets elsewhere here all work the same way: the "
+            "lowest eigenvalue of a symmetric operator is a minimum "
+            "over states, so any trial state you can write down "
+            "overshoots it, and that overshoot is the certificate. The "
+            "argument needs the operator to equal its own transpose.</p>"
+            "<p>A reactor does not. Neutrons are born fast, scatter "
+            "down in energy, and essentially never scatter back up, so "
+            "the loss operator is block lower-triangular; its transpose "
+            "describes a different physical quantity, the adjoint flux. "
+            "There is no minimum to overshoot. Nor does handing the "
+            "matrix to a dense eigensolver rescue the situation: a "
+            "computed eigenvalue of a non-symmetric matrix carries no "
+            "cheap rigorous bound, because its sensitivity is set by an "
+            "eigenvector overlap that can be arbitrarily small.</p>"
+            "<p>What survives is positivity. Fission makes neutrons and "
+            "never unmakes them, and a source anywhere produces flux "
+            "everywhere and a deficit nowhere — so both operators in "
+            "the problem map the non-negative cone into itself. "
+            "Collatz and Wielandt showed that such an operator's "
+            "dominant eigenvalue is sandwiched by the smallest and "
+            "largest of the ratios (A&#966;)<sub>i</sub>/"
+            "&#966;<sub>i</sub>, for <em>any</em> strictly positive "
+            "&#966;. Here that eigenvalue is k<sub>eff</sub>, and "
+            "applying A is exactly one step of the fission-source "
+            "iteration a reactor code already runs. Production codes "
+            "stop that iteration when k stops moving, which is a hope. "
+            "This one stops when the sandwich closes, which is a "
+            "bound.</p>"
+            "<p>Four hypotheses carry the theorem and all four are "
+            "checked at runtime rather than assumed: the loss operator "
+            "has no positive off-diagonal, the fission operator has no "
+            "negative entry, the trial flux is strictly inside the "
+            "cone, and there is a positive vector u with Lu ≥ 1. The "
+            "last two lines of that list do double duty — u proves the "
+            "inverse is non-negative <em>and</em> prices the linear "
+            "solver's own error, so the bracket stays rigorous however "
+            "sloppily the solve was done.</p>",
+            code_section(sf.slab_reactor, sf.mmatrix_witness,
+                         sf.keff_bracket, sf.keff_dispatch),
+            "<h2>The run</h2>"
+            "<p>A two-group slab, 70 cm across, 100 cells per group. "
+            "Starting from a flat trial flux and iterating:</p>"
+            "<table><thead><tr><th>iterations</th><th>lower</th>"
+            "<th>upper</th><th>half-width (pcm)</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            f"<p class='note'>A dense non-symmetric eigensolver, which "
+            f"the bracket never calls, puts the answer at "
+            f"{truth:.9f}. It lies inside <strong>{contained}/"
+            f"{len(rungs)}</strong> of the brackets above.</p>",
+            f"<figure>{svg}<figcaption>The sandwich closing. Each bar "
+            "is one certified bracket, plotted by half-width on a log "
+            f"scale; the width contracts by a factor {rate:.3f} per "
+            "iteration until it meets the dashed line where the "
+            "certified residual of the linear solve, rather than the "
+            "Collatz–Wielandt gap, sets the width. That floor sits a "
+            "million times below the dotted line, which is where this "
+            "discretised slab differs from the continuum reactor it "
+            "stands for.</figcaption></figure>",
+            "<h2>The front door</h2>"
+            "<p>Reactor physics states its tolerance in pcm, "
+            "hundred-thousandths of k, so that is what the dispatch "
+            f"takes.</p><pre>{esc(chr(10).join(lines))}</pre>",
+            "<h2>What is being bracketed</h2>"
+            "<p>The certificate is about the eigenvalue of the "
+            "discretised slab, not of a reactor. That gap is the "
+            "model's and it is stated, not absorbed. Against the "
+            "closed-form buckling answer for the same slab:</p>"
+            "<table><thead><tr><th>cells per group</th>"
+            "<th>distance from the continuum (pcm)</th></tr></thead>"
+            "<tbody>"
+            + "".join(f"<tr><td>{N}</td><td>{e:.2f}</td></tr>"
+                      for N, e in mesh)
+            + "</tbody></table>"
+            "<p>Second order in the mesh, as the scheme promises, and "
+            f"{mesh[2][1]:.2f} pcm at the default resolution — about a "
+            "million times the certificate's own floor. On this "
+            "problem the bound is never the weak link, which is the "
+            "honest ordering of the two errors and the reason to print "
+            "both.</p>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment against a dense eigensolver: <strong>"
+            f"{contained}/{len(rungs)}</strong> rungs.</li>"
+            f"<li>Contraction per iteration, measured over the "
+            f"geometric stretch: <strong>{rate:.3f}</strong>. This is "
+            "the second spatial harmonic's ratio, not the first — a "
+            "flat starting flux is symmetric about the midplane, so "
+            "the antisymmetric first harmonic is never excited.</li>"
+            f"<li>Arithmetic floor: <strong>{floor:.1e} pcm</strong>, "
+            f"reached after about {at_floor} iterations.</li>"
+            f"<li>Tolerance met at 1 pcm: <strong>"
+            f"{chosen[-1].err * 1e5:.3f} pcm</strong> in "
+            f"<strong>{len(chosen[-1].receipt)}</strong> rungs, the "
+            "planner jumping rather than stepping.</li>"
+            "<li>A 150 cm core, whose dominance ratio is much closer to "
+            "one, <strong>refuses</strong> 1 pcm within the declared "
+            "ladder and prices what would be needed.</li>"
+            "</ul>",
+        ])
+
+
+# ======================================================================
 CASES = {
+    "criticality.html": criticality_case,
     "tfi-reduced-basis.html": tfi_case,
     "h2-bracket.html": h2_case,
     "hchain-ladder.html": ladder_case,

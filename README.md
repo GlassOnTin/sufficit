@@ -24,7 +24,7 @@ and a search that uses the graph's shape rather than only its cost.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 157 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 167 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -32,9 +32,11 @@ the provenance of the bound. The bound is the product.
 New here? Start with the
 **[tour](https://glassontin.github.io/sufficit/)**, then
 [VISION.md](VISION.md), the founding argument, and [TARGETS.md](TARGETS.md),
-the nine target domains. All nine now have entry rewrites, each with a
-[case page](https://glassontin.github.io/sufficit/) that regenerates from a
-fresh run on every push.
+the nine target domains. All nine now have entry rewrites, and a tenth has
+been entered from that document's further-afield list — reactor criticality,
+whose certificate comes from positivity rather than from a minimum
+principle. Each has a [case page](https://glassontin.github.io/sufficit/)
+that regenerates from a fresh run on every push.
 
 ## Two answers with receipts
 
@@ -75,6 +77,7 @@ long pole).
 | Breaking wave on a sea wall (SPH) | delivered impulse certified; raw peak refused (no asymptotic range); a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
 | Tokamak equilibrium (Grad–Shafranov via FEniCSx) | guaranteed energy-norm bound within 1.6× of the true error; implicit coupling certified by a contraction factor | Prager–Synge with rectangle-exact constants — guaranteed, not estimated; refuses past the contraction limit |
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
+| Reactor criticality (two-group slab) | k_eff to 1 pcm in 20 fission-source iterations; the bracket's own floor is ~10⁻⁶ pcm, a million times below this model's distance from the continuum | Perron–Frobenius, not the variational theorem: the operator is not self-adjoint, so positivity brackets it instead. Four hypotheses machine-checked; the linear solver's own error is priced by the same witness |
 | The planner (first compiler slice) | one question at three tolerances → three algorithms; model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts, certificates arbitrate; every rung logs predicted cost, measured cost, and measured error — the receipt audits the cost model |
 
 ## How it stays honest
