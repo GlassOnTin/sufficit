@@ -54,6 +54,12 @@ before saying how accurate it is. Each has a
 [case page](https://glassontin.github.io/sufficit/)
 that regenerates from a fresh run on every push.
 
+[LEARNING.md](LEARNING.md) asks the question the other way round: what an
+agent would be if it were built this way. It argues that the portable part
+is the untrusted proposer and the cheap checker rather than the
+certificates, that learning splits into three kinds with very different
+risk, and that this project is an existence proof for only one of them.
+
 ## Two answers with receipts
 
 ```python
