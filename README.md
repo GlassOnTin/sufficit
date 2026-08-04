@@ -16,15 +16,29 @@ either will certify. Those four specified a combinator, which now
 exists: a plan is declared as stages and one assemble function, each
 stage naming the stages it consumes, so the object is a graph; stages
 that can solve for a knob given a budget are solved and the rest are
-enumerated and walked cheapest-first. Two plans are wired through it
-so far, and the refusal's binding stage is now derived from the graph
-rather than hand-written per front door. The remaining debt is the
-other two plans, which still allocate inside their own front doors,
-and a search that uses the graph's shape rather than only its cost.
+enumerated and walked cheapest-first. **All four are now wired through
+it**, to the same knobs and the same costs the hand-written versions
+chose, and the split and the binding stage are derived rather than
+written down per front door. Hand-rolling one again is not a matter of
+discipline: the planner refuses a multi-dimensional knob it did not
+build, and the build refuses a front door that switches that check
+off.
+
+Wiring the last two is what finished the combinator, because they
+needed what it lacked. A stage may now be a *choice* rather than a
+certificate — picking an N-point kernel spends error budget on what
+that kernel cannot resolve, and the bill lands inside somebody else's
+certificate rather than in one of its own; two stages may share that
+choice, which is how a model and a measurement live on one grid. What
+remains open is the search itself, and it is open by measurement, not
+by neglect: escalating the binding stage instead of walking the cost
+ladder was built, measured a wash or worse against the shared-node
+memo, and removed. It would pay on a graph too wide to enumerate, and
+there is not one here yet.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 183 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 187 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.

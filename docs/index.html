@@ -32,11 +32,15 @@
   stages and one assemble function, each stage naming the stages it
   consumes, so the object is a graph; stages that can solve for a knob
   given a budget are solved and the rest are enumerated and walked
-  cheapest-first. Two plans are wired through it so far, and the
-  refusal's binding stage is derived from the graph rather than
-  hand-written per front door. The remaining debt is the other two
-  plans, which still allocate inside their own front doors, and a
-  search that uses the graph's shape rather than only its cost.</p>
+  cheapest-first. All four are now wired through it, to the same knobs
+  and the same costs the hand-written versions chose, and the split
+  and the binding stage are derived rather than written down per front
+  door. Hand-rolling one again is not a matter of discipline: the
+  planner refuses a multi-dimensional knob it did not build, and the
+  build refuses a front door that switches that check off. What
+  remains open is the search itself, and it is open by measurement:
+  escalating the binding stage instead of walking the cost ladder was
+  built, measured a wash against the shared-node memo, and removed.</p>
   <ul>
     <li><a href="explainer.html">The illustrated tour</a> — start here</li>
     <li>Certified cases — the idea, the program rendered from the

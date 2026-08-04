@@ -76,6 +76,56 @@ def check_counts():
             raise RuntimeError(f"{name} states {stated} checks; the suite has {n}")
 
 
+def check_composed():
+    """The planner refuses a hand-rolled budget split at runtime, and
+    this is what stops the refusal being switched off. plan() takes a
+    private _composed flag that suppresses the check; compose() is the
+    only caller entitled to pass it, because compose is what supplies
+    the derivation the check exists to require. A future author facing
+    the error has two ways forward -- declare Stages, or add the flag
+    and move on -- and only the first is the one meant. So the build
+    fails if the flag appears anywhere but inside compose, and fails
+    if a front door declares Stages without composing them.
+
+    Structural, not stylistic: a release cannot ship the debt back."""
+    import ast
+    with open(os.path.join(ROOT, "sufficit.py")) as f:
+        tree = ast.parse(f.read())
+
+    def called(fn):
+        return {c.func.id for c in ast.walk(fn)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+
+    def waives(fn):
+        return any(k.arg == "_composed"
+                   for c in ast.walk(fn) if isinstance(c, ast.Call)
+                   for k in c.keywords)
+
+    seen = 0
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        if fn.name == "compose":
+            seen += waives(fn)
+            continue
+        if waives(fn):
+            raise RuntimeError(
+                f"{fn.name}() passes plan(_composed=...); only compose() "
+                "may, or the guard against hand-rolled budget splits is "
+                "off for that front door")
+        names = called(fn)
+        if fn.name.endswith("_dispatch") and "Stage" in names \
+                and "compose" not in names:
+            raise RuntimeError(
+                f"{fn.name}() declares Stages but never calls compose(); "
+                "the stages are then decoration and the split is still "
+                "allocated by hand")
+    if seen != 1:
+        raise RuntimeError(
+            f"compose() waives the hand-rolled-split guard {seen} times; "
+            "expected exactly once -- if compose no longer calls plan the "
+            "guard is unreachable and this check is watching nothing")
+
+
 def page(title, eyebrow, h1, dek, sections):
     body = "\n".join(sections)
     return f'''<!DOCTYPE html>
@@ -2038,9 +2088,9 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             "<li>What this is not, yet: the plan space is single-knob "
             "ladders per query. The first composed plan — one error "
             "budget split between two stages — now has "
-            '<a href="the-budget.html">its own page</a>; splitting a '
-            "budget across pipelines of different rewrites is the "
-            "remaining debt.</li></ul>",
+            '<a href="the-budget.html">its own page</a>, and every '
+            "composed plan since goes through one combinator, which "
+            "the planner and the build now jointly require.</li></ul>",
         ])
 
 
@@ -2086,8 +2136,8 @@ def budget_case():
         cert = sf.smeared_spectral_dispatch(measure, cov1, omega, sigma,
                                             tol, Ns=Ns)
         split = next(p for p in cert.provenance
-                     if p.startswith("budget split"))
-        Nc, mc = (int(x) for x in re.findall(r"N=(\d+) m=(\d+)", split)[0])
+                     if p.startswith("smeared-spectral split"))
+        Nc, mc = (int(x) for x in re.findall(r"kernel=(\d+) samples=(\d+)", split)[0])
         sweep.append((tol, Nc, mc, cert))
     contained = sum(abs(c.value - truth) <= c.err for _, _, _, c in sweep)
 
@@ -2095,8 +2145,9 @@ def budget_case():
     # samples; the split buys resolution instead
     hard = sf.smeared_spectral_dispatch(measure, cov1, omega, 0.4, 0.2,
                                         Ns=Ns)
-    hsplit = next(p for p in hard.provenance if p.startswith("budget split"))
-    hN, hm = (int(x) for x in re.findall(r"N=(\d+) m=(\d+)", hsplit)[0])
+    hsplit = next(p for p in hard.provenance
+                  if p.startswith("smeared-spectral split"))
+    hN, hm = (int(x) for x in re.findall(r"kernel=(\d+) samples=(\d+)", hsplit)[0])
     hcost = float(hard.receipt[-1][2])
     g8, c8 = sf._hlt_solve(8, omega, 0.4)
     V8 = cov1(8)
@@ -2255,9 +2306,10 @@ its own smearing bill, with the plan's chosen splits marked">
 
     def p_split(cert):
         line = next(p for p in cert.provenance
-                    if p.startswith("budget split"))
-        m = re.match(r"budget split at N=(\d+) m=(\d+) K=(\d+)", line)
-        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    if p.startswith("spectral-pipeline split"))
+        m = re.match(r"spectral-pipeline split at kernel=(\d+) "
+                     r"model=(\d+) samples=(\d+)", line)
+        return int(m.group(1)), int(m.group(3)), int(m.group(2))
 
     p3 = {t: sf.spectral_pipeline_dispatch(p_sample, p_cov1, pA, pRho,
                                            pE0, pdE, 1.0, 0.5, tol=t)
@@ -2553,7 +2605,7 @@ its own smearing bill, with the plan's chosen splits marked">
             "before spending a single sample: "
             f"<code>{esc(str(refusal)[:200])}&hellip;</code></li>"
             "<li>The combinator these four plans specified now exists, "
-            "and two of them are wired through it. A plan is declared "
+            "and all four are wired through it. A plan is declared "
             "as stages and one assemble function: each stage names the "
             "stages it consumes, so the object is a graph, and "
             "assemble joins the certificates with <code>through</code>, "
@@ -2566,7 +2618,14 @@ its own smearing bill, with the plan's chosen splits marked">
             "the equilibrium pipeline uses one enumerated mesh and one "
             "solved profile joined by a sensitivity. Both keep the "
             "rungs and the numbers they had when they were wired by "
-            "hand.</li>"
+            "hand. The two spectral plans needed what the combinator "
+            "lacked, which is why they went last: a stage may now be a "
+            "CHOICE rather than a certificate — an N-point kernel "
+            "spends budget on what it cannot resolve, and that bill "
+            "lands inside the measurement's certificate rather than in "
+            "one of its own — and two stages may share that choice, "
+            "which is how the pole model and the measurement come to "
+            "live on one grid.</li>"
             "<li>One sentence stopped being hand-written. Every front "
             "door used to name its own binding stage in the refusal, "
             "which means it could only ever describe the shape its "
@@ -2577,10 +2636,14 @@ its own smearing bill, with the plan's chosen splits marked">
             "it is the branch's own error; the assembly does the "
             "arithmetic either way, and it costs nothing, because "
             "every certificate is already in hand.</li>"
-            "<li>What this is not, yet: the other two plans still "
-            "allocate inside their own front doors, because a closed "
-            "form beats a search when you have one and neither needed "
-            "the graph. And the walk is still the cost ladder. An "
+            "<li>Going back is not a matter of discipline. A rewrite "
+            "whose knob is a tuple is an assignment across stages, not "
+            "a ladder, and the planner refuses one it did not build "
+            "itself; the build in turn refuses any front door that "
+            "switches that check off, so a release cannot ship the "
+            "debt back.</li>"
+            "<li>What this is not, yet: the walk is still the cost "
+            "ladder. An "
             "escalate-the-binding-stage search was prototyped and "
             "measured: on the fan-in it reached a certifying pair in "
             "4&ndash;7 runs against the ladder's 8&ndash;16, but "
@@ -3204,6 +3267,7 @@ RECORDED = {}
 
 if __name__ == "__main__":
     check_counts()
+    check_composed()
     here = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(os.path.join(here, "cases"), exist_ok=True)
     only = sys.argv[1:] or list(CASES)

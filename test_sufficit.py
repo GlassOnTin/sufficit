@@ -2418,7 +2418,8 @@ def test_composed_plan_meets_tol_and_contains():
     assert cert.err <= 0.2
     assert abs(cert.value - truth) <= cert.err
     assert cert.tier == sf.Tier.EMPIRICAL
-    assert any(p.startswith("budget split at N=") for p in cert.provenance)
+    assert any(p.startswith("smeared-spectral split at kernel=")
+               for p in cert.provenance)
     assert cert.provenance[-1].startswith("plan smeared-spectral:")
     assert cert.sensitivity.wrt == "correlator"
 
@@ -2429,7 +2430,7 @@ def test_composed_plan_buys_the_dear_kernel():
     hundred (~1e4): the split must buy resolution, not statistics."""
     measure, cov1, _ = _spectral_bench()
     cert = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.4, tol=0.2)
-    assert "chose hlt@(16," in cert.provenance[-1]
+    assert "chose kernel+samples@(16," in cert.provenance[-1]
     assert cert.err <= 0.2
 
 
@@ -2443,8 +2444,8 @@ def test_composed_plan_tighter_tol_buys_samples():
                                             tol=tol)
         assert cert.err <= tol
         line = next(p for p in cert.provenance
-                    if p.startswith("budget split"))
-        ms.append(int(re.search(r"m=(\d+)", line).group(1)))
+                    if p.startswith("smeared-spectral split"))
+        ms.append(int(re.search(r"samples=(\d+)", line).group(1)))
     assert ms[1] > ms[0]
 
 
@@ -2619,9 +2620,11 @@ def _pole_bench():
 
 def _pipe_split(cert):
     """Parse (N, m, K) out of the pipeline's budget-split note."""
-    line = next(p for p in cert.provenance if p.startswith("budget split"))
-    m = re.match(r"budget split at N=(\d+) m=(\d+) K=(\d+)", line)
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    line = next(p for p in cert.provenance
+                if p.startswith("spectral-pipeline split"))
+    m = re.match(r"spectral-pipeline split at kernel=(\d+) model=(\d+) "
+                 r"samples=(\d+)", line)
+    return int(m.group(1)), int(m.group(3)), int(m.group(2))
 
 
 def test_pole_correlator_tail_exact():
@@ -2654,7 +2657,8 @@ def test_pipeline_three_stages_certified():
     assert cert.tier == sf.Tier.EMPIRICAL
     stack = "\n".join(cert.provenance)
     for stage in ("pole-model", "hlt-smeared", "through correlator",
-                  "budget split at N=", "plan spectral-pipeline"):
+                  "spectral-pipeline split at kernel=",
+                  "plan spectral-pipeline"):
         assert stage in stack
     assert cert.sensitivity.wrt == "correlator"
 
@@ -3346,3 +3350,96 @@ def test_witness_normalization_survives_ill_conditioning():
     assert (u > 0).all() and (w - e >= 1.0).all()
     naive = np.linalg.solve(J, np.ones(len(J))) * (1.0 + 1e-9)
     assert (J @ naive < 1.0).any()            # the old fixed nudge falls short
+
+
+# ------------------------------------------------------------ the
+# combinator, once every composed plan goes through it. These test the
+# derivation rather than any one plan: what compose works out for
+# itself is what the four front doors used to write down by hand.
+
+
+def test_planner_refuses_a_hand_rolled_budget_split():
+    """The debt, made unpayable. A rewrite whose knob is a tuple is an
+    assignment across stages, not a ladder, and the planner will not
+    take one unless compose built it -- so the four plans cannot drift
+    back to allocating in their own front doors, and a fifth cannot
+    start there. The message names the way forward, not just the
+    wall."""
+    rw = sf.Rewrite("hand", ((8, 100), (12, 200)),
+                    lambda k: float(k[0] * k[1]), lambda k: None, None)
+    with pytest.raises(ValueError, match="compose") as exc:
+        sf.plan("hand-rolled", 0.1, [rw])
+    assert "multi-dimensional knob" in str(exc.value)
+
+
+def test_every_composed_plan_is_derived():
+    """All four, through the one combinator. Each must name its stages
+    in the rewrite that ran and carry a split line compose wrote, not
+    the front door -- if any front door goes back to hand-rolling, its
+    entry here stops matching."""
+    measure, cov1, _ = _spectral_bench()
+    sample, pcov1, _ = _pole_bench()
+    plans = {
+        "smeared-spectral": (
+            sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2),
+            ("kernel", "samples")),
+        "spectral-pipeline": (
+            sf.spectral_pipeline_dispatch(sample, pcov1, 1.0, 0.9, 0.9,
+                                          0.3, 1.0, 0.5, tol=0.5),
+            ("kernel", "model", "samples")),
+        "gs-flux": (sf.gs_flux_dispatch(0.5), ("mesh", "profile")),
+        "h-chain-gap": (sf.h_chain_gap_dispatch(6, tol=0.5),
+                        ("compressed", "stretched")),
+    }
+    for slug, (cert, names) in plans.items():
+        line = next(p for p in cert.provenance
+                    if p.startswith(f"{slug} split at "))
+        for n in names:
+            assert f"{n}=" in line
+        assert cert.receipt[-1][0] == "+".join(names)
+
+
+def test_binding_stage_credits_a_shared_bill_once():
+    """A stage that produces no certificate spends budget all the
+    same, and its bill lands inside the certificate of whatever
+    consumes it. Zeroing that consumer removes the bill too, so
+    without care the consumer is credited with it and the parts sum
+    past the whole. They must sum to it instead, and the stage named
+    binding must be the one actually short: at sigma=0.5 the kernel
+    outspends the samples, so the kernel is what buying would help."""
+    measure, cov1, _ = _spectral_bench()
+    cert = sf.smeared_spectral_dispatch(measure, cov1, 1.0, 0.5, tol=0.2)
+    line = next(p for p in cert.provenance
+                if p.startswith("smeared-spectral split at "))
+    parts = [float(v) for v in re.findall(r"(?:kernel|samples) ([\d.e+-]+)",
+                                          line.split(":", 1)[1])]
+    assert len(parts) == 2
+    # the line prints three significant figures; before the fix the
+    # samples part alone was the whole 0.178 and the sum overshot by 52%
+    assert abs(sum(parts) - cert.err) <= 1e-2 * cert.err
+    assert parts[0] > parts[1]              # kernel is the binding stage
+
+
+def test_solved_stage_is_charged_what_it_spends():
+    """A solved stage takes the cheapest knob that FITS its share, so
+    it usually costs less than the share, and the difference belongs
+    to the stages after it rather than to nobody. Measured on the
+    three-stage pipeline: the model tail costs a small fraction of the
+    tenth it was offered, and the sample count that follows is the one
+    the returned slack buys."""
+    sample, cov1, _ = _pole_bench()
+    cert = sf.spectral_pipeline_dispatch(sample, cov1, 1.0, 0.9, 0.9, 0.3,
+                                         1.0, 0.5, tol=0.5)
+    N, m, K = _pipe_split(cert)
+    assert (N, m, K) == (12, 47, 27)
+    line = next(p for p in cert.provenance
+                if p.startswith("spectral-pipeline split at "))
+    bills = dict(zip(("kernel", "model", "samples"),
+                     (float(v) for v in
+                      re.findall(r"(?:kernel|model|samples) ([\d.e+-]+)",
+                                 line.split(":", 1)[1]))))
+    slack = 0.5 - bills["kernel"]
+    given = 0.8 * (slack - bills["model"])
+    assert bills["model"] < 0.1 * slack   # cheaper than the share offered
+    assert bills["samples"] <= given      # fits the budget it was handed
+    assert given > 0.8 * 0.9 * slack      # which is more than the share alone

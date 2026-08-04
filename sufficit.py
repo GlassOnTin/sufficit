@@ -4979,7 +4979,7 @@ def _fit_jump(meas, tol, remaining):
 
 
 def plan(slug: str, tol: float, rewrites, jump: bool = True,
-         context: str = "") -> Certified:
+         context: str = "", _composed: bool = False) -> Certified:
     """The planner. Seed a frontier with the first rung of every
     rewrite, priced by each one's own cost model, and run whichever
     rung is predicted cheapest. If its certificate meets the
@@ -5003,7 +5003,29 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
     case page). Portability is a job for a cost model over the
     rewrite's own parameters, not for a yardstick. The provenance
     trace itself stays deterministic: provenance is part of the
-    certificate; timings are data about one run of it."""
+    certificate; timings are data about one run of it.
+
+    A rewrite whose knob is a tuple is not a ladder, it is an
+    assignment across several stages, and building one by hand is the
+    debt this planner spent a while carrying: four front doors each
+    wrote their own allocation, their own product ladder, and their
+    own sentence about which stage was short. So the planner refuses
+    one now unless compose built it. The rule is not a style
+    preference. A hand-rolled assignment cannot derive its binding
+    stage, cannot share a node between branches, and cannot return a
+    solved stage's unspent share to the stages after it -- all three
+    are properties of the graph, and a front door that flattens the
+    graph into a list of tuples has thrown the graph away."""
+    if not _composed:
+        for rw in rewrites:
+            if rw.knobs and isinstance(rw.knobs[0], (tuple, list)):
+                raise ValueError(
+                    f"plan({slug!r}): rewrite {rw.name!r} has a "
+                    f"multi-dimensional knob {rw.knobs[0]!r}, which is a "
+                    "budget split across stages rather than one ladder. "
+                    "Declare it with Stage(...) and call compose(), which "
+                    "derives the split, the binding stage and the sharing "
+                    "that a hand-rolled product ladder cannot")
     frontier = []
     state = []
     for i, rw in enumerate(rewrites):
@@ -5083,7 +5105,28 @@ class Stage:
     each computed once however many pairs get walked -- that memo is
     what makes the product ladder cost the sum of the branches rather
     than their product -- while a mesh that consumed a profile is
-    recomputed when the profile changes, as it must be."""
+    recomputed when the profile changes, as it must be.
+
+    run may be None, and a stage without one is a choice that costs
+    budget without producing a certificate of its own. A resolution is
+    the example: picking an N-point kernel spends part of the error
+    budget on what that kernel cannot resolve, but there is no
+    separate object to hand back -- the bill lands inside the
+    certificate of the stage that consumes the choice. Such a stage
+    still declares knobs, a cost, and a predicted bill, and naming it
+    in another stage's inputs delivers its chosen KNOB where a
+    certificate-producing stage would deliver its certificate. That is
+    what lets two stages share one discretization: both name it, and
+    the memo keys them on it, so changing it recomputes both.
+
+    inside goes with run=None and names the stage whose certificate
+    already carries this stage's bill. Naming a choice as an input is
+    not the same as paying for it: in the three-stage spectral plan
+    both the model and the measurement are computed on the kernel's
+    grid, but only the measurement's certificate contains the
+    smearing error. Without that distinction the credit for buying
+    the kernel down is handed to every consumer, and the refusal
+    names the wrong stage."""
     name: str
     knobs: Tuple
     run: Callable
@@ -5092,9 +5135,10 @@ class Stage:
     predict: Callable = None
     share: float = 1.0
     inputs: Tuple = ()
+    inside: str = None
 
 
-def _binding_stage(certs, assemble):
+def _binding_stage(certs, assemble, bills=(), consumes=()):
     """Which node's error is doing the damage. Zero each stage's error
     in turn, reassemble, and see how far the composed error falls: the
     stage whose removal helps most is the one worth buying next. This
@@ -5103,16 +5147,38 @@ def _binding_stage(certs, assemble):
     it; at a fan-in it is simply that branch's own error; and the
     assembly does that arithmetic either way, so the same three lines
     answer for both. It is also free -- every certificate is already
-    in hand and reassembly is arithmetic, not computation."""
+    in hand and reassembly is arithmetic, not computation.
+
+    A stage that produces no certificate cannot be zeroed this way,
+    because its bill is already inside somebody else's error and
+    removing it would need that stage recomputed. Its predicted bill
+    is passed in as bills and stands in for the drop, which is the
+    right comparison anyway: the question is what buying that stage
+    down would be worth.
+
+    Which is also why the consumer has to give that bill back. Zeroing
+    the certificate a resolution's bill lives inside removes the bill
+    along with everything else, and the stage that merely HOLDS the
+    smearing error would be credited with it -- twice over, once here
+    and once as the resolution's own bill, so the parts sum past the
+    whole and the wrong stage is named. Subtracting the bills a stage
+    consumes fixes both: measured on the smeared-spectral plan it
+    turns a drop of 0.178 into 0.0849, which is the statistics bill
+    exactly, and moves the binding stage from the sample count to the
+    kernel, which is the one that was actually short."""
     total = assemble(certs).err
-    drops = {}
+    drops = dict(bills)
+    paid = dict(consumes)
     for name, c in certs.items():
-        drops[name] = total - assemble({**certs, name: replace(c, err=0.0)}).err
+        bare = assemble({**certs, name: replace(c, err=0.0)}).err
+        drops[name] = total - bare - sum(drops.get(p, 0.0)
+                                         for p in paid.get(name, ()))
     return max(drops, key=drops.get), drops
 
 
 def compose(slug: str, tol: float, stages, assemble: Callable,
-            context: str = "") -> Certified:
+            context: str = "", cost: Callable = None,
+            wall: Callable = None) -> Certified:
     """A plan over a graph of certificates rather than a single ladder.
 
     The four composed plans in this library are wired by hand, each
@@ -5139,6 +5205,18 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
     write that sentence by hand, and hand-written it can only describe
     the shape its author had in mind.
 
+    Two things a front door may still say for itself, because no
+    generic rule knows them. cost overrides how stage prices combine:
+    the default sums them, which is right when the stages are separate
+    pieces of work, and wrong when they multiply -- measuring an
+    N-point correlator m times costs N*m, not N+m, and the walk order
+    that follows from adding them is a different walk. wall overrides
+    the sentence printed when no rung exists at all. The derived one
+    runs the graph at its widest declared rung to see where the error
+    floors, which is affordable for a mesh ladder and absurd for a
+    sample count whose ceiling is a million draws; a front door that
+    knows its wall in closed form should say so and skip the run.
+
     A note on what this does not do. An earlier design escalated only
     the binding stage instead of walking the cost ladder, which on the
     fan-in reached a certifying pair in 4-7 runs where the ladder
@@ -5152,6 +5230,7 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
     solved = {}
     at = {st.name: i for i, st in enumerate(stages)}
     order = _topo(stages)
+    paper = tuple(st.name for st in stages if st.run is None)
 
     def certs_at(assign):
         """Evaluate the graph in edge order, which is not the order the
@@ -5160,15 +5239,26 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
         is predicted first may still consume a profile computed
         before it. Each node is keyed on its own knob and its inputs',
         so independent branches are shared and dependent ones are
-        recomputed when what they consumed changes."""
+        recomputed when what they consumed changes.
+
+        A stage with no run contributes its knob instead of a
+        certificate, which is what a shared discretization is: two
+        stages name it, both see the same number, and both are
+        recomputed when it changes."""
         out = {}
         for st in order:
             k = assign[at[st.name]]
+            if st.run is None:
+                out[st.name] = k
+                continue
             key = (st.name, k, tuple(assign[at[i]] for i in st.inputs))
             if key not in solved:
                 solved[key] = st.run(k, {i: out[i] for i in st.inputs})
             out[st.name] = solved[key]
         return out
+
+    def real(out):
+        return {n: c for n, c in out.items() if n not in paper}
 
     searched = [st for st in stages if st.solve is None]
 
@@ -5177,19 +5267,24 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
         reports what its knob will cost; a solvable one is handed its
         share of what remains and returns the cheapest knob that
         fits. Either can run the budget out, and that is a rung that
-        never existed rather than a rung that fails."""
+        never existed rather than a rung that fails.
+
+        A solved stage is charged what it actually costs when it can
+        say -- a knob is chosen as the cheapest that FITS its share,
+        so it usually costs less, and returning the difference to the
+        pool is free tightening for the stages after it. Without a
+        predict there is nothing to charge but the whole share."""
         left = tol
         for st in stages:
-            if st.name in chosen:
-                if st.predict:
-                    left -= st.predict(chosen[st.name], chosen)
-            else:
+            if st.name not in chosen:
                 budget = st.share * left
                 k = st.solve(budget, chosen)
                 if k is None:
                     return None
                 chosen = {**chosen, st.name: k}
-                left -= budget
+                left -= st.predict(k, chosen) if st.predict else budget
+            elif st.predict:
+                left -= st.predict(chosen[st.name], chosen)
             if left <= 0:
                 return None
         return chosen
@@ -5201,23 +5296,38 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
             rungs.append(tuple(chosen[st.name] for st in stages))
 
     def price(assign):
+        if cost:
+            return float(cost(dict(zip((st.name for st in stages), assign))))
         return sum(st.cost(k) for st, k in zip(stages, assign))
 
+    def bills_at(assign):
+        chosen = dict(zip((st.name for st in stages), assign))
+        return {st.name: st.predict(chosen[st.name], chosen)
+                for st in stages if st.name in paper and st.predict}
+
+    eats = {}
+    for st in stages:
+        if st.run is None and st.inside:
+            eats.setdefault(st.inside, []).append(st.name)
+
     def run(assign):
-        certs = certs_at(assign)
-        out = assemble(certs)
-        _, drops = _binding_stage(certs, assemble)
+        out = certs_at(assign)
+        certs = real(out)
+        done = assemble(certs)
+        _, drops = _binding_stage(certs, assemble, bills_at(assign), eats)
         note = (f"{slug} split at "
                 + " ".join(f"{st.name}={k}"
                            for st, k in zip(stages, assign))
                 + ": " + " + ".join(f"{n} {d:.3g}" for n, d in drops.items())
                 + f" against tol={tol:g}")
-        return replace(out, provenance=out.provenance + (note,))
+        return replace(done, provenance=done.provenance + (note,))
 
     def beyond():
+        if wall:
+            return wall()
         top = tuple(st.knobs[-1] for st in stages)
-        certs = certs_at(top)
-        who, drops = _binding_stage(certs, assemble)
+        certs = real(certs_at(top))
+        who, drops = _binding_stage(certs, assemble, bills_at(top), eats)
         return ("every stage is at its widest declared rung ("
                 + ", ".join(f"{st.name}={k}" for st, k in zip(stages, top))
                 + f"), where the composed error floors at "
@@ -5226,7 +5336,8 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
 
     rw = Rewrite("+".join(st.name for st in stages),
                  tuple(sorted(rungs, key=price)), price, run, beyond)
-    return plan(slug, tol, [rw], jump=False, context=context)
+    return plan(slug, tol, [rw], jump=False, context=context,
+                _composed=True)
 
 
 def _product(ladders):
@@ -5343,45 +5454,53 @@ def smeared_spectral_dispatch(measure: Callable, cov1: Callable,
     measure(N, m) must return the m-sample mean correlator C(1..N);
     cov1(N) the covariance of a single sample. The split aims at 80%
     of the leftover budget so a wobbly pilot C(1) does not push the
-    first rung over."""
+    first rung over.
+
+    Wired through compose, and the shape it needed is the reason
+    compose grew a stage that produces no certificate. There is only
+    ONE certificate here -- smeared_spectral's -- and both bills are
+    inside it. The kernel is not a second certificate to add on; it is
+    a choice that spends budget and shows up in somebody else's error.
+    Declaring it that way is what lets the sample count be solved
+    against what the kernel leaves, which is the whole plan."""
     C1 = float(np.asarray(measure(Ns[0], 1), float)[0])
-    rungs = []
-    for N in Ns:
+
+    def smearing(N, _chosen):
+        return _hlt_solve(N, omega, sigma)[1] * C1
+
+    def samples(budget, chosen):
+        N = chosen["kernel"]
         g, c = _hlt_solve(N, omega, sigma)
         V = np.asarray(cov1(N), float)
         amp = c * math.sqrt(float(V[0, 0])) \
             + math.sqrt(float(g @ V[1:, 1:] @ g))
-        slack = tol - c * C1
-        if slack <= 0:
-            continue
-        m = max(1, math.ceil((z * amp / (0.8 * slack)) ** 2))
-        if m <= m_max:
-            rungs.append((N, m))
-    rungs.sort(key=lambda k: k[0] * k[1])
+        m = max(1, math.ceil((z * amp / budget) ** 2))
+        return m if m <= m_max else None
 
-    def run(k):
-        N, m = k
+    def measured(m, up):
+        N = up["kernel"]
         C = np.asarray(measure(N, m), float)
         cov = np.asarray(cov1(N), float) / m
-        cert = smeared_spectral(C, omega, sigma, cov=cov, z=z)
-        g, c = _hlt_solve(N, omega, sigma)
-        smear = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0])))
-        stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
-        note = (f"budget split at N={N} m={m}: smearing {smear:.3g} + "
-                f"statistics {stat:.3g} against tol={tol:g}")
-        return replace(cert, provenance=cert.provenance + (note,))
+        return smeared_spectral(C, omega, sigma, cov=cov, z=z)
 
-    def beyond():
+    def wall():
         cN = _hlt_solve(max(Ns), omega, sigma)[1]
         return (f"the finest declared kernel (N={max(Ns)}) leaves a "
                 f"smearing bill of about c*C(1)={cN * C1:.3g}; whatever "
                 f"tol remains above it buys statistics at "
                 f"(z*amp/slack)^2 samples, capped at m_max={m_max}")
 
-    rw = Rewrite("hlt", tuple(rungs),
-                 lambda k: float(k[0]) * float(k[1]), run, beyond)
-    return plan("smeared-spectral", tol, [rw], jump=False,
-                context=f"omega={omega:g} sigma={sigma:g}")
+    stages = (
+        Stage("kernel", tuple(Ns), run=None, cost=float, predict=smearing,
+              inside="samples"),
+        Stage("samples", (m_max,), run=measured, cost=float,
+              solve=samples, share=0.8, inputs=("kernel",)),
+    )
+    return compose("smeared-spectral", tol, stages,
+                   lambda cs: cs["samples"],
+                   context=f"omega={omega:g} sigma={sigma:g}",
+                   cost=lambda ch: float(ch["kernel"]) * float(ch["samples"]),
+                   wall=wall)
 
 
 def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
@@ -5494,49 +5613,52 @@ def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
     return the m-sample noisy mean of the exact correlator C; cov1(N)
     the single-sample covariance. Each rung costs N*m + K; the
     planner runs the cheapest promise; the chained certificate --
-    model tail converted by Certified.through -- is the referee."""
+    model tail converted by Certified.through -- is the referee.
+
+    Wired through compose, and it is the plan that says why a stage
+    may be a choice rather than a certificate. The kernel's grid is
+    named by BOTH the model, whose tail is normed over t = 1..N, and
+    the measurement, whose smearing bill it sets -- one knob, two
+    consumers, and the memo keys both on it so changing the kernel
+    recomputes both. The midstream repricing that makes this a chain
+    rather than three budgets is then nothing special: the model stage
+    solves against a budget that already has the kernel's bill taken
+    out of it, so a different kernel hands it a different budget."""
     C1 = A * math.exp(-E0) / (1.0 - rho * math.exp(-dE))
-    rungs = []
-    for N in Ns:
-        g, c = _hlt_solve(N, omega, sigma)
+
+    def rate(N):
         # mirrors smeared_spectral's exported sensitivity; drifting
         # from it costs mis-priced rungs, never truth, because the run
         # converts the tail through the certificate's own bound
-        S = math.hypot(c, float(np.linalg.norm(g)))
+        g, c = _hlt_solve(N, omega, sigma)
+        return math.hypot(c, float(np.linalg.norm(g)))
+
+    def smearing(N, _chosen):
+        return _hlt_solve(N, omega, sigma)[1] * C1
+
+    def tail(K, chosen):
+        N = chosen["kernel"]
+        return rate(N) * pole_correlator(A, rho, E0, dE, K, N).err
+
+    def poles(budget, chosen):
+        return next((K for K in range(1, K_max + 1)
+                     if tail(K, chosen) <= budget), None)
+
+    def samples(budget, chosen):
+        N = chosen["kernel"]
+        g, c = _hlt_solve(N, omega, sigma)
         V = np.asarray(cov1(N), float)
         amp = c * math.sqrt(float(V[0, 0])) \
             + math.sqrt(float(g @ V[1:, 1:] @ g))
-        slack = tol - c * C1
-        if slack <= 0:
-            continue
-        K = next((K for K in range(1, K_max + 1)
-                  if S * pole_correlator(A, rho, E0, dE, K, N).err
-                  <= 0.1 * slack), None)
-        if K is None:
-            continue
-        left = slack - S * pole_correlator(A, rho, E0, dE, K, N).err
-        m = max(1, math.ceil((z * amp / (0.8 * left)) ** 2))
-        if m <= m_max:
-            rungs.append((N, m, K))
-    rungs.sort(key=lambda k: k[0] * k[1] + k[2])
+        m = max(1, math.ceil((z * amp / budget) ** 2))
+        return m if m <= m_max else None
 
-    def run(nmk):
-        N, m, K = nmk
-        prof = pole_correlator(A, rho, E0, dE, K, N)
-        C = np.asarray(sample(prof.value, m), float)
-        cov = np.asarray(cov1(N), float) / m
-        cert = smeared_spectral(C, omega, sigma, cov=cov, z=z)
-        out = cert.through(prof)
-        g, c = _hlt_solve(N, omega, sigma)
-        smear = c * (float(C[0]) + z * math.sqrt(float(cov[0, 0])))
-        stat = z * math.sqrt(float(g @ cov[1:, 1:] @ g))
-        note = (f"budget split at N={N} m={m} K={K}: smearing "
-                f"{smear:.3g} + statistics {stat:.3g} + model tail "
-                f"{out.sensitivity.bound * prof.err:.3g} against "
-                f"tol={tol:g}")
-        return replace(out, provenance=out.provenance + (note,))
+    def measured(m, up):
+        C = np.asarray(sample(up["model"].value, m), float)
+        cov = np.asarray(cov1(up["kernel"]), float) / m
+        return smeared_spectral(C, omega, sigma, cov=cov, z=z)
 
-    def beyond():
+    def wall():
         cN = _hlt_solve(max(Ns), omega, sigma)[1]
         return (f"the finest declared kernel (N={max(Ns)}) leaves a "
                 f"smearing bill of about c*C(1)={cN * C1:.3g}; the "
@@ -5544,11 +5666,22 @@ def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
                 f"K_max={K_max}); whatever tol remains buys statistics, "
                 f"capped at m_max={m_max}")
 
-    rw = Rewrite("model+hlt", tuple(rungs),
-                 lambda k: float(k[0]) * float(k[1]) + float(k[2]),
-                 run, beyond)
-    return plan("spectral-pipeline", tol, [rw], jump=False,
-                context=f"omega={omega:g} sigma={sigma:g}")
+    stages = (
+        Stage("kernel", tuple(Ns), run=None, cost=float, predict=smearing,
+              inside="samples"),
+        Stage("model", tuple(range(1, K_max + 1)), cost=float,
+              run=lambda K, up: pole_correlator(A, rho, E0, dE, K,
+                                                up["kernel"]),
+              solve=poles, predict=tail, share=0.1, inputs=("kernel",)),
+        Stage("samples", (m_max,), run=measured, cost=float,
+              solve=samples, share=0.8, inputs=("kernel", "model")),
+    )
+    return compose("spectral-pipeline", tol, stages,
+                   lambda cs: cs["samples"].through(cs["model"]),
+                   context=f"omega={omega:g} sigma={sigma:g}",
+                   cost=lambda ch: (float(ch["kernel"]) * float(ch["samples"])
+                                    + float(ch["model"])),
+                   wall=wall)
 
 
 def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
