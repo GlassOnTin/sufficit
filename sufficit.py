@@ -4017,6 +4017,57 @@ def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
                       "to h=0",))
 
 
+def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
+                    unit: str = "") -> Certified:
+    """Turn a ladder of certificates about discretized models into one
+    certificate about the thing being modelled. Every rung is rigorous
+    about its own mesh and silent about the mesh itself; this adds the
+    only statement that crosses that line, and it is a measured one.
+
+    Two errors compose and they are of different kinds. The distance
+    from the finest rung to h -> 0 is read off the ladder by
+    gci_extrapolate, so it is EMPIRICAL however rigorous the rungs
+    were; the finest rung's own error is whatever it was and simply
+    adds. The tier of the pair is the weaker, which means a continuum
+    answer is never RIGOROUS no matter what it is built from. Saying
+    so is the point: the exchange rate between a proven statement
+    about a model and a measured one about the world is usually a
+    factor of hundreds and a tier, and printing both is what lets a
+    reader see it.
+
+    One precondition is checked rather than hoped for. A measured
+    convergence order is a ratio of differences between rungs, so if
+    the rungs' own error bars are comparable to those differences the
+    order is fitted to bracket noise and the certificate that follows
+    is fiction. The rule here is a factor of ten, and falling short of
+    it is a refusal that prices the fix: tighten the rungs or coarsen
+    the ladder.
+
+    scale and unit only make the refusal readable in the field's own
+    units -- 10^5 and pcm for a reactor, 1 and nC/cm^2 for a junction.
+    They touch no bound."""
+    if len(rungs) < 3:
+        raise ValueError("a grid-convergence certificate needs >= 3 rungs")
+    vals = [c.value for c in rungs]
+    diffs = [abs(b - a) for a, b in zip(vals, vals[1:])]
+    worst = max(c.err for c in rungs)
+    if min(diffs) <= 10.0 * worst:
+        raise ValueError(
+            f"the ladder cannot be read: the widest discrete bracket "
+            f"({worst * scale:.3g}{unit}) is not small against the closest "
+            f"pair of rungs ({min(diffs) * scale:.3g}{unit}), so a measured "
+            f"convergence order would be fitting bracket noise; tighten "
+            f"the per-rung tolerance below "
+            f"{min(diffs) * scale / 10:.2g}{unit} or coarsen the ladder")
+    g = gci_extrapolate(vals, hs)
+    fine = rungs[-1]
+    return Certified(g.value, _up(g.err + fine.err), min(g.tier, fine.tier),
+                     fine.provenance + g.provenance
+                     + (f"{label}, grid error {g.err * scale:.3g}{unit} + "
+                        f"finest bracket {fine.err * scale:.3g}{unit}",),
+                     min(1.0, g.fail_p + fine.fail_p))
+
+
 # ------------------------------------------------------------- SPH
 # beachhead: wave impact on a wall. The model, declared: 2D weakly
 # compressible SPH (Wendland C2 kernel, Tait equation of state,
@@ -5799,6 +5850,55 @@ def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
                    context=f"c={c:g} A={A:g} rho={rho:g}")
 
 
+def gs_continuum_flux(c: float = 4.0, psi0: float = 0.2,
+                      meshes=(8, 16, 32, 64), m: int = 5) -> Certified:
+    """The flux content of the equilibrium rather than of its mesh,
+    for the nonlinear pressure profile that the Prager-Synge path
+    cannot reach.
+
+    This closes the honest weakness in gs_nonlinear_certified. That
+    certificate is RIGOROUS and it is about the discrete equilibrium;
+    Prager-Synge, where it applies, is RIGOROUS about the continuum
+    one, which is the stronger claim. So the comparison was never
+    like for like, and the missing statement is this one -- bought
+    the only way it can be bought without a new theorem, by refining
+    and reading the trend, which costs a tier.
+
+    What comes back is worth putting beside the other two. The
+    discrete radius at n=16 is 10^-15; the mesh is worth 10^-3; the
+    continuum certificate is the second of those and EMPIRICAL, so
+    the ordering is the opposite of the one the tier labels suggest.
+    A weaker claim about the real thing beats a stronger claim about
+    a mesh, whenever the mesh is what you were not asking about.
+
+    Cost is the wall here rather than the physics. beta comes from a
+    dense inverse of the interior block, so the finest rung is cubic
+    in the number of nodes and n=64 is where that stops being
+    pleasant."""
+    rungs = [gs_nonlinear_certified(n=n, c=c, psi0=psi0, m=m)["Q"]
+             for n in meshes]
+    return continuum_limit(rungs, [1.0 / n for n in meshes],
+                           "continuum poloidal flux: mesh ladder "
+                           f"n={'/'.join(map(str, meshes))}")
+
+
+def gs_exact_flux() -> float:
+    """The continuum flux content in closed form, which exists only
+    because the source was manufactured about the Solov'ev polynomial:
+    psi_ex solves the nonlinear problem exactly at every coupling, so
+    the exact answer is the integral of a polynomial over a rectangle
+    and can be done by hand. Not a certificate and not used by one --
+    it is the independent truth the mesh ladder is measured against,
+    the job slab_buckling_keff does for the reactor.
+
+    integral over [R0-W, R0+W] x [-H, H] of
+    a (R^2 - R0^2)^2 + b R^2 Z^2 + d Z^2, with W = H = 1 and R0 = 3:
+    the first term has no Z dependence and contributes 2a * 24.4, the
+    second separates into (56/3)(2/3), the third into 2 * (2/3)."""
+    a_c, b_c, d_c = 1.0 / 100, 1.0 / 108, 1.0 / 10
+    return 2 * a_c * 24.4 + b_c * (56 / 3) * (2 / 3) + d_c * 2 * (2 / 3)
+
+
 def pole_correlator(A: float, rho: float, E0: float, dE: float,
                     K: int, N: int) -> Certified:
     """A declared spectral model, truncated where you can afford to.
@@ -6060,30 +6160,11 @@ def keff_continuum_bracket(width: float = 70.0, Ns=(25, 50, 100, 200),
     exchange rate between a rigorous statement about a model and a
     statistical one about the world, and the reason this library prints
     both rather than quietly reporting the tighter number."""
-    if len(Ns) < 3:
-        raise ValueError("a grid-convergence certificate needs >= 3 rungs")
     rungs = [keff_dispatch(slab_reactor(N=N, width=width, **xs), tol_pcm)
              for N in Ns]
-    vals = [c.value for c in rungs]
-    diffs = [abs(b - a) for a, b in zip(vals, vals[1:])]
-    worst = max(c.err for c in rungs)
-    if min(diffs) <= 10.0 * worst:
-        raise ValueError(
-            f"the ladder cannot be read: the widest discrete bracket "
-            f"({worst * 1e5:.3g} pcm) is not small against the closest "
-            f"pair of rungs ({min(diffs) * 1e5:.3g} pcm), so a measured "
-            f"convergence order would be fitting bracket noise; tighten "
-            f"tol_pcm below {min(diffs) * 1e5 / 10:.2g} or coarsen the "
-            "ladder")
-    g = gci_extrapolate(vals, [width / N for N in Ns])
-    fine = rungs[-1]
-    return Certified(g.value, _up(g.err + fine.err), min(g.tier, fine.tier),
-                     fine.provenance + g.provenance
-                     + (f"continuum k_eff: mesh ladder "
-                        f"N={'/'.join(map(str, Ns))}, grid error "
-                        f"{g.err * 1e5:.3g} pcm + finest bracket "
-                        f"{fine.err * 1e5:.3g} pcm",),
-                     min(1.0, g.fail_p + fine.fail_p))
+    return continuum_limit(rungs, [width / N for N in Ns],
+                           "continuum k_eff: mesh ladder "
+                           f"N={'/'.join(map(str, Ns))}", 1e5, " pcm")
 
 
 def junction_dispatch(dev: dict, volts: float, tol_nC: float,
@@ -6141,3 +6222,40 @@ def junction_dispatch(dev: dict, volts: float, tol_nC: float,
     rw = Rewrite("newton", knobs, float, run, beyond)
     return plan("depletion-charge", tol_nC, [rw], jump=jump,
                 context=f"{dev['label']} at {volts:g} V")
+
+
+def junction_continuum_charge(volts: float = 1.0, Ns=(50, 100, 200, 400),
+                              tol_nC: float = 1e-3, length_um: float = 1.0,
+                              Na: float = 1e17, Nd: float = 1e17,
+                              **kw) -> Certified:
+    """The charge of the junction rather than of its mesh. Kantorovich
+    proves an exact solution of the DISCRETE equations exists and
+    encloses it; nothing in that argument knows the cells are there.
+    Measured on this device the gap is not a rounding detail: the
+    discrete certificate is worth 10^-8 nC/cm^2 and the mesh is worth
+    10^-2, six orders apart, so the number a reader should distrust is
+    the one the rigorous half is silent about.
+
+    Refine, watch, and bound where it is going. Each rung is a
+    certified discrete answer from junction_dispatch and the ladder is
+    read by the same grid-convergence machinery the reactor and the
+    sea wall use, through continuum_limit.
+
+    One thing was measured and NOT built, which is worth recording
+    because it looks like an obvious composed plan. Splitting a single
+    tolerance between the mesh and the Newton iteration derives
+    nothing, because the Newton half is free: at N=200 the certificate
+    goes from 0.78 nC/cm^2 -- thirty-three times too coarse to read
+    the mesh trend at all -- to 1.1*10^-5 in ONE step, two thousand
+    times tighter than the ladder needs. Every budget that matters
+    picks the same rung, so there is no exchange rate to price and a
+    stage split would be decoration. Quadratic convergence is what
+    does it, and it is the same fact that makes this ladder's rungs
+    cheap enough to climb."""
+    rungs = [junction_dispatch(pn_junction(N=N, length_um=length_um, Na=Na,
+                                           Nd=Nd), volts, tol_nC, **kw)
+             for N in Ns]
+    return continuum_limit(rungs, [1.0 / N for N in Ns],
+                           "continuum depletion charge: mesh ladder "
+                           f"N={'/'.join(map(str, Ns))}",
+                           1.0, " nC/cm^2")

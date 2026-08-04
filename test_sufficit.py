@@ -3179,6 +3179,86 @@ def test_keff_continuum_refuses_an_unreadable_ladder():
         sf.keff_continuum_bracket(tol_pcm=1.0)
 
 
+def test_junction_continuum_contains_a_finer_run_it_never_saw():
+    """The mesh ladder turns an enclosure on a discretised junction
+    into one on the junction. There is no closed form to check it
+    against here, so the check is out of sample: build the certificate
+    from meshes up to 400 cells, then compute at 800 and 1600 and
+    require the bracket to contain both. Nothing finer than 400 enters
+    the certificate."""
+    c = sf.junction_continuum_charge()
+    assert c.tier == sf.Tier.EMPIRICAL           # the grid half is measured
+    for N in (800, 1600):
+        dev = sf.pn_junction(N=N)
+        fine = sf.junction_charge_bracket(dev, 1.0,
+                                          sf.junction_potential(dev, 1.0, 40))
+        assert c.value - c.err <= fine.value <= c.value + c.err
+    # and the continuum claim is the loose one: the mesh is what binds
+    coarse = sf.junction_dispatch(sf.pn_junction(N=400), 1.0, 1e-3)
+    assert c.err > 50 * coarse.err
+
+
+def test_junction_continuum_ladders_nest():
+    """Each ladder's bracket must contain what the next finer ladder
+    reports, or the measured order is not describing a limit."""
+    brackets = [sf.junction_continuum_charge(Ns=Ns)
+                for Ns in ((25, 50, 100), (50, 100, 200), (100, 200, 400))]
+    for coarse, fine in zip(brackets, brackets[1:]):
+        lo, hi = coarse.value - coarse.err, coarse.value + coarse.err
+        assert lo <= fine.value <= hi
+        assert fine.err < coarse.err             # and refining pays
+
+
+def test_junction_continuum_refuses_an_unreadable_ladder():
+    """Two rungs is not a ladder, and rungs whose own brackets are
+    comparable to the gaps between them are noise a measured order
+    would happily fit. The second refusal names the tolerance that
+    would fix it."""
+    with pytest.raises(ValueError, match="3 rungs"):
+        sf.junction_continuum_charge(Ns=(100, 200))
+    with pytest.raises(ValueError, match="cannot be read"):
+        sf.junction_continuum_charge(tol_nC=5.0)
+
+
+def test_gs_continuum_contains_the_closed_form():
+    """The honest weakness in gs_nonlinear_certified, closed. That
+    certificate is RIGOROUS about the DISCRETE equilibrium, while
+    Prager-Synge was rigorous about the continuum one, so the two were
+    never the same claim. The mesh ladder supplies the missing one and
+    pays a tier for it.
+
+    The truth here is exact rather than out of sample: manufacturing
+    the source about the Solov'ev polynomial keeps psi_ex an exact
+    solution of the nonlinear problem, so the continuum flux is the
+    integral of a polynomial over a rectangle. The certificate must
+    contain it, and the ordering of the two errors is the point --
+    the discrete radius is worth 10^-14 and the mesh 10^-4."""
+    pytest.importorskip("dolfinx")
+    c = sf.gs_continuum_flux(meshes=(8, 16, 32))
+    truth = sf.gs_exact_flux()
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.tier == sf.Tier.EMPIRICAL
+    discrete = sf.gs_nonlinear_certified(n=32, c=4.0, m=5)["Q"]
+    assert discrete.tier == sf.Tier.RIGOROUS
+    assert c.err > 1e6 * discrete.err            # the mesh, not the bound
+
+
+def test_continuum_limit_is_one_place_not_three():
+    """The reactor, the junction and the tokamak all cross the same
+    line -- from a certificate about a discretised model to one about
+    the thing modelled -- and they cross it through one function, so
+    the rule that a continuum answer is never RIGOROUS is stated once.
+    Checked structurally, because three copies would drift."""
+    import inspect
+    for fn in (sf.keff_continuum_bracket, sf.junction_continuum_charge,
+               sf.gs_continuum_flux):
+        src = inspect.getsource(fn)
+        assert "continuum_limit(" in src
+        assert "gci_extrapolate(" not in src     # nobody hand-rolls it
+    # and the tier rule lives there
+    assert "min(g.tier, fine.tier)" in inspect.getsource(sf.continuum_limit)
+
+
 def test_sn_transport_reuses_the_same_certificate():
     """The archetype transfers. Discrete-ordinates transport is a
     different equation with a different operator, and the bracket needs

@@ -1665,6 +1665,17 @@ energy error and guaranteed bound versus mesh size, both first order">
         r = sf.gs_nonlinear_certified(n=16, c=c, psi0=PSI0, m=5)
         sweep.append((c, r["radius"], r["psi_err"], r["theta"], r["route"]))
     gaps = [math.log10(e / r) for _, r, e, _, _ in sweep]
+    gs_cont = sf.gs_continuum_flux(meshes=(8, 16, 32))
+    gs_truth = sf.gs_exact_flux()
+    gs_disc = sf.gs_nonlinear_certified(n=32, c=4.0, m=5)["Q"]
+    gs_cont_lines = [
+        "gs_continuum_flux(c=4, meshes=(8, 16, 32))",
+        f"  -> {gs_cont.value:.9f} +/- {gs_cont.err:.3g}  "
+        f"[{gs_cont.tier.name}, about the equilibrium]",
+        "",
+        "the same 32-cell mesh, five Newton steps:",
+        f"  -> {gs_disc.value:.9f} +/- {gs_disc.err:.3g}  "
+        f"[{gs_disc.tier.name}, about the mesh]"]
     zmat = sf.gs_nonlinear_certified(n=8, c=0.0, m=2)
     nz = sf.gs_nonlinear_certified(n=8, c=0.1, m=2)
     npos = int((nz["J"] > 0).sum() - (np2.diag(nz["J"]) > 0).sum())
@@ -1873,6 +1884,38 @@ strength, with the contraction certificate's refusal marked">
             "the assembled residual and Jacobian onward is, including "
             "the rounding inside the matrix products behind β.</li>"
             "</ul>",
+
+            "<h2>Answering the objection this page invites</h2>"
+            "<p>The comparison above was never quite like for like, "
+            "and it is worth saying so plainly rather than leaving a "
+            "reader to notice. Prager–Synge is RIGOROUS about the "
+            "<em>continuum</em> equilibrium. Kantorovich is RIGOROUS "
+            "about the <em>discrete</em> one. Same tier label, "
+            "different questions, and the second is the easier "
+            "question.</p>"
+            "<p>The missing statement can be bought the same way the "
+            "reactor and the junction buy it — refine, and read the "
+            "trend — and it costs a tier, because a measured "
+            "convergence order is not a proven one:</p>"
+            f"<pre>{esc(chr(10).join(gs_cont_lines))}</pre>"
+            "<p>Here the truth is exact rather than out of sample. "
+            "Manufacturing the source about the Solov'ev polynomial "
+            "keeps ψ_ex an exact solution of the <em>nonlinear</em> "
+            "problem at every coupling, so the continuum flux is the "
+            "integral of a polynomial over a rectangle and can be "
+            f"done by hand: {gs_truth:.9f}. The certificate contains "
+            f"it, and the true remaining distance is "
+            f"{gs_cont.err / abs(gs_cont.value - gs_truth):.2f}× "
+            "inside the claimed budget — which is the grid "
+            "certificate's declared safety factor of 3, arrived at "
+            "from the other direction.</p>"
+            "<p>Stare at the two error bars before deciding which "
+            "certificate you wanted. The discrete radius is "
+            f"{gs_disc.err:.1g} and RIGOROUS; the continuum error is "
+            f"{gs_cont.err:.2g} and EMPIRICAL. The tier labels rank "
+            "them in exactly the opposite order to their usefulness, "
+            "because the rigorous one is silent about the only "
+            "approximation that mattered here.</p>",
         ])
 
 
@@ -2985,7 +3028,8 @@ error, {mesh[2][1]:.2f} pcm</text>
             "sloppily the solve was done.</p>",
             code_section(sf.slab_reactor, sf.mmatrix_witness,
                          sf.keff_bracket, sf.keff_dispatch,
-                         sf.keff_continuum_bracket, sf.sn_slab_reactor),
+                         sf.continuum_limit, sf.keff_continuum_bracket,
+                         sf.sn_slab_reactor),
             "<h2>The run</h2>"
             "<p>A two-group slab, 70 cm across, 100 cells per group. "
             "Starting from a flat trial flux and iterating:</p>"
@@ -3169,6 +3213,29 @@ def junction_case():
             for n in (100, 200, 400, 800)]
     mdiff = [abs(b[1].value - a[1].value) for a, b in zip(mesh, mesh[1:])]
 
+    # asking for the junction rather than the mesh, and checking the
+    # answer against runs the certificate never saw
+    cont = sf.junction_continuum_charge(volts=volts)
+    d400 = sf.pn_junction(N=400)
+    fine400 = sf.junction_charge_bracket(
+        d400, volts, sf.junction_potential(d400, volts, 40))
+    cont_lines = [
+        f"junction_continuum_charge(volts={volts:g})",
+        f"  -> {cont.value:.6f} +/- {cont.err:.4g} nC/cm2  "
+        f"[{cont.tier.name}, about the junction]",
+        "",
+        "the same 400-cell mesh, Newton run to convergence:",
+        f"  -> {fine400.value:.6f} +/- {fine400.err:.3g} nC/cm2  "
+        "[RIGOROUS, about the mesh]"]
+    oos = {}
+    for N in (800, 1600):
+        d2 = sf.pn_junction(N=N)
+        oos[N] = sf.junction_charge_bracket(
+            d2, volts, sf.junction_potential(d2, volts, 40)).value
+    oos_hits = sum(cont.value - cont.err <= v <= cont.value + cont.err
+                   for v in oos.values())
+    oos_gap = max(abs(v - cont.value) for v in oos.values())
+
     # the independent check: the depletion approximation
     dep = []
     for vv in (0.0, 1.0, 2.0, 3.0):
@@ -3351,6 +3418,47 @@ nC/cm&#178;</text>
             "certificate is nowhere near the weak link &#8212; which is "
             "only known because both were measured, and is the reason "
             "to print both.</p>"
+            "<h2>Asking for the junction instead of the mesh</h2>"
+            "<p>That gap can be closed, and only one way without a new "
+            "theorem: refine, watch the answer move, and bound where it "
+            "is going. Each rung is a certified discrete answer; the "
+            "ladder is read by the same grid-convergence machinery the "
+            "reactor and the sea wall use.</p>"
+            f"<pre>{esc(chr(10).join(cont_lines))}</pre>"
+            "<p>The price is a tier. The distance from the finest mesh "
+            "to h&nbsp;&#8594;&nbsp;0 is <em>measured</em> off the "
+            "ladder rather than proven, so the composed answer is "
+            "EMPIRICAL however rigorous each rung was, and on the very "
+            "same mesh it is "
+            f"{cont.err / fine400.err:,.0f} times wider than the "
+            "rigorous discrete certificate. That is not a "
+            "defect in either number. It is the exchange rate between "
+            "a proven statement about a model and a measured one about "
+            "the world, and the reason this library prints both rather "
+            "than quietly reporting the tighter one.</p>"
+            "<p>There is no closed form for this junction to check "
+            "against, so the check is out of sample: the certificate "
+            "is built from meshes no finer than 400 cells, and then "
+            "the charge is computed at 800 and 1600 cells, which it "
+            "never saw. It contains "
+            f"<strong>{oos_hits}/{len(oos)}</strong> of them"
+            + (", and the true remaining distance at the finest rung "
+               f"is {cont.err / oos_gap:.1f}&#215; inside the claimed "
+               "budget." if oos_gap else ".") +
+            "</p>"
+            "<p>One thing was measured and <em>not</em> built, because "
+            "it looks like the obvious next composed plan. Splitting a "
+            "single tolerance between the mesh and the Newton "
+            "iteration derives nothing, because the Newton half is "
+            "free: at 200 cells the certificate goes from "
+            "0.78&nbsp;nC/cm&#178; &#8212; thirty-three times too "
+            "coarse to read the mesh trend at all &#8212; to "
+            "1.1&#183;10&#8315;&#8309; in one step, two thousand times "
+            "tighter than the ladder needs. Every budget in the range "
+            "that matters picks the same rung, so there is no exchange "
+            "rate to price and a stage split would be decoration on a "
+            "knob that does not respond. The cliff two sections up is "
+            "the same fact seen from the other side.</p>",
             "<p>The independent check comes from a closed form that "
             "uses none of the discretised operators. The textbook "
             "depletion approximation sweeps the junction perfectly "
