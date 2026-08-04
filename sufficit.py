@@ -4577,6 +4577,49 @@ def slab_reactor(N: int = 100, width: float = 70.0, D1: float = 1.4,
             "label": f"slab {width:g}cm N={N}"}
 
 
+def sn_slab_reactor(N: int = 60, width: float = 10.0, nang: int = 8,
+                    st: float = 1.0, ss: float = 0.6,
+                    nsf: float = 0.45) -> dict:
+    """The same query without the diffusion approximation: one-group
+    discrete-ordinates transport in a slab, which is the equation
+    diffusion is an approximation TO. Neutrons are tracked by direction
+    as well as position, on a Gauss-Legendre angular quadrature, and
+    the width is in mean free paths.
+
+    Nothing about the certificate changes, and that is the point.
+    Streaming is differenced upwind -- step differencing, whose whole
+    reason for existing is that it cannot produce a negative flux --
+    which is exactly the statement that the operator stays a Z-matrix.
+    So mmatrix_witness and keff_bracket apply here unaltered, with no
+    new proof and no new code. A certificate hung on a cone rather than
+    on a quadratic form does not care which equation it is looking at,
+    only whether the equation respects the cone. Diamond differencing
+    would break this, and would deserve to: it is the scheme that can
+    return negative fluxes.
+
+    Cost is cells times angles, so this is dense-solvable in a slab and
+    would not be in a reactor. Kept small on purpose: it is here to
+    show the archetype transferring, not to compete with a production
+    transport code."""
+    mu, w = np.polynomial.legendre.leggauss(nang)
+    w = w / w.sum()             # so sum_b w_b psi_b is the isotropic average
+    h = width / N
+    n = N * nang
+    L, F = np.zeros((n, n)), np.zeros((n, n))
+    for a in range(nang):
+        for c in range(N):
+            i = c * nang + a
+            L[i, i] += st + abs(mu[a]) / h          # collision + outflow
+            up = c - 1 if mu[a] > 0 else c + 1      # the upwind neighbour
+            if 0 <= up < N:                         # vacuum at both edges
+                L[i, up * nang + a] -= abs(mu[a]) / h
+            for b in range(nang):                   # isotropic in the lab
+                L[i, c * nang + b] -= ss * w[b]
+                F[i, c * nang + b] += nsf * w[b]
+    return {"L": L, "F": F, "N": N, "width": width, "nang": nang,
+            "label": f"S{nang} slab {width:g}mfp N={N}"}
+
+
 def slab_buckling_keff(width: float, D1: float = 1.4, D2: float = 0.4,
                        sr1: float = 0.030, sa2: float = 0.100,
                        ss12: float = 0.020, nf1: float = 0.007,
@@ -5348,3 +5391,55 @@ def keff_dispatch(rx: dict, tol_pcm: float, m_max: int = 40,
     rw = Rewrite("power", knobs, float, run, beyond)
     return plan("criticality", tol_pcm * 1e-5, [rw], jump=jump,
                 context=rx["label"])
+
+
+def keff_continuum_bracket(width: float = 70.0, Ns=(25, 50, 100, 200),
+                           tol_pcm: float = 0.01, **xs) -> Certified:
+    """The continuum answer, and the price of asking for it. Everything
+    keff_bracket certifies is about a reactor made of finitely many
+    cells; the reactor itself has none, and the distance between the
+    two is the model's error, not the certificate's. This closes that
+    gap the only way it can be closed cheaply: refine the mesh, watch
+    the answer move, and bound where it is going.
+
+    Each rung is a rigorously certified discrete bracket, and the
+    rungs are then fed to the same grid-convergence machinery the SPH
+    sea-wall uses. Two errors compose. The distance from the finest
+    mesh to h -> 0 is measured, not proven, so it arrives EMPIRICAL and
+    the composed answer inherits that; the finest rung's own half-width
+    is rigorous and simply adds. One precondition is checked rather
+    than hoped for: the discrete brackets must be far narrower than the
+    differences between rungs, or the measured order is reading its own
+    noise. Measured on the default ladder they are 0.7% of the
+    smallest difference.
+
+    The result is worth staring at. The continuum certificate is
+    hundreds of times WIDER than the discrete one it is built from, and
+    a tier weaker. That is not a defect in either; it is the honest
+    exchange rate between a rigorous statement about a model and a
+    statistical one about the world, and the reason this library prints
+    both rather than quietly reporting the tighter number."""
+    if len(Ns) < 3:
+        raise ValueError("a grid-convergence certificate needs >= 3 rungs")
+    rungs = [keff_dispatch(slab_reactor(N=N, width=width, **xs), tol_pcm)
+             for N in Ns]
+    vals = [c.value for c in rungs]
+    diffs = [abs(b - a) for a, b in zip(vals, vals[1:])]
+    worst = max(c.err for c in rungs)
+    if min(diffs) <= 10.0 * worst:
+        raise ValueError(
+            f"the ladder cannot be read: the widest discrete bracket "
+            f"({worst * 1e5:.3g} pcm) is not small against the closest "
+            f"pair of rungs ({min(diffs) * 1e5:.3g} pcm), so a measured "
+            f"convergence order would be fitting bracket noise; tighten "
+            f"tol_pcm below {min(diffs) * 1e5 / 10:.2g} or coarsen the "
+            "ladder")
+    g = gci_extrapolate(vals, [width / N for N in Ns])
+    fine = rungs[-1]
+    return Certified(g.value, _up(g.err + fine.err), min(g.tier, fine.tier),
+                     fine.provenance + g.provenance
+                     + (f"continuum k_eff: mesh ladder "
+                        f"N={'/'.join(map(str, Ns))}, grid error "
+                        f"{g.err * 1e5:.3g} pcm + finest bracket "
+                        f"{fine.err * 1e5:.3g} pcm",),
+                     min(1.0, g.fail_p + fine.fail_p))

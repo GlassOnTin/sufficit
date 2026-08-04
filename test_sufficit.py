@@ -3064,3 +3064,97 @@ def test_discrete_keff_converges_to_the_buckling():
     for a, b in zip(errs, errs[1:]):
         assert 3.5 < a / b < 4.5                  # second order
     assert errs[2] * 1e5 < 1.0                    # under a pcm at N=100
+
+
+def test_keff_continuum_contains_the_closed_form():
+    """The mesh ladder turns a bracket on a discretised reactor into
+    one on the reactor. Checked against the closed-form buckling
+    answer, which is the continuum truth and is computed from none of
+    the discretised operators. The composed certificate is much wider
+    than the rigorous discrete bracket it is built from, and a tier
+    weaker -- that is the exchange rate between a proven statement
+    about a model and a measured one about the world, and both are
+    worth printing."""
+    c = sf.keff_continuum_bracket()
+    truth = sf.slab_buckling_keff(70.0)
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.tier == sf.Tier.EMPIRICAL          # the grid half is measured
+    fine = sf.keff_dispatch(sf.slab_reactor(N=200), 0.01)
+    assert c.err > 50 * fine.err                # the model, not the bound
+    assert re.search(r"order measured p=[12]\.\d+", " ".join(c.provenance))
+
+
+def test_keff_continuum_refuses_an_unreadable_ladder():
+    """Two ways the ladder cannot be read, both refused rather than
+    fitted: fewer than three rungs, and discrete brackets so wide that
+    a measured convergence order would be fitting their noise."""
+    with pytest.raises(ValueError, match="3 rungs"):
+        sf.keff_continuum_bracket(Ns=(50, 100))
+    with pytest.raises(ValueError, match="cannot be read"):
+        sf.keff_continuum_bracket(tol_pcm=1.0)
+
+
+def test_sn_transport_reuses_the_same_certificate():
+    """The archetype transfers. Discrete-ordinates transport is a
+    different equation with a different operator, and the bracket needs
+    no new proof and no new code -- only that step differencing keeps
+    the operator inside the cone. Same witness, same bracket, same
+    dispatch."""
+    rx = sf.sn_slab_reactor(N=40)
+    L, F = rx["L"], rx["F"]
+    assert not np.allclose(L, L.T)
+    assert ((L - np.diag(np.diag(L))) <= 0).all()      # still a Z-matrix
+    sf.mmatrix_witness(L)                              # same hypothesis check
+    from scipy.linalg import eig
+    k = float(np.max(np.abs(eig(np.linalg.solve(L, F), right=False))))
+    c = sf.keff_dispatch(rx, 1.0)                      # same front door
+    assert c.value - c.err <= k <= c.value + c.err
+    assert c.tier == sf.Tier.RIGOROUS
+    assert "collatz-wielandt" in c.provenance[0]
+
+
+def test_sn_transport_approaches_the_infinite_medium():
+    """A slab many mean free paths across stops leaking, so k must
+    climb toward the infinite-medium value nuSf/(St - Ss), which is
+    arithmetic and owes nothing to the discretisation."""
+    k_inf = 0.45 / (1.0 - 0.6)
+    ks = [sf.keff_dispatch(sf.sn_slab_reactor(N=40, width=w), 100.0,
+                           m_max=200).value
+          for w in (20.0, 40.0, 80.0)]
+    assert all(a < b for a, b in zip(ks, ks[1:]))      # climbing
+    assert all(k < k_inf for k in ks)                  # from below
+    assert k_inf - ks[-1] < 0.5 * (k_inf - ks[0])      # and getting there
+
+
+def test_diffusion_is_the_approximation_transport_is_not():
+    """Why the transport model is worth having. Given identical cross
+    sections, diffusion agrees with transport in a large slab and is
+    badly wrong in a small leaky one -- thousands of pcm at five mean
+    free paths, tens at twenty. Neither certificate knows this: each is
+    rigorous about its own operator. The gap between two models is a
+    modelling question, and it is measured here rather than assumed
+    away."""
+    def diffusion(N, width, st=1.0, ss=0.6, nsf=0.45):
+        D, h = 1.0 / (3 * st), width / N
+        M = np.zeros((N, N))
+        for i in range(N):
+            M[i, i] = 2 * D / h ** 2 + (st - ss)
+            if i > 0:
+                M[i, i - 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2
+            if i < N - 1:
+                M[i, i + 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2
+        return {"L": M, "F": nsf * np.eye(N), "label": f"diffusion {width:g}"}
+
+    gaps = []
+    for width in (5.0, 20.0):
+        kt = sf.keff_dispatch(sf.sn_slab_reactor(N=100, width=width), 2.0,
+                              m_max=300).value
+        kd = sf.keff_dispatch(diffusion(300, width), 2.0, m_max=300).value
+        gaps.append(abs(kd - kt) * 1e5)
+    assert gaps[0] > 1000.0                  # small slab: diffusion fails
+    assert gaps[1] < 500.0                   # large slab: diffusion is fine
+    assert gaps[0] > 10 * gaps[1]

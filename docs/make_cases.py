@@ -2642,6 +2642,41 @@ def criticality_case():
         A = np.linalg.solve(*[sf.slab_reactor(N=N)[k] for k in ("L", "F")])
         mesh.append((N, abs(float(np.max(eig(A, right=False).real))
                             - buckling) * 1e5))
+    cont = sf.keff_continuum_bracket()
+    cont_holds = cont.value - cont.err <= buckling <= cont.value + cont.err
+    # the discrete bracket the continuum one is actually built on: the
+    # finest rung of its own ladder, not the 1 pcm answer from above
+    cont_fine = sf.keff_dispatch(sf.slab_reactor(N=200), 0.01)
+
+    # the archetype transferring: same certificate, different equation
+    sn = sf.sn_slab_reactor(N=60)
+    sn_off = float((sn["L"] - np.diag(np.diag(sn["L"]))).max())
+    sn_asym = float(np.linalg.norm(sn["L"] - sn["L"].T))
+    sn_k = sf.keff_dispatch(sn, 1.0)
+    sn_truth = float(np.max(np.abs(eig(
+        np.linalg.solve(sn["L"], sn["F"]), right=False))))
+
+    def diffusion_twin(N, w, st=1.0, ss=0.6, nsf=0.45):
+        D, h = 1.0 / (3 * st), w / N
+        M = np.zeros((N, N))
+        for i in range(N):
+            M[i, i] = 2 * D / h ** 2 + (st - ss)
+            if i > 0:
+                M[i, i - 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2
+            if i < N - 1:
+                M[i, i + 1] = -D / h ** 2
+            else:
+                M[i, i] += D / h ** 2
+        return {"L": M, "F": nsf * np.eye(N), "label": "diffusion"}
+
+    twins = []
+    for w in (5.0, 10.0, 20.0, 40.0):
+        kt = sf.keff_dispatch(sf.sn_slab_reactor(N=100, width=w), 2.0,
+                              m_max=300).value
+        kd = sf.keff_dispatch(diffusion_twin(300, w), 2.0, m_max=300).value
+        twins.append((w, kt, kd, (kd - kt) * 1e5))
 
     ms = [m for m, _, _, _ in rungs]
     ws = [w for _, _, _, w in rungs]
@@ -2729,7 +2764,8 @@ error, {mesh[2][1]:.2f} pcm</text>
             "solver's own error, so the bracket stays rigorous however "
             "sloppily the solve was done.</p>",
             code_section(sf.slab_reactor, sf.mmatrix_witness,
-                         sf.keff_bracket, sf.keff_dispatch),
+                         sf.keff_bracket, sf.keff_dispatch,
+                         sf.keff_continuum_bracket, sf.sn_slab_reactor),
             "<h2>The run</h2>"
             "<p>A two-group slab, 70 cm across, 100 cells per group. "
             "Starting from a flat trial flux and iterating:</p>"
@@ -2769,7 +2805,65 @@ error, {mesh[2][1]:.2f} pcm</text>
             "million times the certificate's own floor. On this "
             "problem the bound is never the weak link, which is the "
             "honest ordering of the two errors and the reason to print "
-            "both.</p>",
+            "both.</p>"
+            "<p>That gap can itself be certified, by feeding the "
+            "ladder of rigorous discrete brackets to the same "
+            "grid-convergence machinery the sea-wall page uses. One "
+            "precondition is checked rather than hoped for: the "
+            "discrete brackets have to be far narrower than the "
+            "differences between rungs, or the measured order is "
+            "fitting their noise.</p>"
+            f"<pre>{esc(f'keff_continuum_bracket()  ->  {cont.value:.9f}'
+                        f' +/- {cont.err * 1e5:.3f} pcm   '
+                        f'[{cont.tier.name}]')}</pre>"
+            f"<p>The closed-form continuum answer is {buckling:.9f}, and "
+            f"it is <strong>{'inside' if cont_holds else 'OUTSIDE'}</strong> "
+            "that interval. Notice what the composition cost: the "
+            f"continuum certificate is {cont.err / cont_fine.err:.0f} times "
+            "wider than the rigorous discrete bracket it is built from, "
+            "and a tier weaker, because half of it is a measured "
+            "convergence order rather than a proven inequality. That is "
+            "the exchange rate between a proven statement about a model "
+            "and a measured one about the world. Both are printed; "
+            "neither is dressed as the other.</p>",
+            "<h2>The same certificate, a different equation</h2>"
+            "<p>Diffusion is itself an approximation, to the transport "
+            "equation that tracks neutrons by direction as well as "
+            "position. Discretising that instead — discrete ordinates "
+            "on a Gauss-Legendre angular quadrature, streaming "
+            "differenced upwind — changes the operator completely and "
+            "changes the certificate not at all.</p>"
+            "<p>Upwind differencing exists precisely because it cannot "
+            "produce a negative flux, and that is the same statement as "
+            "the operator being a Z-matrix. So the largest off-diagonal "
+            f"is {sn_off:g}, the operator is asymmetric by "
+            f"{sn_asym:.1f} in norm, and <code>mmatrix_witness</code> and "
+            "<code>keff_bracket</code> run on it unaltered — no new "
+            "proof, no new code, the same front door:</p>"
+            f"<pre>{esc(f'keff_dispatch(sn_slab_reactor(N=60), tol_pcm=1)'
+                        + chr(10) + f'  -> {sn_k.value:.9f} +/- '
+                        f'{sn_k.err * 1e5:.3f} pcm')}</pre>"
+            f"<p class='note'>Dense <code>eig</code> on the transport "
+            f"operator says {sn_truth:.9f}, inside the bracket. A "
+            "certificate hung on a cone rather than on a quadratic form "
+            "does not care which equation it is looking at, only whether "
+            "the equation respects the cone.</p>"
+            "<p>Having both models measures something neither "
+            "certificate can: how good the diffusion approximation "
+            "actually is. Same cross sections, both converged:</p>"
+            "<table><thead><tr><th>slab (mean free paths)</th>"
+            "<th>transport</th><th>diffusion</th>"
+            "<th>diffusion error (pcm)</th></tr></thead><tbody>"
+            + "".join(f"<tr><td>{w:g}</td><td>{kt:.6f}</td>"
+                      f"<td>{kd:.6f}</td><td>{g:+.0f}</td></tr>"
+                      for w, kt, kd, g in twins)
+            + "</tbody></table>"
+            "<p>Thousands of pcm wrong in a small leaky slab, tens in a "
+            "large one — the textbook behaviour, measured rather than "
+            "recited. Neither bracket knows this, and neither is wrong: "
+            "each is rigorous about its own operator. Which operator "
+            "deserves belief is a modelling question, and it stays a "
+            "separate, stated step.</p>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>Containment against a dense eigensolver: <strong>"
             f"{contained}/{len(rungs)}</strong> rungs.</li>"
@@ -2787,6 +2881,19 @@ error, {mesh[2][1]:.2f} pcm</text>
             "<li>A 150 cm core, whose dominance ratio is much closer to "
             "one, <strong>refuses</strong> 1 pcm within the declared "
             "ladder and prices what would be needed.</li>"
+            f"<li>The continuum certificate, mesh ladder "
+            f"{'/'.join(str(N) for N, _ in mesh)}: <strong>"
+            f"{cont.err * 1e5:.3f} pcm</strong>, EMPIRICAL, and it "
+            f"<strong>{'contains' if cont_holds else 'MISSES'}</strong> "
+            "the closed-form continuum answer.</li>"
+            "<li>The same bracket on a transport operator, with no new "
+            f"proof: <strong>{sn_k.err * 1e5:.3f} pcm</strong>, "
+            "containing dense <code>eig</code>.</li>"
+            f"<li>Diffusion measured against transport: "
+            f"<strong>{twins[0][3]:+.0f} pcm</strong> at "
+            f"{twins[0][0]:g} mean free paths, "
+            f"<strong>{twins[2][3]:+.0f} pcm</strong> at "
+            f"{twins[2][0]:g}.</li>"
             "</ul>",
         ])
 

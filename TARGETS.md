@@ -57,7 +57,9 @@ Neutron transport was entered first, ahead of the others and out of order, becau
 
 Five patterns cover nearly everything above, and the rewrite library should be organized around them: **small-parameter expansions** (gyrokinetics, EFT, post-Newtonian, Braginskii — asymptotic tier); **variational sandwiches** (chemistry's upper/lower bracket, SOS transport bounds, reduced-basis a posteriori estimators — rigorous tier); **resolution-limited queries** (HLT smearing, g−2 windows, GW mismatch — ε supplied by the instrument); **projection with memory** (Mori–Zwanzig in MD, plasma closures, subgrid models — empirical tier, with variational scores where they exist); and **cone-preserving brackets** (reactor criticality — rigorous tier). A compression contributed under one archetype in one field should transfer to its siblings mechanically; that transfer is the flywheel working.
 
-The fifth arrived last and is the one with the most unclaimed siblings. Where an operator preserves a cone rather than a quadratic form — a population that cannot go negative, a probability that cannot go negative — Perron–Frobenius supplies the dominant eigenvalue and Collatz–Wielandt sandwiches it from any strictly positive trial vector, with no symmetry required anywhere. That covers the criticality eigenvalue, and it should transfer without modification to Markov-state relaxation rates, transfer-operator spectra in molecular kinetics, and neutron-transport's own S_N discretizations wherever the differencing scheme is positivity-preserving. The variational archetype cannot reach any of them, because none of those operators is self-adjoint.
+The fifth arrived last and is the one with the most unclaimed siblings. Where an operator preserves a cone rather than a quadratic form — a population that cannot go negative, a probability that cannot go negative — Perron–Frobenius supplies the dominant eigenvalue and Collatz–Wielandt sandwiches it from any strictly positive trial vector, with no symmetry required anywhere. The variational archetype cannot reach any of these, because none of the operators is self-adjoint.
+
+The transfer claim has been tested once rather than merely asserted. The same witness and the same bracket, with no new proof and no new code, run on an S_N discrete-ordinates transport operator as well as on the diffusion operator they were written for — step differencing keeps it inside the cone, which is the only hypothesis either function cares about. Still unclaimed, and expected to go the same way: Markov-state relaxation rates and transfer-operator spectra in molecular kinetics.
 
 ## Engines, and the guess/check line
 
@@ -93,6 +95,8 @@ WCSPH. Second-order ladders should tighten the impulse certificate by an
 order of magnitude and may flip the low-berm refusal to a certificate.
 The cost is a C toolchain (qcc), so recorded-run pages rather than CI
 regeneration, at least at first.
+
+**Reactor codes, and why not the obvious one.** The criticality checker takes the loss and fission operators as plain arrays and asks four questions of them, so the integration surface is already open: any deterministic code willing to export its assembled operators gets a certificate, with the discretization staying that code's claim and the bracket staying ours. The obvious name, OpenMC, is the wrong first bridge for exactly this reason — a continuous-energy Monte Carlo code has no operator to hand over, and its k_eff arrives as a batch standard deviation, which is a statistical statement of a different kind. Bracketing that would mean wrapping its statistics at the EMPIRICAL tier rather than applying the theorem, and it should be built as that, honestly labelled, rather than dressed up as the rigorous bracket beside it. A deterministic transport code is the nearer bridge.
 
 **Proposers per domain.** PySCF supplies integrals and reference
 wavefunctions at scale while the Cholesky floors and window machinery
