@@ -46,7 +46,7 @@ because every one of those measurements depends on it.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 188 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 195 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.
@@ -106,6 +106,7 @@ long pole).
 | Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
 | Breaking wave on a sea wall (SPH) | delivered impulse certified; raw peak refused (no asymptotic range); a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
 | Tokamak equilibrium (Grad–Shafranov via FEniCSx) | guaranteed energy-norm bound within 1.6× of the true error; implicit coupling certified by a contraction factor | Prager–Synge with rectangle-exact constants — guaranteed, not estimated; refuses past the contraction limit |
+| The same equilibrium with a real pressure profile | certified where the contraction refuses, at a contraction factor of 33 against a limit of 1 | a profile peaked on the axis is nonlinear in ψ, and its derivative adds a *positive* mass matrix to the Jacobian, so the contraction and the cone route to ‖J⁻¹‖ both close — at every coupling, including ones the contraction would have accepted. Kantorovich with a Neumann-series bound on ‖J⁻¹‖ certifies anyway. The guarantee changes with the method: Prager–Synge reaches the continuum solution, this one reaches the discrete equilibrium and prints the mesh gap beside it |
 | Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
 | Reactor criticality (k_eff) | 1 pcm in 20 fission-source iterations, bracket floor ~10⁻⁶ pcm; a mesh ladder then certifies the continuum answer to 0.57 pcm, checked against the closed-form buckling value | Perron–Frobenius, not the variational theorem: the operator is not self-adjoint, so positivity brackets it instead. Four hypotheses machine-checked; the solver's own error priced by the same witness. Continuum half degrades to EMPIRICAL and says so |
 | The same bracket on S_N transport | runs unaltered on a different equation — no new proof, no new code | the certificate needs the operator to preserve a cone, not to be symmetric; upwind differencing supplies that. Having both models measures the diffusion approximation itself: −9200 pcm at 5 mean free paths, −41 at 20 |

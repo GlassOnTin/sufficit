@@ -4688,10 +4688,73 @@ _EPS_SI = 11.7 * 8.854e-14   # permittivity of silicon, F/cm
 _QE = 1.602176634e-19   # elementary charge, C
 
 
-def newton_enclosure(res: float, J: np.ndarray, lip) -> float:
+def inverse_bound(J: np.ndarray):
+    """A rigorous upper bound on ||J^-1||_inf, by whichever of two
+    routes the matrix admits. Returns the bound and the name of the
+    route that produced it, because which one answered is part of the
+    provenance.
+
+    The first route is the reactor's witness. When J is a nonsingular
+    M-matrix the bound is not merely valid, it is essentially exact:
+    J^-1 >= 0 makes the row sums of |J^-1| equal to J^-1 e, so
+    ||J^-1||_inf is literally ||J^-1 e||_inf, and that is what the
+    witness computes. Measured on twelve junction Jacobians it lands
+    on the true norm to every digit printed.
+
+    The second route asks nothing about signs. Take any approximate
+    inverse R, and if ||I - RJ||_inf = alpha < 1 then the Neumann
+    series for (RJ)^-1 converges, J is nonsingular, and
+    ||J^-1|| <= ||R|| / (1 - alpha). The cost is a matrix inverse and
+    two matrix products, so it is a factor of n dearer than the
+    witness, and it is the only route open once the Jacobian has a
+    positive off-diagonal -- a fourth-order stencil, or the
+    consistent mass matrix that a Grad-Shafranov pressure profile
+    subtracts from its stiffness.
+
+    Both the product and the row sums are computed in floating point,
+    so both are padded. |fl(RJ) - RJ| <= gamma_n |R||J| entrywise with
+    gamma_n = n u / (1 - n u), and 4 n eps dominates that with a
+    factor of eight to spare, enough to also swallow the rounding of
+    the pad's own matrix product. The row sums then round by at most
+    gamma_n again, which is what the final slack covers. Rounding the
+    denominator down keeps the quotient an upper bound."""
+    try:
+        return _up(float(mmatrix_witness(J).max())), "m-matrix-witness"
+    except ValueError:
+        pass
+    n = len(J)
+    eps = np.finfo(float).eps
+    try:
+        R = np.linalg.inv(J)
+    except np.linalg.LinAlgError:
+        # LAPACK found an exact zero pivot. That is a refusal like any
+        # other and gets the library's phrasing rather than numpy's,
+        # since a caller distinguishing "no bound" from "crashed"
+        # should not have to know which library was asked.
+        raise ValueError(
+            "neither route to ||J^-1||: J is not a certified M-matrix, "
+            "and no approximate inverse exists to start a Neumann "
+            "series -- the factorization hit an exact zero pivot, so J "
+            "is singular as stored") from None
+    P = R @ J
+    pad = 4.0 * n * eps * (np.abs(R) @ np.abs(J))
+    slack = 1.0 + 2.0 * n * eps
+    alpha = _up(float((np.abs(np.eye(n) - P) + pad).sum(1).max()) * slack)
+    if alpha >= 1.0:
+        raise ValueError(
+            f"neither route to ||J^-1||: J is not a certified M-matrix, "
+            f"and the approximate inverse gives ||I - RJ|| = {alpha:.4g} "
+            ">= 1, so the Neumann series is not proven to converge and J "
+            "is not proven nonsingular")
+    rnorm = _up(float(np.abs(R).sum(1).max()) * slack)
+    return _up(rnorm / _dn(1.0 - alpha)), "rump-neumann"
+
+
+def newton_enclosure(res: float, J: np.ndarray, lip):
     """Kantorovich's theorem as a checkable predicate: turn a computed
     residual into a proof that an exact solution EXISTS, and a radius
-    around the iterate that contains it.
+    around the iterate that contains it. Returns the radius and the
+    route that priced the inverse Jacobian.
 
     Given a bound res on ||F(x)||_inf, a bound beta on ||J(x)^-1||_inf,
     and a constant K with ||J(a) - J(b)|| <= K |a - b| throughout a
@@ -4701,11 +4764,10 @@ def newton_enclosure(res: float, J: np.ndarray, lip) -> float:
     conclusion is existence, not merely accuracy, which is why it can
     be trusted at a point no one has proven is near anything.
 
-    beta comes from mmatrix_witness, so this refuses on any Jacobian
-    that is not a Z-matrix. That is a real restriction and a deliberate
-    one: the alternative route to beta, bounding ||I - RJ|| for an
-    approximate inverse R, costs a matrix product and belongs here the
-    day a caller needs it, not before.
+    beta comes from inverse_bound, which tries the cheap cone route
+    first and falls back to the Neumann one. Nothing here cares which
+    answered, and the theorem never asked for a Z-matrix; that was a
+    restriction inherited from the only pricing method on hand.
 
     K is supplied by the caller as a function of the ball radius,
     because no generic code can know it -- it is a second-derivative
@@ -4714,8 +4776,7 @@ def newton_enclosure(res: float, J: np.ndarray, lip) -> float:
     no larger than the ball itself is the answer. Refuses when none
     does, which is the honest report that the iterate is not yet
     provably near a solution however small its residual looks."""
-    u = mmatrix_witness(J)
-    beta = _up(float(u.max()))
+    beta, route = inverse_bound(J)
     eta = _up(beta * _up(res))
     worst = None
     for ball in (1e-12, 1e-9, 1e-6, 1e-3, 1e-2, 1e-1, 1.0, 3.0):
@@ -4733,7 +4794,7 @@ def newton_enclosure(res: float, J: np.ndarray, lip) -> float:
             # denominator down keeps the radius an upper bound.
             r = _up(eta * (2.0 / _dn(1.0 + math.sqrt(1.0 - 2.0 * h))))
             if r <= ball:
-                return r
+                return r, route
     ball, k, h = worst
     raise ValueError(
         f"Kantorovich fails: beta={beta:.3g} eta={eta:.3g} K={k:.3g} "
@@ -4858,7 +4919,7 @@ def junction_charge_bracket(dev: dict, volts: float,
 
     r, e = _poisson_residual(dev, psi, v)
     res = _up(float((np.abs(r) + e).max()))
-    rad = newton_enclosure(res, _poisson_jacobian(dev, psi, v), lip)
+    rad, route = newton_enclosure(res, _poisson_jacobian(dev, psi, v), lip)
     w = np.full(N + 1, h)
     w[0] = w[N] = h / 2
     keep = dev["x"] >= 0.5
@@ -4879,7 +4940,7 @@ def junction_charge_bracket(dev: dict, volts: float,
               + 8.0 * np.finfo(float).eps * terms * scale)
     return Certified(q * scale, err, Tier.RIGOROUS,
                      (f"junction-charge n={N + 1} newton-kantorovich "
-                      f"m-matrix-witness radius={rad:.3g} kT/q +fp",))
+                      f"{route} radius={rad:.3g} kT/q +fp",))
 
 
 def depletion_width_analytic(dev: dict, volts: float) -> float:
@@ -4896,6 +4957,168 @@ def depletion_width_analytic(dev: dict, volts: float) -> float:
     vbi = _VT * math.log(dev["Na"] * dev["Nd"] / (_NI * _NI))
     return math.sqrt(2 * _EPS_SI * (vbi + volts) / _QE
                      * (1.0 / dev["Na"] + 1.0 / dev["Nd"])) * 1e7
+
+
+# ----------------------------------------- the existence certificate,
+# aimed back at the tokamak. The Grad-Shafranov certificate far above
+# is a Prager-Synge energy bound, and where it applies it says the
+# stronger thing: it measures the distance to the CONTINUUM solution,
+# which no algebraic certificate can see. It pays for that with two
+# restrictions. The source has to be linear in psi, because the
+# implicit coupling is closed by a Picard contraction; and the
+# contraction factor has to stay below one, which caps how hard the
+# plasma current may respond to its own flux.
+#
+# A real pressure profile breaks both, independently. Tokamak pressure
+# peaks on the magnetic axis and falls away outward, so p'(psi)
+# DECREASES with psi and the source is nonlinear. Take the exponential
+# profile with decay scale psi0 in flux units.
+#
+# The contraction factor is max|S'| Rmax / (Rmin lam1), and max|S'| is
+# c/psi0 rather than c, so a peaked profile is a steep one and the
+# wall arrives psi0 times sooner: measured, the Picard certificate
+# refuses above c = 0.47 where the linear source reached 2.34.
+#
+# The Jacobian stops being a Z-matrix, and not marginally. The source
+# contributes minus S' times the consistent mass matrix, whose
+# off-diagonal entries are integrals of products of non-negative basis
+# functions and are therefore POSITIVE. A decreasing profile has
+# S' < 0, so those positive entries are added to the stiffness
+# matrix's negative ones, and 392 of them come out positive at n=16 --
+# for every c > 0, including couplings the contraction would have been
+# happy to accept. The cone route to ||J^-1|| is closed here by the
+# shape of the profile, not by the strength of the coupling, which is
+# why lifting the Z-matrix restriction had to come first.
+#
+# Kantorovich with the Neumann route to beta asks neither question,
+# and certifies out to c = 16, a contraction factor of 32. The price
+# is the junction's price: the enclosure holds an exact solution of
+# the DISCRETE equations, and the distance to the continuum one is the
+# mesh's, stated beside it rather than folded in.
+
+
+def gs_nonlinear_certified(n: int = 16, c: float = 4.0, psi0: float = 0.2,
+                           m: int = 4, degree: int = 1) -> dict:
+    """A tokamak equilibrium whose pressure profile is a real one:
+    peaked on the magnetic axis, decaying outward, so the source is a
+    nonlinear function of the flux and no contraction certificate
+    reaches it. FEniCSx proposes a Newton iterate, untrusted as usual;
+    Kantorovich proves an exact solution of the discrete equations
+    exists nearby and says how near.
+
+    The profile is exponential in the flux, and it is manufactured
+    about the Solov'ev polynomial so that psi_ex remains an exact
+    solution of the NONLINEAR problem at every c. That costs the
+    certificate nothing, since it never looks at psi_ex except as
+    boundary data, and it buys an independent truth to measure the
+    discretization against -- the job slab_buckling_keff does for the
+    reactor and depletion_width_analytic for the junction.
+
+    Newton starts cold, with the interior at zero, because a warm
+    start from psi_ex would begin at the answer and hide the ladder.
+    From cold the ladder is real and its length depends on the
+    physics: measured, two steps certify at c = 1 and at c = 4, three
+    at c = 16.
+
+    The Dirichlet nodes are eliminated rather than constrained. Their
+    values are data and not unknowns, so the system certified is the
+    one on the interior nodes and the radius is a max-norm on those.
+    What the radius does not cover is the mesh: measured second order
+    in h, worth 1.4e-3 in flux at n=16 against a converged rung's
+    1e-15. Twelve orders apart, with the discretization the larger,
+    and both printed.
+
+    Assembly quadrature is not carried, the same declaration the
+    Prager-Synge path makes. Everything from the assembled residual
+    and Jacobian onward is, including the rounding inside beta."""
+    from mpi4py import MPI
+    from dolfinx import mesh as dmesh, fem
+    import ufl
+    if psi0 <= 0.0:
+        raise ValueError("psi0 must be positive: it is the decay scale of "
+                         "the pressure profile, in flux units")
+    R0, W, H = 3.0, 1.0, 1.0
+    a_c, b_c, d_c = 1.0 / 100, 1.0 / 108, 1.0 / 10
+    Rmin, Rmax = R0 - W, R0 + W
+    lam1 = math.pi ** 2 * (1.0 / (2 * W) ** 2 + 1.0 / (2 * H) ** 2)
+
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD,
+                                 [[R0 - W, -H], [R0 + W, H]], [n, n],
+                                 dmesh.CellType.triangle)
+    V = fem.functionspace(msh, ("Lagrange", degree))
+    x = ufl.SpatialCoordinate(msh)
+    R, Z = x[0], x[1]
+    psi_ex = a_c * (R ** 2 - R0 ** 2) ** 2 + b_c * R ** 2 * Z ** 2 \
+        + d_c * Z ** 2
+    ex = fem.Function(V)
+    ex.interpolate(fem.Expression(psi_ex, V.element.interpolation_points))
+    tdim = msh.topology.dim
+    msh.topology.create_connectivity(tdim - 1, tdim)
+    bdofs = fem.locate_dofs_topological(
+        V, tdim - 1, dmesh.exterior_facet_indices(msh.topology))
+    free = np.ones(len(ex.x.array), bool)
+    free[bdofs] = False
+
+    uh = fem.Function(V)
+    uh.x.array[:] = ex.x.array          # boundary is data
+    uh.x.array[free] = 0.0              # interior starts cold
+    v = ufl.TestFunction(V)
+    g0 = -((8 * a_c + 2 * b_c) * R ** 2 + 2 * d_c)   # -Delta* psi_ex
+    src = g0 + c * (ufl.exp(-uh / psi0) - ufl.exp(-psi_ex / psi0))
+    Fform = fem.form((ufl.inner(1.0 / R * ufl.grad(uh), ufl.grad(v))
+                      - src / R * v) * ufl.dx)
+    Jform = fem.form(ufl.derivative(
+        (ufl.inner(1.0 / R * ufl.grad(uh), ufl.grad(v))
+         - src / R * v) * ufl.dx, uh))
+    mass = fem.assemble_vector(fem.form(v * ufl.dx)).array.copy()
+
+    def residual():
+        return fem.assemble_vector(Fform).array[free].copy()
+
+    def jacobian():
+        A = fem.assemble_matrix(Jform)
+        A.scatter_reverse()
+        return A.to_dense()[np.ix_(free, free)]
+
+    for _ in range(m):
+        uh.x.array[free] -= np.linalg.solve(jacobian(), residual())
+
+    J = jacobian()
+    res = _up(float(np.abs(residual()).max()))
+    lo = float(uh.x.array.min())
+    mfree = float(mass[free].max())
+
+    def lip(ball):
+        # J(a) - J(b) is minus the mass matrix weighted by
+        # (S'(a) - S'(b))/R, and |S'(a) - S'(b)| <= max|S''| |a - b|
+        # pointwise, because a P1 nodal basis is a partition of unity
+        # of non-negative functions and the max-norm on coefficients
+        # therefore bounds the max-norm on the function. Summing one
+        # row of the mass matrix over every column gives the integral
+        # of that basis function, so the whole bound is one assembled
+        # vector. The 1e-12 is slack for the exponential's own
+        # rounding, far more than a faithful exp can cost.
+        s2 = abs(c) / (psi0 * psi0) * math.exp((ball - lo) / psi0)
+        return s2 / Rmin * mfree * (1.0 + 1e-12)
+
+    rad, route = newton_enclosure(res, J, lip)
+    # |Q(psi*) - Q(psi_h)| = |sum_i (dc_i) integral phi_i| <= rad *
+    # sum of the interior masses, since the basis functions are
+    # non-negative and only interior coefficients can move
+    Qh = float(mass @ uh.x.array)
+    q_err = _up(rad * _up(float(mass[free].sum())))
+    # the factor the Picard certificate would need for this profile;
+    # its Lipschitz constant is max|S'|, not c
+    theta = abs(c) / psi0 * math.exp(-lo / psi0) * Rmax / (Rmin * lam1)
+    Q = Certified(Qh, q_err, Tier.RIGOROUS,
+                  (f"gs-nonlinear n={n} c={c:g} psi0={psi0:g} m={m} "
+                   f"newton-kantorovich {route} radius={rad:.3g} flux; "
+                   f"discrete equilibrium, contraction theta={theta:.3g} "
+                   f"would refuse; assembly quadrature not carried",))
+    return {"Q": Q, "radius": rad, "route": route, "residual": res,
+            "theta": theta, "psi_err": float(np.abs(uh.x.array
+                                                    - ex.x.array).max()),
+            "uh": uh, "msh": msh, "free": free, "J": J}
 
 
 # ------------------------------------------------------------- The

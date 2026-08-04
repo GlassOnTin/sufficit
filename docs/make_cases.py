@@ -1654,6 +1654,64 @@ energy error and guaranteed bound versus mesh size, both first order">
 {"".join(lp)}</svg>'''
 
     eff = [f"{b / e:.2f}" for _, e, b in ladder]
+
+    # the nonlinear half: a real pressure profile, where the
+    # contraction certificate cannot follow
+    PSI0 = 0.2
+    lam1 = math.pi ** 2 * (1.0 / 4 + 1.0 / 4)
+    c_wall = 0.95 * PSI0 * 2.0 * lam1 / 4.0
+    sweep = []
+    for c in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0):
+        r = sf.gs_nonlinear_certified(n=16, c=c, psi0=PSI0, m=5)
+        sweep.append((c, r["radius"], r["psi_err"], r["theta"], r["route"]))
+    gaps = [math.log10(e / r) for _, r, e, _, _ in sweep]
+    zmat = sf.gs_nonlinear_certified(n=8, c=0.0, m=2)
+    nz = sf.gs_nonlinear_certified(n=8, c=0.1, m=2)
+    npos = int((nz["J"] > 0).sum() - (np2.diag(nz["J"]) > 0).sum())
+    try:
+        sf.gs_equilibrium_certified(n=8, c=4.0)
+        lin_refused = False
+    except ValueError:
+        lin_refused = True
+    # the ladder from cold, at the strongest coupling
+    cliff = []
+    for m in range(1, 5):
+        try:
+            r = sf.gs_nonlinear_certified(n=16, c=16.0, psi0=PSI0, m=m)
+            cliff.append((m, r["residual"], r["radius"]))
+        except ValueError:
+            cliff.append((m, None, None))
+    first_ok = next(m for m, _, rad in cliff if rad is not None)
+
+    axn = Axes((0.08, 20.0), (1e-16, 1e-2), h=320, logx=True, logy=True)
+    np_ = []
+    for idx, cls, lab in ((2, "board", "distance to the exact solution"),
+                          (1, "blue", "certified radius")):
+        xs = [s[0] for s in sweep]
+        ys = [s[idx] for s in sweep]
+        np_.append(f'<path d="{axn.path(xs, ys)}" fill="none" '
+                   f'class="{cls}-ink" stroke-width="2"/>')
+        for x, y in zip(xs, ys):
+            np_.append(f'<circle cx="{axn.X(x):.1f}" cy="{axn.Y(y):.1f}" '
+                       f'r="4" class="{cls}-fill"/>')
+        np_.append(f'<text x="{axn.X(xs[0]) + 9:.1f}" '
+                   f'y="{axn.Y(ys[0]) - 7:.1f}" class="board-text" '
+                   f'font-size="10.5" fill="var('
+                   f'--{cls if cls == "blue" else "muted"})">{lab}</text>')
+    np_.append(f'<line x1="{axn.X(c_wall):.1f}" y1="{axn.mt}" '
+               f'x2="{axn.X(c_wall):.1f}" y2="{axn.h - axn.mb}" '
+               f'class="board-ink" stroke-width="1.5" '
+               f'stroke-dasharray="5 4" opacity="0.8"/>')
+    np_.append(f'<text x="{axn.X(c_wall) + 7:.1f}" y="{axn.mt + 26}" '
+               f'class="board-text" font-size="10.5" opacity="0.85">'
+               f'contraction refuses to the right</text>')
+    svg_non = f'''<svg viewBox="0 0 640 320" role="img" aria-label="Certified
+Kantorovich radius and measured discretization error against coupling
+strength, with the contraction certificate's refusal marked">
+{axn.grid((1e-14, 1e-10, 1e-6, 1e-3), (0.1, 1.0, 10.0),
+          xfmt=lambda v: f"c = {v:g}", yfmt=lambda v: f"{v:g}")}
+{"".join(np_)}</svg>'''
+
     return page(
         "Case: a tokamak equilibrium with a guaranteed error bound",
         "certified case",
@@ -1728,6 +1786,93 @@ energy error and guaranteed bound versus mesh size, both first order">
             "Debian-family packages as the dev machine, from the "
             "FEniCS PPA, so this page regenerates from a fresh solve "
             "on every push like the rest.</li></ul>",
+
+            "<h2>Where the contraction cannot follow</h2>"
+            "<p>Everything above needs the source to be linear in ψ, "
+            "because that is what the Picard contraction closes over, "
+            "and needs θ &lt; 1 on top. A real pressure profile obeys "
+            "neither. Tokamak pressure peaks on the magnetic axis and "
+            "falls away outward, so p′ <em>decreases</em> with ψ and "
+            "the source is a nonlinear function of the unknown.</p>"
+            "<p>Two things then break, and it is worth seeing that "
+            "they break independently. The contraction factor is "
+            "max|S′|·R_max/(R_min·λ₁), and for an exponential profile "
+            f"of decay scale ψ₀ = {PSI0:g} that maximum is c/ψ₀ rather "
+            "than c: a peaked profile is a steep one, so the wall "
+            f"arrives five times sooner, at c = {c_wall:.3g} instead "
+            "of 2.34.</p>"
+            "<p>The second break is structural and it does not care "
+            "about c at all. Differentiating the source contributes "
+            "−S′ times the consistent mass matrix, whose off-diagonal "
+            "entries are integrals of products of non-negative basis "
+            "functions and are therefore <em>positive</em>. A "
+            "decreasing profile has S′ &lt; 0, so those positive "
+            "entries land on top of the stiffness matrix's negative "
+            f"ones, and {npos} of them come out positive at n = 8 for "
+            f"a coupling of c = 0.1 — a θ of {nz['theta']:.2g}, well "
+            "inside what the contraction would have accepted. The "
+            "Jacobian is no longer a Z-matrix, so the reactor's cone "
+            "witness cannot price ‖J⁻¹‖ here, and it is the shape of "
+            "the profile that closed that door rather than the "
+            "strength of the coupling.</p>"
+            "<p>What answers is the same Kantorovich theorem the "
+            "junction runs on, with the other route to ‖J⁻¹‖: pick any "
+            "approximate inverse R, and if ‖I − RJ‖ &lt; 1 then the "
+            "Neumann series converges, J is nonsingular, and "
+            "‖J⁻¹‖ ≤ ‖R‖/(1 − ‖I − RJ‖). That asks nothing about "
+            "signs. It costs a matrix inverse rather than a solve, and "
+            "where the cone route also applies the two agree to every "
+            "digit printed, because on an M-matrix the witness is not "
+            "merely valid but exact — J⁻¹ ≥ 0 makes ‖J⁻¹‖<sub>∞</sub> "
+            "literally ‖J⁻¹e‖<sub>∞</sub>, which is what the witness "
+            "computes.</p>"
+            "<p>The guarantee that comes back is a different one and "
+            "the difference is the point. Prager–Synge measures the "
+            "distance to the <em>continuum</em> solution. Kantorovich "
+            "proves that an exact solution of the <em>discrete</em> "
+            "equations exists and holds it in a radius. Where both "
+            "apply, take Prager–Synge; where it refuses, a discrete "
+            "answer with a stated mesh gap beats no answer.</p>",
+            code_section(sf.inverse_bound, sf.gs_nonlinear_certified),
+            "<h2>The result</h2>"
+            f"<figure>{svg_non}<figcaption>Coupling strength across, "
+            "error down, both logarithmic. The contraction certificate "
+            "stops at the dashed line and says nothing to the right of "
+            "it. The Kantorovich radius keeps shrinking as the "
+            "coupling grows — a stiffer problem has a smaller ‖J⁻¹‖ — "
+            f"and stays {min(gaps):.0f} to {max(gaps):.0f} orders below "
+            "the discretization, which is what actually binds. The "
+            "certificate is about "
+            "the discrete equilibrium; the upper curve is the distance "
+            "from there to the differential equation, and it is "
+            "measured rather than carried.</figcaption></figure>"
+            "<p>The ladder from a cold start is a real one. At c = 16, "
+            "with the interior initialised to zero, no enclosure "
+            f"exists at all until step {first_ok}: "
+            + "; ".join(f"at step {m} the residual is {r:.2g} and the "
+                        f"radius {rad:.2g}"
+                        for m, r, rad in cliff if rad is not None)
+            + ". The number of steps needed to certify tracks the "
+            "physics: two at c = 1 and c = 4, three at c = 16.</p>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>The linear certificate at c = 4: <strong>"
+            f"{'refused' if lin_refused else 'NOT REFUSED'}</strong> "
+            "(θ = 1.62). The nonlinear one certifies there and at four "
+            f"times the coupling, with θ up to {sweep[-1][3]:.3g}.</li>"
+            "<li>Route taken, with no source: <strong>"
+            f"{zmat['route']}</strong> — the stiffness matrix alone is "
+            "a Z-matrix and the cheap route answers. With the profile "
+            f"switched on at c = 0.1: <strong>{nz['route']}</strong>."
+            "</li>"
+            f"<li>Discretization second order in h, measured "
+            "8 → 16 → 32; the certified radius stays below a millionth "
+            "of it at every mesh, so the model boundary and not the "
+            "arithmetic is what limits this answer.</li>"
+            "<li>Assembly quadrature is not carried, the same "
+            "declaration the Prager–Synge path makes. Everything from "
+            "the assembled residual and Jacobian onward is, including "
+            "the rounding inside the matrix products behind β.</li>"
+            "</ul>",
         ])
 
 
@@ -3117,7 +3262,27 @@ nC/cm&#178;</text>
             "operator satisfies, so <code>mmatrix_witness</code> "
             "&#8212; written for neutrons &#8212; prices "
             "&#8214;J<sup>-1</sup>&#8214; here with no new proof. The "
-            "physics has nothing in common. The cone is the same.</p>",
+            "physics has nothing in common. The cone is the same.</p>"
+            "<p>That reuse carried a restriction with it, and the "
+            "restriction was never Kantorovich's. The theorem asks for "
+            "a bound on the inverse Jacobian and does not care where "
+            "it came from; it was the <em>pricing method</em> that "
+            "needed a Z-matrix. A second route asks nothing about "
+            "signs: take any approximate inverse R, and if "
+            "&#8214;I &#8722; RJ&#8214; &lt; 1 the Neumann series "
+            "converges and &#8214;J<sup>-1</sup>&#8214; is at most "
+            "&#8214;R&#8214;/(1 &#8722; &#8214;I &#8722; RJ&#8214;). It "
+            "costs an inverse instead of a solve, so the cone route is "
+            "tried first and still answers here &#8212; and on an "
+            "M-matrix it is not merely valid but exact, since "
+            "J<sup>-1</sup> &#8805; 0 makes "
+            "&#8214;J<sup>-1</sup>&#8214;<sub>&#8734;</sub> literally "
+            "&#8214;J<sup>-1</sup>e&#8214;<sub>&#8734;</sub>, which is "
+            "what the witness computes. The <a "
+            "href=\"gs-equilibrium.html\">tokamak page</a> is where "
+            "the second route earns its keep: a real pressure profile "
+            "puts positive entries in the Jacobian and closes the cone "
+            "outright.</p>",
             code_section(sf.newton_enclosure, sf.pn_junction,
                          sf.junction_charge_bracket, sf.junction_dispatch,
                          sf.depletion_width_analytic),

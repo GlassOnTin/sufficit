@@ -2592,6 +2592,87 @@ def test_gs_flux_pipeline_refuses():
     assert "mesh=32, profile=12" in msg      # both ladders exhausted
 
 
+def test_gs_nonlinear_certifies_past_the_contraction_wall():
+    """The refusal that this removes, both halves of it shown side by
+    side. At c = 4 the Picard certificate declines the LINEAR source
+    outright, and for the peaked profile its factor is steeper still,
+    because the Lipschitz constant of an exponential of decay scale
+    psi0 is c/psi0 rather than c. Kantorovich certifies there anyway,
+    and keeps certifying at four times the coupling."""
+    pytest.importorskip("dolfinx")
+    with pytest.raises(ValueError, match="contraction factor"):
+        sf.gs_equilibrium_certified(n=8, c=4.0)
+    for c in (4.0, 16.0):
+        r = sf.gs_nonlinear_certified(n=8, c=c)
+        assert r["theta"] > 0.95            # the contraction would refuse
+        assert r["route"] == "rump-neumann"
+        assert r["Q"].tier == sf.Tier.RIGOROUS
+        assert 0.0 < r["Q"].err < 1e-3
+        assert "discrete equilibrium" in r["Q"].provenance[0]
+
+
+def test_gs_nonlinear_jacobian_leaves_the_cone():
+    """Why the Z-matrix restriction had to go first, and that it is the
+    profile's shape doing it rather than the coupling's strength. With
+    no source the Jacobian is the stiffness matrix, a Z-matrix, and the
+    cone route answers. Switch on a DECREASING profile and the source
+    contributes minus S' times the consistent mass matrix, whose
+    off-diagonals are integrals of products of non-negative basis
+    functions and so are positive; the cone route closes at every
+    c > 0, including couplings well inside the contraction limit."""
+    pytest.importorskip("dolfinx")
+    quiet = sf.gs_nonlinear_certified(n=8, c=0.0, m=2)
+    assert quiet["route"] == "m-matrix-witness"
+    assert (quiet["J"] - np.diag(np.diag(quiet["J"]))).max() <= 0.0
+    for c in (0.1, 4.0):                     # theta 0.20 and 8.1
+        r = sf.gs_nonlinear_certified(n=8, c=c, m=2)
+        off = r["J"] - np.diag(np.diag(r["J"]))
+        assert (off > 0).sum() > 0
+        with pytest.raises(ValueError, match="Z-matrix"):
+            sf.mmatrix_witness(r["J"])
+        assert r["route"] == "rump-neumann"
+
+
+def test_gs_nonlinear_enclosure_contains_the_converged_answer():
+    """A radius is a containment claim, so check it contains something.
+    The first rung that certifies at all must bracket the flux a
+    converged run reports, at three couplings; and the ladder has to be
+    a real one, so the cold start must refuse before it certifies."""
+    pytest.importorskip("dolfinx")
+    for c in (1.0, 4.0, 16.0):
+        done = sf.gs_nonlinear_certified(n=8, c=c, m=7)["Q"]
+        first = next(m for m in range(1, 7)
+                     if _gs_certifies(c, m))
+        assert first > 1                     # cold start does not certify
+        got = sf.gs_nonlinear_certified(n=8, c=c, m=first)["Q"]
+        assert abs(got.value - done.value) <= got.err + done.err
+
+
+def _gs_certifies(c, m):
+    try:
+        sf.gs_nonlinear_certified(n=8, c=c, m=m)
+        return True
+    except ValueError:
+        return False
+
+
+def test_gs_nonlinear_mesh_is_the_model_boundary():
+    """What the radius covers is the discrete equilibrium; the distance
+    to the differential equation is the model's and is measured, not
+    carried. The manufactured Solov'ev solution stays exact for the
+    nonlinear problem at every c, so the gap is readable directly:
+    second order in h, and orders above the certified radius, which is
+    what makes the mesh and not the arithmetic the thing that binds."""
+    pytest.importorskip("dolfinx")
+    errs = []
+    for n in (8, 16, 32):
+        r = sf.gs_nonlinear_certified(n=n, c=4.0, m=5)
+        errs.append(r["psi_err"])
+        assert r["radius"] < 1e-6 * r["psi_err"]
+    assert 3.5 < errs[0] / errs[1] < 4.5     # second order, both steps
+    assert 3.5 < errs[1] / errs[2] < 4.5
+
+
 def _pole_bench():
     """Deterministic noisy channel for the three-stage pipeline: pole
     tower A=1, rho=0.9, E0=0.9, dE=0.3, measured at 1% relative noise
@@ -3291,18 +3372,116 @@ def test_junction_dispatch_refuses_two_ways():
     assert "thermal volts" in ex.value.next_price
 
 
-def test_newton_enclosure_refuses_a_positive_offdiagonal():
-    """beta comes from the M-matrix witness, so the Z-matrix hypothesis
-    is load-bearing here exactly as it is for the reactor: flip one
-    off-diagonal of the Jacobian positive and the enclosure is refused
-    rather than quietly computed from an inverse that may have negative
-    entries."""
+def test_newton_enclosure_survives_a_positive_offdiagonal():
+    """What used to be a refusal. The Z-matrix hypothesis was never
+    Kantorovich's; it belonged to the only method on hand for pricing
+    ||J^-1||. Flip one off-diagonal of the Jacobian positive and the
+    cone route closes, the Neumann route opens, and the enclosure is
+    computed rather than declined -- to within a hair of what the
+    witness said before the flip, since a 10^-14 perturbation cannot
+    move the true norm."""
     dev = sf.pn_junction(N=40)
     psi = sf.junction_potential(dev, 1.0, 40)
     J = sf._poisson_jacobian(dev, psi, 1.0 / sf._VT)
-    J[5, 9] = +0.01
+    clean, how = sf.inverse_bound(J)
+    assert how == "m-matrix-witness"
+    J[5, 9] = +1e-14
     with pytest.raises(ValueError, match="Z-matrix"):
-        sf.newton_enclosure(1e-12, J, lambda r: 1.0)
+        sf.mmatrix_witness(J)                  # the cone route is closed
+    bumped, how = sf.inverse_bound(J)          # the other one is not
+    assert how == "rump-neumann"
+    assert bumped == pytest.approx(clean, rel=1e-9)
+    rad, how = sf.newton_enclosure(1e-12, J, lambda r: 1.0)
+    assert how == "rump-neumann" and rad > 0.0
+
+
+def test_inverse_bound_clears_every_probe_it_is_measured_against():
+    """||J^-1||_inf is a supremum over unit vectors, so ANY vector
+    supplies a lower bound the certificate has to clear -- an
+    independent check that needs a solve and no theory. Both routes are
+    held to it: the junction's M-matrix, where the cone route answers,
+    and a fourth-order stencil, whose stencil weight at distance two is
+    positive so the cone route cannot."""
+    rng = np.random.default_rng(20260804)
+    dev = sf.pn_junction(N=60)
+    psi = sf.junction_potential(dev, 1.0, 40)
+    Jm = sf._poisson_jacobian(dev, psi, 1.0 / sf._VT)
+    N, h = 40, 1.0 / 40
+    Jf = np.zeros((N - 1, N - 1))
+    for i in range(N - 1):
+        Jf[i, i] = 30.0 / (12 * h * h)
+        for d, w in ((1, -16.0), (2, 1.0)):
+            for j in (i - d, i + d):
+                if 0 <= j < N - 1:
+                    Jf[i, j] += w / (12 * h * h)
+    assert (Jf - np.diag(np.diag(Jf))).max() > 0      # not a Z-matrix
+    for J, want in ((Jm, "m-matrix-witness"), (Jf, "rump-neumann")):
+        bound, how = sf.inverse_bound(J)
+        assert how == want
+        y = rng.normal(size=(len(J), 400))
+        probe = np.abs(np.linalg.solve(J, y)).max(0) / np.abs(y).max(0)
+        assert bound >= probe.max()
+        # and not loose: within a part in 10^6 of an independent inverse
+        assert bound <= 1e-6 + np.abs(np.linalg.inv(J)).sum(1).max() * 1.000001
+
+
+def test_inverse_bound_refuses_when_neither_route_reaches():
+    """No ||J^-1|| to bound means a refusal and not a large number, and
+    there are two ways to arrive at one. An exact zero pivot is the
+    blunt case. The interesting case is a Hilbert matrix, which LAPACK
+    inverts without complaint and which is nonsingular in exact
+    arithmetic: at n = 12 its condition number has eaten the whole
+    mantissa, ||I - RJ|| comes back above a hundred, and the honest
+    report is that double precision cannot prove this matrix
+    invertible -- not that the answer is big."""
+    S = np.eye(6)
+    S[3, 3] = 0.0
+    with pytest.raises(ValueError, match="zero pivot"):
+        sf.inverse_bound(S)
+    n = 12
+    hilbert = 1.0 / (np.arange(n)[:, None] + np.arange(n) + 1.0)
+    with pytest.raises(ValueError, match="Neumann series is not proven"):
+        sf.inverse_bound(hilbert)
+
+
+def test_inverse_bound_holds_across_conditionings_and_sign_patterns():
+    """Two fixed matrices are two data points. This is the sweep: three
+    hundred matrices over four families -- general random, deliberately
+    ill-conditioned down to a spectral spread of 10^14, M-matrices, and
+    near-singular pairs of almost-parallel rows -- each held to probe
+    vectors that need no inverse at all. Every matrix must either get a
+    bound that clears every probe or get a refusal. A quarter are
+    refused, and that is the point: double precision cannot prove those
+    invertible, and the certificate says so rather than returning a
+    large number."""
+    rng = np.random.default_rng(20260804)
+    certified = refused = 0
+    for trial in range(300):
+        n = int(rng.integers(2, 40))
+        kind = trial % 4
+        if kind == 0:
+            J = rng.normal(size=(n, n))
+        elif kind == 1:
+            U, _ = np.linalg.qr(rng.normal(size=(n, n)))
+            V, _ = np.linalg.qr(rng.normal(size=(n, n)))
+            spread = 10.0 ** rng.uniform(-rng.uniform(0, 14), 0, n)
+            J = U @ np.diag(spread) @ V.T
+        elif kind == 2:
+            J = -np.abs(rng.normal(size=(n, n)))
+            np.fill_diagonal(J, np.abs(J).sum(1) + rng.uniform(0.01, 2, n))
+        else:
+            J = rng.normal(size=(n, n))
+            J[0] = J[1] * (1 + 10.0 ** -rng.uniform(6, 16))
+        try:
+            bound, _ = sf.inverse_bound(J)
+        except ValueError:
+            refused += 1
+            continue
+        y = rng.normal(size=(n, 40))
+        probe = np.abs(np.linalg.solve(J, y)).max(0) / np.abs(y).max(0)
+        assert bound >= probe.max()
+        certified += 1
+    assert certified > 200 and refused > 20
 
 
 def test_newton_enclosure_radius_tracks_the_residual():
@@ -3312,7 +3491,7 @@ def test_newton_enclosure_radius_tracks_the_residual():
     dev = sf.pn_junction(N=40)
     psi = sf.junction_potential(dev, 1.0, 60)
     J = sf._poisson_jacobian(dev, psi, 1.0 / sf._VT)
-    a, b = (sf.newton_enclosure(res, J, lambda r: dev["a"] * 3.0)
+    a, b = (sf.newton_enclosure(res, J, lambda r: dev["a"] * 3.0)[0]
             for res in (1e-9, 5e-10))
     assert 1.99 < a / b < 2.01
 
