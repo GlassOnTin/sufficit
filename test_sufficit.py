@@ -3443,3 +3443,47 @@ def test_solved_stage_is_charged_what_it_spends():
     assert bills["model"] < 0.1 * slack   # cheaper than the share offered
     assert bills["samples"] <= given      # fits the budget it was handed
     assert given > 0.8 * 0.9 * slack      # which is more than the share alone
+
+
+def test_the_memo_makes_nodes_linear():
+    """The fact the compiler's remaining debt turns on, pinned so that
+    breaking it is loud.
+
+    Three graph-shaped searches have been built and measured against
+    this walk, and none paid. The reason is here: the shared-node memo
+    already makes NODE computations linear in the graph -- each stage's
+    knob is computed at most once, however many assignments name it --
+    so the only quantity a cleverer search can reduce is assemblies,
+    and assemblies are arithmetic on certificates already in hand. On
+    this fan-in the walk performs twice as many assemblies as nodes,
+    and a search that halved the assemblies would save nothing at all.
+
+    If the memo ever stops sharing, nodes stop being linear, and every
+    one of those measurements has to be taken again. Hence the pin."""
+    seen = []
+    orig = sf.compose
+
+    def counting(slug, tol, stages, assemble, context="", cost=None,
+                 wall=None):
+        wrapped = []
+        for st in stages:
+            if st.run is None:
+                wrapped.append(st)
+                continue
+
+            def mk(st):
+                def run(k, up):
+                    seen.append((st.name, k))
+                    return st.run(k, up)
+                return run
+            wrapped.append(sf.replace(st, run=mk(st)))
+        return orig(slug, tol, tuple(wrapped), assemble, context, cost, wall)
+
+    sf.compose = counting
+    try:
+        cert = sf.h_chain_gap_dispatch(6, tol=0.15)
+    finally:
+        sf.compose = orig
+    assert len(seen) == len(set(seen))     # nothing recomputed
+    assert len(seen) == 8                  # two branches, four rungs each
+    assert len(cert.receipt) == 16         # and twice as many assemblies

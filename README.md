@@ -29,16 +29,24 @@ needed what it lacked. A stage may now be a *choice* rather than a
 certificate — picking an N-point kernel spends error budget on what
 that kernel cannot resolve, and the bill lands inside somebody else's
 certificate rather than in one of its own; two stages may share that
-choice, which is how a model and a measurement live on one grid. What
-remains open is the search itself, and it is open by measurement, not
-by neglect: escalating the binding stage instead of walking the cost
-ladder was built, measured a wash or worse against the shared-node
-memo, and removed. It would pay on a graph too wide to enumerate, and
-there is not one here yet.
+choice, which is how a model and a measurement live on one grid.
+
+The other half of that debt is now closed by measurement rather than
+by code. Three searches that use the graph's shape instead of only its
+cost have been built and abandoned: escalating the binding stage,
+ordering by marginal node cost, and pruning assignments whose measured
+components already exceed the tolerance. The third is admissible and
+cuts a five-branch walk from 1024 assemblies to 5, and it still saves
+no nodes in nine of twelve cases. All three fail for the same reason,
+which is worth knowing before a fourth is attempted: **the shared-node
+memo already makes node computations linear in the graph**, so the only
+quantity a cleverer search can reduce is assemblies, and assemblies are
+arithmetic on certificates already in hand. A test pins that property,
+because every one of those measurements depends on it.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 187 checks) in which every claimed
+([`test_sufficit.py`](test_sufficit.py), 188 checks) in which every claimed
 bound is verified against brute force, exact solutions, or independent
 constructions. Every answer carries a value, an error bound, a tier, and
 the provenance of the bound. The bound is the product.

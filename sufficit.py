@@ -5217,16 +5217,38 @@ def compose(slug: str, tol: float, stages, assemble: Callable,
     sample count whose ceiling is a million draws; a front door that
     knows its wall in closed form should say so and skip the run.
 
-    A note on what this does not do. An earlier design escalated only
-    the binding stage instead of walking the cost ladder, which on the
-    fan-in reached a certifying pair in 4-7 runs where the ladder
-    takes 8-16. Measured in the thing that costs -- brackets computed,
-    not assemblies, since the branches are shared -- it was 5 against
-    6, then 6 against 6, then 7 against 6: a wash or worse, and it
-    twice returned a dearer assignment because it never revisited what
-    it stepped over. The memo had already made the ladder cheap. It
-    would pay on a graph too wide to enumerate; there is no such graph
-    here yet, so it is not built."""
+    A note on what this does not do, now with three measurements behind
+    it rather than one. The search walks the cost ladder, and three
+    attempts to make it use the graph's shape instead have all been
+    built and all been abandoned.
+
+    Escalate the binding stage rather than stepping: reached a
+    certifying pair in 4-7 runs where the ladder takes 8-16, but in
+    the thing that costs -- nodes computed, not assemblies, since the
+    branches are shared -- it was 5 against 6, then 6 against 6, then
+    7 against 6, and it twice returned a dearer assignment because it
+    never revisited what it stepped over.
+
+    Order by MARGINAL node cost, so that no node is ever bought while
+    an untried assembly of already-computed nodes remains: saved one
+    node at one tolerance out of eight, and at that tolerance returned
+    a dearer assignment. Physics ladders are geometric in cost, so the
+    newest node dominates the total and the two orders almost coincide.
+
+    Prune an assignment whose already-measured components exceed the
+    tolerance: admissible, it returned the same assignment every time,
+    and it cuts the walk hard -- 1024 assemblies to 5 on a five-branch
+    graph. It saves no nodes. Zero of them in nine of twelve cases
+    across two to five branches, because the cost-ordered walk reaches
+    the cheap knobs of every branch before any pruning can bite.
+
+    All three fail for one reason, and it is the memo. Sharing nodes
+    already makes node computations linear in the graph's size, so the
+    only quantity left for a cleverer search to reduce is assemblies,
+    and assemblies are arithmetic on certificates already in hand.
+    That would change if a graph appeared whose cheap rungs did not
+    already cover every knob -- if coarse were dear and fine were
+    cheap, which is the opposite of every ladder in this library."""
     solved = {}
     at = {st.name: i for i, st in enumerate(stages)}
     order = _topo(stages)
