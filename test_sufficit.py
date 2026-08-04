@@ -2250,20 +2250,34 @@ def test_planner_refuses_with_receipts():
 
 
 def test_planner_jump_fewer_runs():
-    """The jump earns its keep: on the N=60 ladder (corrections off,
-    so the decay is clean) the model-guided jump reaches a certifying
-    rung in strictly fewer runs than plain stepping. Both certify,
-    and two valid brackets on the same number must overlap."""
-    kw = dict(tol=0.031, correction_iters=0, ell_max=9)
-    j = sf.heisenberg_energy_dispatch(60, **kw)
-    s = sf.heisenberg_energy_dispatch(60, jump=False, **kw)
+    """The jump earns its keep, and now it does so on the ladder people
+    actually walk. _fit_jump fits a decay to the measured errors and
+    falls back to plain stepping the moment they are not monotone,
+    which they were not at any chain length until the bracket was made
+    to choose its block tiling and its window width. This test used to
+    switch the corrections off to get a clean decay to fit; it runs at
+    the default now. Measured: four runs against five here, three
+    against four at 0.03/bond, five against seven at 0.02.
+
+    Fewer runs is not a cheaper answer, and the receipts say so: the
+    jump lands on a rung priced 1280 where stepping finds one priced
+    640. It reaches a certifying rung sooner and pays more for the one
+    it lands on. The ell=9 cap would show the same thing at a hundred
+    and sixty times the wall clock, which is not what a test is for."""
+    kw = dict(tol=0.025, ell_max=8)
+    j = sf.heisenberg_energy_dispatch(40, **kw)
+    s = sf.heisenberg_energy_dispatch(40, jump=False, **kw)
 
     def runs(c):
         return int(re.search(r"tried (\d+) rung",
                              c.provenance[-1]).group(1))
     assert runs(j) < runs(s)
-    assert j.err <= 0.031 * 59 and s.err <= 0.031 * 59
+    assert j.err <= 0.025 * 39 and s.err <= 0.025 * 39
     assert abs(j.value - s.value) <= j.err + s.err
+    # and the overshoot, kept as a measurement rather than a footnote
+    price = lambda c: float(re.search(r"predicted (\S+?)[,)]",
+                                      c.provenance[-1]).group(1))
+    assert price(j) > price(s)
 
 
 def test_hchain_ell_from_tol():
