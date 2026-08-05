@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sufficit — a computer that knows how much it doesn't need to know</title>
+<title>Sufficit: a computer that knows how much it doesn't need to know</title>
 <style>
   :root {
     --paper: #F7F8F7; --ink: #1A2028; --muted: #5A6472;
@@ -101,12 +101,13 @@
   postage stamp.</p>
 
   <h2><span class="lecture-no">Part 1</span>Most of the work is wasted</h2>
-  <p>Every decade or so, someone notices that in their field the map from full
-  simulation to final answer throws almost everything away, and finds
-  coordinates where the throwing-away happens first. The fast multipole method
-  made gravity sums linear instead of quadratic: a distant cluster of stars
-  pulls on you almost exactly like one heavy point. A discovery like that
-  costs years, and it usually stays locked inside one community’s software.</p>
+  <p>Every decade or so, someone notices that in their field the map from
+  full simulation to final answer throws almost everything away. They then
+  find coordinates where the discarding happens first. The fast multipole
+  method made gravity sums linear instead of quadratic, because a distant
+  cluster of stars pulls on you almost exactly like one heavy point. A
+  discovery like that costs years, and it usually stays locked inside one
+  community’s software.</p>
 
   <figure>
     <svg viewBox="0 0 560 190" role="img" aria-label="A funnel from a huge cloud of simulated detail down to one small answer">
@@ -130,7 +131,7 @@
       </g>
       <text x="487" y="100" text-anchor="middle" class="board-text" font-size="20" font-weight="600">23°</text>
     </svg>
-    <figcaption>Fig. 1 — The shape of the problem. The simulation lives on the
+    <figcaption>Fig. 1. The shape of the problem. The simulation lives on the
     left. The question lives on the right. The bet is that a compiler can find
     the narrow neck automatically.</figcaption>
   </figure>
@@ -148,8 +149,8 @@
   stretches by a known factor. Errors move through a program the way units
   do, mechanically.</p>
 
-  <p>The best form this takes is the bracket: squeeze the truth from both
-  sides at once.</p>
+  <p>The strongest form is a bracket. It squeezes the true answer from
+  both sides at once.</p>
 
   <figure>
     <svg viewBox="0 0 560 130" role="img" aria-label="A number line with the true answer pinched between a certified lower bound and a certified upper bound">
@@ -169,7 +170,7 @@
         <text x="242" y="112" text-anchor="middle" opacity="0.65">the truth, wherever it is</text>
       </g>
     </svg>
-    <figcaption>Fig. 2 — A bracket. The upper bound comes from a guessed
+    <figcaption>Fig. 2. A bracket. The upper bound comes from a guessed
     wavefunction; any guess gives a valid ceiling, by the variational theorem.
     The lower bound comes from a different proof entirely. The truth has
     nowhere to go.</figcaption>
@@ -182,12 +183,12 @@
   and it is a guarantee, not an estimate. Be clear about what is guaranteed:
   the answer of the declared model. The basis itself sits about 0.05 hartree
   from the real molecule. Every certificate on this site bounds the model's
-  answer, not the world's; the model is always stated, and choosing a better
-  one is a separate, honest step.</p>
+  answer, not the world's. The model is always stated. Choosing a better one
+  is a separate step, and it is stated too.</p>
 
-  <h2><span class="lecture-no">Part 3</span>Guess freely, check strictly</h2>
-  <p>One rule makes the whole thing practical: it does not matter how you find
-  an answer; it matters how you check it. Optimizers, randomized sketches, and
+  <h2><span class="lecture-no">Part 3</span>The guess and the check are separate jobs</h2>
+  <p>One rule makes the whole thing practical. It does not matter how you find
+  an answer. It matters how you check it. Optimizers, randomized sketches and
   greedy searches produce the guesses, and none of them is trusted. The
   certificate comes from a check that does not care where the guess came
   from.</p>
@@ -209,18 +210,18 @@
         <text x="412" y="97" text-anchor="middle" opacity="0.65" font-size="10">value ± proof</text>
       </g>
     </svg>
-    <figcaption>Fig. 3 — The two lanes. The top lane can be as sloppy as it
-    likes. The certificate is issued in the bottom lane. A bad guess costs
-    tightness, never truth.</figcaption>
+    <figcaption>Fig. 3. The two lanes. The top lane can be as sloppy as it likes.
+    The certificate is issued in the bottom lane. A bad guess makes the bound
+    looser. It cannot make the bound wrong.</figcaption>
   </figure>
 
-  <p>Three checks that cannot be argued with. Plug any trial state into the
-  energy formula and the true ground energy is below the result. Ask whether
-  <code>H − c·I</code> has a Cholesky factorization; it either completes or it
-  does not, and each answer moves a bisection one step. And when a check must
-  gamble, because the matrix is too large to inspect entry by entry, the odds
-  of being fooled are computed and printed on the certificate:
-  <code>fail_p&nbsp;=&nbsp;10⁻¹⁰</code>.</p>
+  <p>Here are three checks that cannot be argued with. Plug any trial state
+  into the energy formula, and the true ground energy is below the result.
+  Ask whether <code>H − c·I</code> has a Cholesky factorization. It either
+  completes or it does not, and each answer moves a bisection one step. Some
+  checks have to gamble, because the matrix is too large to inspect entry by
+  entry. Then the odds of being fooled are computed and printed on the
+  certificate: <code>fail_p&nbsp;=&nbsp;10⁻¹⁰</code>.</p>
 
   <h2><span class="lecture-no">Part 4</span>Big things from small windows</h2>
   <p>A chain of 2000 hydrogen atoms has 4<sup>2000</sup> quantum states, a
@@ -252,16 +253,16 @@
       </g>
       <path d="M 243 26 C 243 34 243 34 243 38" class="rust-ink" fill="none" stroke-width="1.4"/>
     </svg>
-    <figcaption>Fig. 4 — The window bound. The corrections in rust are added to
+    <figcaption>Fig. 4. The window bound. The corrections in rust are added to
     one window and subtracted from its neighbor, so the total is untouched. An
     optimizer picks them to make every window individually tighter, and the
     bound is valid whatever it picked.</figcaption>
   </figure>
 
   <p>The cost depends on the window size, not the chain length. A 20-atom
-  chain and a 2000-atom chain cost the same. What you lose is tightness: a
-  window cannot see correlations longer than itself, and the certificate
-  widens by exactly the physics that escapes.</p>
+  chain and a 2000-atom chain cost the same. What you lose is tightness. A window
+  cannot see correlations longer than itself, and the certificate widens by
+  exactly the physics that escapes.</p>
 
   <h2><span class="lecture-no">Part 5</span>Pay for precision</h2>
   <p>Cost should scale with the precision of the question. The knob here is
@@ -270,7 +271,7 @@
   measurements, not projections.</p>
 
   <figure>
-    <div class="legend"><span class="s-h6">H₆ chain (checked against exact answer)</span><span class="s-h10">H₁₀ chain (2²⁰ states — no exact answer exists)</span></div>
+    <div class="legend"><span class="s-h6">H₆ chain (checked against exact answer)</span><span class="s-h10">H₁₀ chain (2²⁰ states, no exact answer exists)</span></div>
     <svg id="ladder" viewBox="0 0 560 240" role="img" aria-label="Chart: certified bracket width in milli-hartree per atom versus window length, for H6 and H10 chains. Width roughly halves with each unit of window length.">
       <g class="board-ink" opacity="0.35" stroke-width="1">
         <line x1="70" y1="46.6" x2="530" y2="46.6"/>
@@ -295,15 +296,15 @@
         <path class="rust-ink" d="M 140 127.6 L 240 155.5 L 340 178.4 L 510 206.1" opacity="0.85"/>
       </g>
       <g class="blue-fill">
-        <circle class="chart-dot" data-tip="H₆, ℓ=3 — 244 mHa/atom" cx="140" cy="152.1" r="5"/>
-        <circle class="chart-dot" data-tip="H₆, ℓ=4 — 89 mHa/atom" cx="240" cy="188.6" r="5"/>
-        <circle class="chart-dot" data-tip="H₆, ℓ=5 — 65 mHa/atom" cx="340" cy="199.4" r="5"/>
+        <circle class="chart-dot" data-tip="H₆, ℓ=3: 244 mHa/atom" cx="140" cy="152.1" r="5"/>
+        <circle class="chart-dot" data-tip="H₆, ℓ=4: 89 mHa/atom" cx="240" cy="188.6" r="5"/>
+        <circle class="chart-dot" data-tip="H₆, ℓ=5: 65 mHa/atom" cx="340" cy="199.4" r="5"/>
       </g>
       <g class="rust-fill">
-        <circle class="chart-dot" data-tip="H₁₀, ℓ=3 — 479 mHa/atom" cx="140" cy="127.6" r="5"/>
-        <circle class="chart-dot" data-tip="H₁₀, ℓ=4 — 222 mHa/atom" cx="240" cy="155.5" r="5"/>
-        <circle class="chart-dot" data-tip="H₁₀, ℓ=5 — 118 mHa/atom" cx="340" cy="178.4" r="5"/>
-        <circle class="chart-dot" data-tip="H₁₀, ℓ=7 — 55 mHa/atom" cx="510" cy="206.1" r="5"/>
+        <circle class="chart-dot" data-tip="H₁₀, ℓ=3: 479 mHa/atom" cx="140" cy="127.6" r="5"/>
+        <circle class="chart-dot" data-tip="H₁₀, ℓ=4: 222 mHa/atom" cx="240" cy="155.5" r="5"/>
+        <circle class="chart-dot" data-tip="H₁₀, ℓ=5: 118 mHa/atom" cx="340" cy="178.4" r="5"/>
+        <circle class="chart-dot" data-tip="H₁₀, ℓ=7: 55 mHa/atom" cx="510" cy="206.1" r="5"/>
       </g>
       <g class="board-text" font-size="10.5">
         <text x="140" y="118" text-anchor="middle" fill="var(--rust)">479</text>
@@ -312,10 +313,10 @@
         <text x="340" y="192" text-anchor="middle" fill="var(--blue)">65</text>
       </g>
     </svg>
-    <figcaption>Fig. 5 — The knob, measured. Where an exact answer exists
-    (H₆) it falls inside the bracket every time the test suite runs. The ℓ=7
-    window holds 16,384 states; a symmetry, particle number, splits it into
-    blocks no larger than 1,225.</figcaption>
+    <figcaption>Fig. 5. The knob, measured. Where an exact answer exists (H₆) it
+    falls inside the bracket every time the test suite runs. The ℓ=7 window
+    holds 16,384 states. Particle number is a symmetry, and it splits that
+    window into blocks no larger than 1,225.</figcaption>
   </figure>
 
   <p>How fast the knob pays depends on the physics. Systems with an energy gap
@@ -352,13 +353,13 @@
       <text x="280" y="205" text-anchor="middle" class="board-text" font-size="11" opacity="0.75">
         combined answers keep the weakest tier of their inputs</text>
     </svg>
-    <figcaption>Fig. 6 — The three tiers. All three have shipped: the energy
+    <figcaption>Fig. 6. The three tiers. All three have shipped. The energy
     brackets are rigorous, the plasma hierarchy is asymptotic, and the
     waveform surrogates are empirical with the failure probability printed.
     </figcaption>
   </figure>
 
-  <h2><span class="lecture-no">Part 7</span>Refusal is an answer</h2>
+  <h2><span class="lecture-no">Part 7</span>Refusing is a valid answer</h2>
   <p>Some questions have no affordable certificate, and the honest output is a
   refusal that says why. The refusals are specific. The cluster expansion
   refuses beyond the radius where its convergence is proven. The light-cone
@@ -379,7 +380,7 @@
         <text x="452" y="130" text-anchor="end" opacity="0.6" font-size="10">temperature falls →</text>
       </g>
     </svg>
-    <figcaption>Fig. 7 — The Ising wall, to scale. The certified region ends
+    <figcaption>Fig. 7. The Ising wall, to scale. The certified region ends
     where the convergence proof ends, five times short of the real phase
     transition. The wall belongs to the proof, not to the physics, and the
     refusal says so instead of extrapolating.</figcaption>
@@ -389,15 +390,15 @@
   <blockquote>
     “The first principle is that you must not fool yourself — and you are the
     easiest person to fool.”
-    <footer>— R. P. Feynman</footer>
+    <footer>R. P. Feynman</footer>
   </blockquote>
   <p>The failures are kept, deliberately, as permanent tests. A clever
-  demodulation for wave scattering changed the results by exactly zero; the
+  demodulation for wave scattering changed the results by exactly zero. The
   two-line theorem that explains why is now a test, so the idea cannot be
   expensively rediscovered. A textbook rebalancing rule made the bound worse
-  when measured; the shipped version provably cannot end worse than it
-  started. A warm start biased an iterative solver and loosened the
-  certificates by a third; it was measured, removed, and pinned in a comment.
+  when it was measured, and the shipped version provably cannot end worse
+  than it started. A warm start biased an iterative solver and loosened the
+  certificates by a third. It was measured, removed, and pinned in a comment.
   None of these could have corrupted a certificate. Each would have wasted
   computer time forever if it had not been measured.</p>
 
@@ -424,9 +425,9 @@
       <text x="280" y="112" text-anchor="middle" class="board-text" font-size="11" opacity="0.75">
         all three are permanent tests now</text>
     </svg>
-    <figcaption>Fig. 8 — The kept failures. None could corrupt a certificate;
-    the checking lane does not care where guesses come from. They are pinned
-    so the lesson is never bought twice.</figcaption>
+    <figcaption>Fig. 8. The kept failures. None of them could corrupt a
+    certificate, because the checking lane does not care where guesses come
+    from. They are pinned as tests so the same mistake is not repeated.</figcaption>
   </figure>
 
   <h2><span class="lecture-no">Part 9</span>Nine domains, one method</h2>
@@ -436,12 +437,12 @@
   have entry rewrites, and each has a case page that regenerates from a fresh
   run on every push: the idea, the program rendered from the module, and the
   result of running it. Two more have since been entered from the list's
-  further-afield paragraph. Reactor criticality, whose tolerance is stated
-  in pcm and whose certificate comes from positivity rather than from a
-  minimum principle, because the operator is not symmetric. And
-  semiconductor devices, which needed a certificate of a kind none of the
-  others is: not how far a number is from the right one, but whether a
-  right one exists at all near the point Newton's method stopped.</p>
+  further-afield paragraph. The first is reactor criticality. Its tolerance is
+  stated in pcm, and its certificate comes from positivity rather than from a
+  minimum principle, because the operator is not symmetric. The second is
+  semiconductor devices. That one needed a new kind of certificate. It does
+  not say how far a number is from the right one. It says whether a right one
+  exists at all, near the point where Newton's method stopped.</p>
 
   <figure>
     <svg viewBox="0 0 560 210" role="img" aria-label="Nine domain tiles, bordered by the tier of their entry certificate">
@@ -468,31 +469,35 @@
         <text x="456" y="164">gravitational waves</text><text x="456" y="180" opacity="0.6" font-size="10">conformal surrogates</text>
       </g>
       <g class="board-text" font-size="10" opacity="0.7" text-anchor="start">
-        <text x="24" y="205">border: tier of the entry certificate — solid blue rigorous, dashed asymptotic, rust empirical</text>
+        <text x="24" y="205">border: entry certificate tier (solid blue rigorous, dashed asymptotic, rust empirical)</text>
       </g>
     </svg>
-    <figcaption>Fig. 9 — The board. Every tile has a case page, linked from
-    the <a href="index.html">index</a>. The near map: a 96&nbsp;GB machine unlocks
-    the next window length; a consumer GPU unlocks the one after, by running
-    proofs in fast low precision and carrying the rounding error inside the
-    certificate.</figcaption>
+    <figcaption>Fig. 9. The board. Every tile has a case page, linked from the
+    <a href="index.html">index</a>. Two things are near. A 96&nbsp;GB machine
+    unlocks the next window length. A consumer GPU unlocks the one after it,
+    by running proofs in fast low precision and carrying the rounding error
+    inside the certificate.</figcaption>
   </figure>
 
   <h2><span class="lecture-no">Part 10</span>What you have to trust</h2>
   <p>A certificate is only as good as its checker, so here is the trusted
-  base, stated. When a page says RIGOROUS, you are trusting four things:
-  the theorems quoted in the docstrings, which are hand-proved, not
-  machine-checked; a few hundred lines of margin bookkeeping that execute
-  those theorems in floating point, padding every rounding step in the safe
-  direction; NumPy and LAPACK, which do the arithmetic the margins surround;
-  and Python's exact rational arithmetic, for the checks that run over the
-  rationals and never touch a float. A bug in the bookkeeping would corrupt
-  every certificate downstream of it. That is the real attack surface, and
-  the test suite is the current defense: every bound is compared against
-  brute force, exact solutions, or independent constructions. The honest
-  gap: none of it is machine-checked. A proof-assistant kernel for the
-  handful of core inequalities would shrink the trusted base from a module
-  to a page, and it is the obvious next hardening.</p>
+  base. When a page says RIGOROUS, you are trusting four things.</p>
+  <ol>
+    <li>The theorems quoted in the docstrings. They are hand-proved, not
+    machine-checked.</li>
+    <li>A few hundred lines of margin bookkeeping that execute those theorems
+    in floating point, padding every rounding step in the safe direction.</li>
+    <li>NumPy and LAPACK, which do the arithmetic the margins surround.</li>
+    <li>Python's exact rational arithmetic, for the checks that run over the
+    rationals and never touch a float.</li>
+  </ol>
+  <p>A bug in the bookkeeping would corrupt every certificate downstream of
+  it. That is the real attack surface, and the test suite is the current
+  defense. Every bound is compared against brute force, exact solutions, or
+  independent constructions. The honest gap is that none of it is
+  machine-checked. A proof-assistant kernel for the handful of core
+  inequalities would shrink the trusted base from a module to a page. That is
+  the obvious next hardening.</p>
 
   <hr>
   <p style="color: var(--muted); font-size: 0.9rem;">Sufficit is a working

@@ -37,12 +37,13 @@ class Tier(IntEnum):
 class Sensitivity:
     """How hard the output leans on one named input: a certified
     Lipschitz bound |output moves| <= bound * |input moves| (2-norm on
-    vectors, matching err). This is the Jacobian-like datum forward
-    error propagation runs on — a rewrite that exports it lets a
+    vectors, matching err). This is the Jacobian-like datum that forward
+    error propagation runs on. A rewrite that exports it lets a
     composed plan price how much input error it can afford. The bound
-    is a claim like any other, so it carries a tier; when two
+    is a claim like any other, so it carries a tier. When two
     sensitivities to the same input compose, bounds add and the
-    weakest tier wins, the same rules err and tier already obey."""
+    weakest tier wins, which are the rules err and tier already
+    obey."""
     bound: float
     tier: Tier
     wrt: str    # names the input; equal names mean the same input
@@ -81,16 +82,15 @@ class Certified:
 
     def through(self, inp: "Certified") -> "Certified":
         """The chain rule for certificates. This value was computed
-        from an approximate input that carries its own certificate;
-        if this certificate exports a sensitivity to that input, the
-        input's error converts to output error at the exported rate:
-        err grows by bound * inp.err, the tier is the weakest of the
-        three claims involved (this bound, the input's, and the
-        sensitivity's), and fail_p accumulates by union bound. The
-        caller vouches that inp certifies the very input the
-        sensitivity names, in the norm the sensitivity is stated in.
-        Refuses -- rather than guesses -- when no sensitivity is
-        exported."""
+        from an approximate input that carries its own certificate. If
+        this certificate exports a sensitivity to that input, the
+        input's error converts to output error at the exported rate.
+        err grows by bound * inp.err. The tier is the weakest of the
+        three claims involved: this bound, the input's, and the
+        sensitivity's. fail_p accumulates by union bound. The caller
+        vouches that inp certifies the very input the sensitivity
+        names, in the norm the sensitivity is stated in. Refuses when
+        no sensitivity is exported, rather than guessing."""
         if self.sensitivity is None:
             raise ValueError("no exported sensitivity: cannot convert "
                              "input error to output error")
@@ -145,7 +145,7 @@ def _up(x):
 class Interval:
     """Directed-rounding interval via outward nextafter widening: field ops
     widen 1 ulp (IEEE round-to-nearest is within 1/2 ulp), transcendentals
-    2 ulps under the ASSUMPTION of faithful (<= 1 ulp) libm — the one
+    2 ulps under the ASSUMPTION of faithful (<= 1 ulp) libm, the one
     unverified assumption in this class. Used to carry FP error through
     the scalar Phase 2 pipelines; the numpy rewrites remain
     exact-arithmetic as declared in their docstrings."""
@@ -358,7 +358,7 @@ def multipole_to_tol(q: np.ndarray, src: np.ndarray, center: complex,
 # hierarchical certified treecode. Dual quadtree traversal; well-separated
 # cell pairs use per-cell multipole expansions (order chosen per pair from
 # the target's error budget), everything else is direct. Hand-compiled
-# schedule — the search that should discover it is future work.
+# schedule, the search that should discover it is future work.
 
 _RHO_MAX = 0.5      # worst-case separation ratio for accepting a far pair
 _P_CAP = 300        # order beyond this means the tolerance is absurd
@@ -646,12 +646,12 @@ def fmm_potential(tgt: np.ndarray, src: np.ndarray, q: np.ndarray,
 
 
 # ------------------------------------------------- black-box kernels:
-# a certified H-matrix. Only kernel(tgt_pts, src_pts) -> block is assumed —
+# a certified H-matrix. Only kernel(tgt_pts, src_pts) -> block is assumed,
 # no expansions, no smoothness proofs. Each admissible block is compressed
 # by the randomized range finder and certified a posteriori by Gaussian
 # probes (operator-norm bound, so it holds for EVERY later charge vector);
 # fail_p union-bounds over all blocks and rounds. Build cost is ~N^2
-# kernel evals — certification requires touching every block once — so
+# kernel evals (certification requires touching every block once), so
 # the value is amortization: each apply is cheap and certified.
 
 
@@ -685,7 +685,7 @@ def _butterfly_candidate(K, tpts, spts, tol, n_probes, scale, rng):
     """Try the butterfly rewrite on one block: deepest feasible ladder
     (capped at 3 levels), per-factor tolerance scaled from tol by a
     one-probe norm estimate. Admissible only if its a posteriori beta
-    meets tol — a wrong guess just loses the competition."""
+    meets tol, a wrong guess just loses the competition."""
     m, n = K.shape
     L = min(3, int(math.log(max(min(m, n) // 8, 1), 4)))
     if L < 2 or min(m, n) < 512:
@@ -706,7 +706,7 @@ class BlackboxHMatrix:
     plan's stated fail_p. Tier RIGOROUS (exact arithmetic).
 
     NOTE (negative result, kept so it is not re-learned): demodulating a
-    block by pair-direction phases D_T K D_S is a UNITARY transformation —
+    block by pair-direction phases D_T K D_S is a UNITARY transformation,
     singular values are identical, so per-block directional demodulation
     cannot reduce SVD ranks (measured: 12=12, 14=14 at k=150). The
     high-frequency island needs the genuine multi-level butterfly
@@ -828,7 +828,7 @@ def _kp_rate(t_abs: Interval) -> Interval:
     """Tilt rate s of the KP tail e^(-s L) at activity |t|; raises outside
     the certified region. Counting: connected even subgraphs are Eulerian,
     so a circuit from v traverses each of its n edges exactly once and
-    never departs along a used edge — at most Delta*(Delta-1)^(n-1)
+    never departs along a used edge, at most Delta*(Delta-1)^(n-1)
     = 4*3^(n-1) walks. Per-vertex KP condition: (4/3) u^4/(1-u) <= 1 with
     u = 3|t| e^(1+s); u* is the root of 4u^4 + 3u = 3, lower-bounded
     rigorously by interval bisection."""
@@ -936,8 +936,8 @@ def _ising2d_logz_coeffs():
 
 
 def _ising2d_psi_coeffs(S):
-    """Coefficients of Psi(S) — the cluster sum touching the vertex set S
-    — exact through total size 10: singles, plus Ursell pairs whose
+    """Coefficients of Psi(S), the cluster sum touching the vertex set S
+    exact through total size 10: singles, plus Ursell pairs whose
     union touches S via 2*(touching x incompatible-anywhere) minus
     (both touching), all reduced to integer offset counting."""
     shapes = _ising2d_polymer_shapes(10)
@@ -1022,12 +1022,13 @@ def _connected_pinned_subgraphs(a, b, max_edges):
 def ising2d_bond_correlation(beta: float, J: float = 1.0,
                              tol: float = None) -> Certified:
     """Phase 2 rewrite: <s_a s_b> for a nearest-neighbor pair of the 2D
-    Ising model, via pinned clusters: every subgraph with odd set {a,b}
-    is one connected pinned polymer w0 times an even gas off its vertices,
-    so <s_a s_b> = sum_w0 t^|w0| exp(-Psi(V(w0))) with Psi the cluster sum
-    touching V(w0). Errors: pinned tail (pinned polymers have exactly two
-    odd vertices, hence an Eulerian path a->b: count <= 4*3^(n-1);
-    dressing bounded by e^((n+1)B)), Psi truncation at size 8 (tilted KP,
+    Ising model, via pinned clusters. Every subgraph with odd set {a,b}
+    is one connected pinned polymer w0 times an even gas off its
+    vertices, so <s_a s_b> = sum_w0 t^|w0| exp(-Psi(V(w0))), with Psi
+    the cluster sum touching V(w0). Two errors are carried. The pinned
+    tail: a pinned polymer has exactly two odd vertices, hence an
+    Eulerian path a->b, so the count is <= 4*3^(n-1) and the dressing is
+    bounded by e^((n+1)B). And the Psi truncation at size 8 (tilted KP,
     per vertex), propagated through exp. Same validity region and
     torus/limit scope (m >= 12) as ising2d_logZ_density."""
     if beta * J == 0.0:                 # no computation: exactly 0
@@ -1089,8 +1090,8 @@ def _hlt_solve(N, omega, sigma, ridge=None):
     """Solve for g_t (t = 2..N) minimizing the e^(2w)-weighted L2 kernel
     deviation, then certify c = sup_w |deviation| e^w rigorously. With no
     ridge given, scans the two ridges that win in practice and keeps the
-    best-certifying g — the bound is a posteriori, so the scan cannot
-    compromise validity. Cached: callers treat g as read-only."""
+    best-certifying g. The bound is a posteriori, so the scan cannot
+    compromise validity. Cached, so callers treat g as read-only."""
     if ridge is None:
         best = min((_hlt_solve(N, omega, sigma, r)
                     for r in (1e-8, 1e-10)), key=lambda gc: gc[1])
@@ -1141,15 +1142,15 @@ def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
     on C(1); tier degrades to EMPIRICAL (Gaussian-noise assumption) with
     fail_p = 2*erfc(z/sqrt(2)).
 
-    The certificate also exports its sensitivity: the value is the
+    The certificate also exports its sensitivity. The value is the
     linear map g.C, so a correlator error delta moves the value by at
-    most |g|*|delta| — and it also moves the kernel-mismatch bill,
-    which is anchored at the true C(1), by up to c*delta(1).
-    Cauchy–Schwarz folds both into the one constant sqrt(c^2 + |g|^2):
-    an exact norm, hence RIGOROUS whatever the tier of the value's own
-    bound, and valid because both densities are nonnegative (already
-    assumed). This is the datum a composed plan needs to decide how
-    much correlator error it can afford."""
+    most |g|*|delta|. It also moves the kernel-mismatch bill, which is
+    anchored at the true C(1), by up to c*delta(1). Cauchy-Schwarz folds
+    both into the one constant sqrt(c^2 + |g|^2). That is an exact norm,
+    hence RIGOROUS whatever the tier of the value's own bound, and it is
+    valid because both densities are nonnegative (already assumed). This
+    is the datum a composed plan needs to decide how much correlator
+    error it can afford."""
     N = len(C)
     g, c = _hlt_solve(N, omega, sigma)
     value = float(g @ C[1:])
@@ -1173,11 +1174,11 @@ def smeared_spectral(C: np.ndarray, omega: float, sigma: float,
 # Mori-Zwanzig closures. Rigorous tier: linear slow-fast systems, where
 # the memory kernel K(s) = A12 e^(A22 s) A21 decays at the fast sector's
 # spectral gap and the Markovian closure carries a Gronwall bound with
-# computable constants (log-norms, block norms) — the bound's provenance
+# computable constants (log-norms, block norms), the bound's provenance
 # is the gap, and without one the rewrite refuses. Empirical tier:
 # distribution-free conformal calibration for closures of ANY system
 # (nonlinear included), with rigorous failure probability 1/(n_cal+1)
-# under exchangeability of initial conditions — the honest certificate
+# under exchangeability of initial conditions, the honest certificate
 # this phase exists to ship. Both exact-arithmetic.
 
 
@@ -1190,11 +1191,11 @@ def mz_closure_linear(A: np.ndarray, k: int, x0: np.ndarray,
                       T: float) -> Certified:
     """Phase 4 rewrite, rigorous tier: x_slow(T) for dx/dt = Ax with the
     first k coordinates slow observables (x0 is the FULL initial state),
-    via the Markovian closure Ar = A11 - A12 A22^{-1} A21. Error bound:
-    ||K(s)|| <= kappa e^(-mu s) with mu the fast-sector gap (-lognorm of
-    A22), Gronwall through the reduced propagator; a nonzero fast
-    initial condition contributes its decaying transient
-    kappa12 ||x20|| G2. Refuses when mu <= 0."""
+    via the Markovian closure Ar = A11 - A12 A22^{-1} A21. The error
+    bound is ||K(s)|| <= kappa e^(-mu s), with mu the fast-sector gap
+    (-lognorm of A22), carried by Gronwall through the reduced
+    propagator. A nonzero fast initial condition contributes its
+    decaying transient kappa12 ||x20|| G2. Refuses when mu <= 0."""
     from scipy.linalg import expm
     A = np.asarray(A, float)
     A11, A12 = A[:k, :k], A[:k, k:]
@@ -1230,7 +1231,7 @@ def conformal_closure(traj_full, traj_red, sampler, x_new,
     initial conditions from sampler; err is the worst observed uniform
     (sup over time, 2-norm over state) deviation. For a fresh draw from
     the SAME distribution, P(deviation > err) <= 1/(n_cal+1) by
-    exchangeability — a distribution-free guarantee, no model
+    exchangeability, a distribution-free guarantee, no model
     assumptions. Tier EMPIRICAL: valid for the sampled distribution,
     not for out-of-distribution initial conditions."""
     rng = np.random.default_rng(rng)
@@ -1249,11 +1250,11 @@ def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
                    targets=(), tol: float = None):
     """Phase 4 rewrite: automatic slow-variable identification. Greedy
     search over which coordinates to resolve, scored by the certified
-    closure error itself — "slow variables" are the split the machine
+    closure error itself, "slow variables" are the split the machine
     certifies tightest. Starts from targets (coordinates the caller must
     keep); with none, seeds from the best single-or-pair split (pure
     greedy is myopic: a slow coordinate left in the fast sector kills the
-    gap, and the structure only shows at pair level — deeper hidden
+    gap, and the structure only shows at pair level, deeper hidden
     structure than pairs would need a better search). Each step then adds
     the coordinate that most improves the certificate. With tol: stops at
     the smallest resolved set meeting
@@ -1326,13 +1327,13 @@ def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
 # scatterer). The certified region is weak scattering: ||K|| < 1, with
 # ||K|| bounded deterministically by Schur's ||K||_2 <= sqrt(||K||_1
 # ||K||_inf) (the HMT probe tracks ||K||_F and is ~20x looser on this
-# flat-spectrum oscillatory operator) — the bound's physical provenance
+# flat-spectrum oscillatory operator), the bound's physical provenance
 # is the scattering strength k^2 * contrast * area. The Neumann-series depth
 # comes from the FAR-FIELD tolerance (query-first); the far-field
 # functional propagates by Cauchy-Schwarz. Certificates are for the
 # STATED discrete system (midpoint Nystrom, equal-area-disk self term);
 # continuum discretization error is the named gap (asymptotic tier
-# territory). Strong scattering needs resolvent-based certification —
+# territory). Strong scattering needs resolvent-based certification,
 # future work, refused today.
 
 
@@ -1412,8 +1413,8 @@ def helmholtz_scatter_farfield(k: float, contrast, n: int, L: float,
 # once per column leaf; each stage recompresses the restriction of the
 # previous bases to row children and records a small transfer matrix.
 # Construction is heuristic (relative-tol SVD truncations); the
-# certificate is A POSTERIORI on the assembled operator — probes of
-# K w - B w — so validity never depends on the construction.
+# certificate is A POSTERIORI on the assembled operator, probes of
+# K w - B w, so validity never depends on the construction.
 
 
 def _bisect_positions(pts, idx):
@@ -1427,7 +1428,7 @@ def _bisect_positions(pts, idx):
 def _quad_positions(pts, idx):
     """Positions splitting a cluster in four (two bisections): in 2D the
     DIAMETER must halve per butterfly level, which one binary split does
-    not do — with branching 2 the stage rank products only shrink like
+    not do, with branching 2 the stage rank products only shrink like
     2^(L/2) and every stage stays expensive (measured before this fix)."""
     a, b = _bisect_positions(pts, idx)
     a1, a2 = _bisect_positions(pts, idx[a])
@@ -1436,11 +1437,12 @@ def _quad_positions(pts, idx):
 
 
 class ButterflyBlock:
-    """Butterfly factorization of one oscillatory kernel block. Guarantee
-    per apply(q): ||value - K q||_2 <= beta ||q||_2 with the stated
-    fail_p, beta certified a posteriori by probes on the assembled
-    factorization (setup touches the dense block, like the H-matrix:
-    the value is amortized applies). Tier RIGOROUS (exact arithmetic)."""
+    """Butterfly factorization of one oscillatory kernel block. The
+    guarantee per apply(q) is ||value - K q||_2 <= beta ||q||_2 with the
+    stated fail_p. beta is certified a posteriori by probes on the
+    assembled factorization. Setup touches the dense block, as with the
+    H-matrix, so the value is amortized applies. Tier RIGOROUS (exact
+    arithmetic)."""
 
     def __init__(self, K, tgt, src, levels, eps=1e-4, n_probes=10, rng=None):
         rng = np.random.default_rng(rng)
@@ -1528,14 +1530,14 @@ class ButterflyBlock:
 # ----------------------------------------------- chemistry energy bracket
 # (TARGETS.md), matrix tier: a certified two-sided interval on the
 # ground-state energy of a formable Hermitian H. Upper bound: Rayleigh
-# quotient of a heuristic Lanczos vector — the variational theorem
+# quotient of a heuristic Lanczos vector, the variational theorem
 # certifies it no matter where the vector came from. Lower bound:
 # Cholesky feasibility proofs of H - cI >= 0 (the poor man's SDP dual
 # certificate), bisected from a rigorous Gershgorin seed; a spurious FP
 # Cholesky failure only loosens the bracket, never invalidates it.
 # Exact-arithmetic tier (Cholesky success is FP-trusted, declared).
-# The 2-RDM SDP lower bound — the version that scales past formable
-# Hamiltonians — is the named next rung; so is a molecular-integrals
+# The 2-RDM SDP lower bound, the version that scales past formable
+# Hamiltonians, is the named next rung; so is a molecular-integrals
 # pipeline. This demonstrates the bracket structure itself.
 
 
@@ -1545,10 +1547,10 @@ _GPU = {"on": False}
 def use_gpu(on: bool = True):
     """Route fp32 Cholesky certification through CuPy (consumer-GPU fp64
     is ~1:64 throttled; fp32 with honestly widened pads is the move).
-    Validity is unaffected either way — the pads carry the working eps
+    Validity is unaffected either way, the pads carry the working eps
     and the measured casting error. Requires cupy when enabled."""
     if on:
-        import cupy                          # noqa: F401 — availability
+        import cupy                          # noqa: F401 - availability
     _GPU["on"] = bool(on)
 
 
@@ -1588,11 +1590,12 @@ def eigen_bracket(H: np.ndarray, tol: float = None,
     """Certified bracket on lambda_min(H), H Hermitian: value +- err
     contains the true ground energy. Raises if tol is given and the
     achieved width exceeds it. fp32=True runs the Cholesky feasibility
-    proofs in float32 (optionally on GPU via use_gpu) with rigor kept
-    honest by two additional carried terms: the MEASURED casting error
-    ||H - fl32(H)||_F (computed exactly in f64, a posteriori — no
-    assumption) and Higham-style margins at fp32 eps. Pads land at
-    ~1e-4-scale — negligible against mHa brackets."""
+    proofs in float32, optionally on GPU via use_gpu. Rigor is kept
+    honest there by two additional carried terms. One is the MEASURED
+    casting error ||H - fl32(H)||_F, computed exactly in f64, a
+    posteriori, so nothing is assumed. The other is Higham-style margins
+    at fp32 eps. The pads land at about 1e-4 scale, which is negligible
+    against mHa brackets."""
     H = np.asarray(H)
     n = len(H)
     if n < 64:                              # dense: exact vector, and no
@@ -1620,7 +1623,7 @@ def eigen_bracket(H: np.ndarray, tol: float = None,
 
         def psd(c):
             # CuPy's non-PSD behaviour varies by version: exception OR
-            # NaNs. Belt and braces — any doubt counts as failure, which
+            # NaNs. Belt and braces, any doubt counts as failure, which
             # only loosens the bound (the safe direction).
             try:
                 L = xp.linalg.cholesky(Hw_ - np.float32(c) * eye_w)
@@ -1642,7 +1645,7 @@ def eigen_bracket(H: np.ndarray, tol: float = None,
     r = float(np.linalg.norm(H @ v - up * v))
     lo = up - 2 * r - max(1e-12, 4 * eps_w) * (1 + abs(up))
     if not psd(lo):
-        # Gershgorin IS a certificate by itself — no Cholesky proof
+        # Gershgorin IS a certificate by itself, no Cholesky proof
         # needed (and for exactly-degenerate cases H - gersh*I is
         # singular, so demanding one would wrongly fail)
         lo = gersh
@@ -1684,10 +1687,10 @@ def eigen_bracket(H: np.ndarray, tol: float = None,
 # EXACTLY to H and any C yields a valid bound. lambda_min is concave in
 # C; supergradient ascent (gradient = left minus right reduced density of
 # the window ground state) climbs it, and every window is re-certified by
-# Cholesky afterwards — the optimizer is pure quality. Richer correction
+# Cholesky afterwards, the optimizer is pure quality. Richer correction
 # structures than single-overlap operators remain (the fully general
 # dual); this family already closes much of the gap. The
-# upper half: a product of per-block Lanczos states — block energies and
+# upper half: a product of per-block Lanczos states, block energies and
 # cross-block bond energies are explicit Rayleigh quotients, so the
 # variational bound is rigorous whatever the vectors are. Cost 2^ell per
 # distinct window, INDEPENDENT of N: the bracket scales past formable
@@ -1727,12 +1730,12 @@ def _chain_correction(ell, iters):
     """Proximal-bundle ascent of the marginal-SDP dual over single-overlap
     corrections C. This family EXHAUSTS the fully general dual at fixed
     ell: translation invariance is WLOG in the bulk (shift-covariant
-    constraints, linear objective — symmetrize any feasible point);
+    constraints, linear objective, symmetrize any feasible point);
     non-consecutive overlap variables are redundant (their consistency is
     implied by consecutive pairs); and decomposition-weight freedom is
     absorbed (verified numerically: joint (C, weights) ascent reaches the
     identical plateau to six digits). The residual gap at fixed ell is
-    the relaxation level itself — the hierarchy knob is ell.
+    the relaxation level itself, the hierarchy knob is ell.
     Bundle: lambda_min(W(C)) = min_v of exact affine cuts
     <v|Hw|v> + <rhoL(v) - rhoR(v), C>; master dual is a simplex QP over
     cut weights, solved by exponentiated gradient. iters = oracle calls
@@ -1965,10 +1968,10 @@ def heisenberg_chain_bracket(N: int, ell: int = 8,
 # ------------------------------------------- molecular-integrals pipeline:
 # the energy bracket on an actual molecule. H2 in STO-3G needs only
 # s-type Gaussian integrals, which have complete closed forms via the
-# Boys function — fully self-contained (no quantum-chemistry package;
+# Boys function, fully self-contained (no quantum-chemistry package;
 # the only external data is the published STO-3G hydrogen basis,
 # Hehre-Stewart-Pople). Second quantization via Jordan-Wigner on 4 spin
-# orbitals gives a 16x16 Fock-space Hamiltonian — bracketing it certifies
+# orbitals gives a 16x16 Fock-space Hamiltonian, bracketing it certifies
 # the ground energy over ALL particle-number sectors at once, and for H2
 # near equilibrium that sector is the neutral molecule. Verified three
 # ways in the tests: integrals vs 3D grid quadrature, dissociation vs
@@ -2094,7 +2097,8 @@ def sto3g_h2_hamiltonian(R):
 
 def h2_energy_bracket(R: float) -> Certified:
     """Certified two-sided bracket on the H2/STO-3G total ground energy
-    (hartree) at bond length R bohr — over all particle-number sectors."""
+    (hartree) at bond length R bohr, over all particle-number
+    sectors."""
     c = eigen_bracket(sto3g_h2_hamiltonian(R))
     return replace(c, provenance=(f"h2-sto3g-bracket R={R:g} "
                                   + c.provenance[0],))
@@ -2108,7 +2112,7 @@ def h2_energy_bracket(R: float) -> Certified:
 # in tests three ways: l=0 reproduces the closed-form s-integrals to
 # machine precision (the previous pipeline is the oracle), genuine
 # p-integrals match 3D grid quadrature, and the p-polarized H2 bracket
-# lies strictly below the s-only bracket — a theorem about two
+# lies strictly below the s-only bracket, a theorem about two
 # certified intervals.
 
 
@@ -2190,7 +2194,7 @@ def _md_integrals(atoms, shells):
     momentum. atoms: [(Z, xyz)]; shells: one AO each, (xyz, (i,j,k),
     [(exponent, contraction), ...]). Contractions are multiplied by
     primitive norms here; overall AO normalization is NOT assumed
-    (Lowdin handles any overlap — the S11 != 1 lesson)."""
+    (Lowdin handles any overlap, the S11 != 1 lesson)."""
     nao = len(shells)
     aos = []
     for center, l, prims in shells:
@@ -2368,19 +2372,19 @@ def h2_polarized_bracket(R: float) -> Certified:
 
 
 # ---------------------------------------------------------- the marriage:
-# molecular integrals x marginal-SDP bracket, on hydrogen chains — a
+# molecular integrals x marginal-SDP bracket, on hydrogen chains, a
 # certified two-sided bracket for molecular Fock spaces too big to form.
 # Terms are classified by orbital spread (JW strings stay inside
 # contiguous windows, so window lambda_min bounds are valid for
-# fermions). The genuinely molecular difficulty — long-range Coulomb —
+# fermions). The genuinely molecular difficulty is long-range Coulomb,
 # is handled exactly per far atom pair: F_ij = g(n_i-1)(n_j-1)
 # + (v+g)n_i + (v+g)n_j + (1/R-g), with the quadratic part bounded by
-# operator AM-GM, g(n_i-1)(n_j-1) >= -(g/2)[(n_i-1)^2 + (n_j-1)^2] —
+# operator AM-GM, g(n_i-1)(n_j-1) >= -(g/2)[(n_i-1)^2 + (n_j-1)^2],
 # local charge-fluctuation penalties absorbed into windows; linear parts
 # and constants exact. Remaining far terms use CAUCHY-SCHWARZ ABSORPTION
 # (g XY + h.c. >= -|g|(XX' + Y'Y)): the JW Z-strings are unitary and
 # vanish inside XX', which for distinct modes is a pure occupation
-# product (creation -> n, annihilation -> 1-n; reversed for Y'Y) — so
+# product (creation -> n, annihilation -> 1-n; reversed for Y'Y), so
 # every far term absorbs into diagonal occupation products on its two
 # compact sides, local to windows, with small ground-state expectations
 # replacing the flat norms that used to dominate the gap (1.04 of
@@ -2388,11 +2392,11 @@ def h2_polarized_bracket(R: float) -> Certified:
 # or window-overflowing sides fall back to flat bounds (rare, tiny).
 # Shared-C window multipliers below add a further modest tightening.
 # The balanced-eps outer loop (cs_rounds) is monotone-safe by
-# best-tracking; measured on H-chains its optimum is eps=1 — the
+# best-tracking; measured on H-chains its optimum is eps=1, the
 # balancing family is exhausted at the start here, and the naive
 # greedy update would LOSE 5 mHa/atom (not an ascent step). Upper: product of exactly solved atom blocks, cross energies
 # by exact factorization of block-diagonal 1-RDMs (fermionic signs are
-# benign — cross operators move in even pairs). No correction
+# benign, cross operators move in even pairs). No correction
 # multipliers yet (the Heisenberg bundle machinery is the named
 # tightening path).
 
@@ -2401,7 +2405,7 @@ def h2_polarized_bracket(R: float) -> Certified:
 def _h_chain_basis(n, d):
     """Lowdin-orthogonalized (T, V[c], eri, enuc) for the n-atom hydrogen
     chain at spacing d bohr, STO-3G. V[c] is the attraction to nucleus c
-    separately — the far-pair decomposition needs it."""
+    separately, the far-pair decomposition needs it."""
     centers = [np.array([0.0, 0.0, i * d]) for i in range(n)]
     prims = _sto3g_h()
     S = np.zeros((n, n))
@@ -2472,7 +2476,7 @@ def _fermion_assemble(nq, terms):
     """Sparse operator from ladder-operator strings [(coef, [(mode,
     dagger), ...])], vectorized over the occupation basis with bit
     arithmetic: each string is a signed partial permutation (one nonzero
-    per column) — validity by bit tests, JW string parity by
+    per column), validity by bit tests, JW string parity by
     bitwise_count, target state by XOR. No matrix products. Chunks are
     tree-merged to keep csr additions O(nnz log #chunks)."""
     from scipy import sparse
@@ -2585,7 +2589,7 @@ def _ground_vec(M):
 def _sector_indices(nsp):
     """Occupation sectors (N_up, N_down) of the 4^nsp window basis (JW
     qubit q <-> bit nq-1-q; even qubits spin-up). Every window term
-    conserves both, so window operators are block-diagonal here — the
+    conserves both, so window operators are block-diagonal here, the
     certification wall at large ell is dissolved by symmetry, not by
     sparse factorization: the largest ell=7 sector is ~1225-dim."""
     nq, dim = 2 * nsp, 4 ** nsp
@@ -2629,7 +2633,7 @@ def _eigen_bracket_sectored(M, fp32=False):
 def _sectored_ground(M):
     """(lambda_min, full ground vector) of a sector-block-diagonal sparse
     window operator, via dense selected-eigenpair solves per occupation
-    sector (largest ell=7 sector ~1225-dim) — replaces full-space
+    sector (largest ell=7 sector ~1225-dim), replaces full-space
     Lanczos on 4^ell."""
     from scipy.linalg import eigh as dense_eigh
     nsp = round(math.log(M.shape[0]) / math.log(4))
@@ -2648,10 +2652,10 @@ def _window_multipliers(mats, D, iters):
     """Proximal-bundle ascent over PER-OVERLAP Hermitian corrections
     C_1..C_{nw-1} (see history). Scaled for large D (ell=6: D=1024,
     millions of parameters): window operators stay sparse with
-    kron-structured matvecs (kron(C,I)x = (C X).ravel — never
+    kron-structured matvecs (kron(C,I)x = (C X).ravel, never
     materialized), the Lanczos oracle is warm-started and loose-tol
     (it only guides the optimizer; certification is separate), and cuts
-    are stored FACTORED — each overlap block is +Vl Vl' - Vr' Vr, two
+    are stored FACTORED, each overlap block is +Vl Vl' - Vr' Vr, two
     rank-E outer products, so gram entries are ||A'B||_F^2 sums. C stays
     dense per overlap (matvec-optimal). Returns [C_w]."""
     from scipy.linalg import eigh as dense_eigh
@@ -2659,7 +2663,7 @@ def _window_multipliers(mats, D, iters):
     nw, E, nov = len(mats), dim // D, len(mats) - 1
     # sector-restricted oracle: C is enforced sector-conserving, so the
     # corrected windows stay block-diagonal and lambda_min = min over
-    # sector sub-blocks — dense selected-eigenpair solves (<= ~1225-dim
+    # sector sub-blocks, dense selected-eigenpair solves (<= ~1225-dim
     # at ell=7) replace full-space Lanczos, ~12x on the dominant ell=7
     # cost. Correction sub-blocks extract from the kron structure by
     # index arithmetic: kron(C,I_E)[a,b] = C[a//E,b//E] (a%E == b%E),
@@ -2668,7 +2672,7 @@ def _window_multipliers(mats, D, iters):
     sec_ix = _sector_indices(nsp_w)
     # sector blocks extracted ON DEMAND and cached: Weyl pruning means
     # most sectors are never solved, and eager densification of all of
-    # them costs ~1.3 GB/window at ell=8 — the ell=8 memory wall
+    # them costs ~1.3 GB/window at ell=8, the ell=8 memory wall
     _bs_cache = {}
 
     def base_sec(w, si):
@@ -2898,7 +2902,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                         # at its largest atom gap; Z-strings vanish in XX',
                         # which for distinct modes is a pure occupation
                         # product (creation -> n, annihilation -> 1-n; the
-                        # reverse for Y'Y). |g| only — no sign bookkeeping.
+                        # reverse for Y'Y). |g| only, no sign bookkeeping.
                         atoms = sorted({p, q, r, s2})
                         gaps = [atoms[k + 1] - atoms[k]
                                 for k in range(len(atoms) - 1)]
@@ -2985,7 +2989,7 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
 
     # the naive balance update eps* = sqrt(<R>/<L>) is NOT an ascent step
     # (it optimizes against the current minimizers; lambda_min then
-    # re-minimizes and can drop — measured). Damped updates plus
+    # re-minimizes and can drop, measured). Damped updates plus
     # best-by-measured-total tracking make the loop monotone-safe: the
     # eps=1 start is included, so it can never end worse than it began.
     best_eps, best_tot = eps.copy(), -math.inf
@@ -3130,12 +3134,12 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
 # H(theta) = H0 + theta H1, two structural facts make certified
 # parameter sweeps nearly free:
 #   1. lambda_min(theta) = min_v [<v|H0|v> + theta <v|H1|v>] is an
-#      infimum of affine functions of theta, hence CONCAVE — so certified
+#      infimum of affine functions of theta, hence CONCAVE, so certified
 #      snapshot lower bounds give a rigorous lower bound at every theta
 #      between them by the chord inequality. O(1) online, no solve.
 #   2. The reduced-basis Rayleigh quotient is EXACT at k x k cost online:
 #      with B an orthonormal snapshot basis, min-eig of B'(H0+theta H1)B
-#      is the full-space Rayleigh quotient of the best basis vector —
+#      is the full-space Rayleigh quotient of the best basis vector,
 #      a variational upper bound (this is eigenvector continuation's
 #      engine, and near-critical points it is startlingly accurate).
 # Outside the snapshot hull concavity certifies nothing: refuse.
@@ -3145,8 +3149,8 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
 
 def tfi_chain(N):
     """(H0, H1) for the transverse-field Ising chain
-    H(g) = -sum Z_i Z_{i+1} - g sum X_i — the demo affine family, swept
-    across its quantum phase transition at g = 1."""
+    H(g) = -sum Z_i Z_{i+1} - g sum X_i. This is the demo affine family,
+    swept across its quantum phase transition at g = 1."""
     X = np.array([[0.0, 1.0], [1.0, 0.0]])
     Z = np.diag([1.0, -1.0])
 
@@ -3167,9 +3171,9 @@ def tfi_chain(N):
 
 def reduced_basis_surrogate(H0, H1, thetas):
     """Offline stage: certified brackets and ground vectors at each
-    snapshot theta, an orthonormalized snapshot basis B, and the exact
-    small Grams B'H0B, B'H1B that make every online Rayleigh quotient
-    computable at k x k cost."""
+    snapshot theta, plus an orthonormalized snapshot basis B. It also
+    returns the exact small Grams B'H0B and B'H1B, which make every
+    online Rayleigh quotient computable at k x k cost."""
     from scipy.sparse.linalg import eigsh
     thetas = np.sort(np.asarray(thetas, float))
     vs, los = [], []
@@ -3218,13 +3222,13 @@ def reduced_basis_bracket(sur, theta: float) -> Certified:
 # ------------------------------------------------------------- Quantum
 # dynamics dispatch (Lieb-Robinson cone). The query with commercial
 # teeth: given a local Hamiltonian, a local observable, a time and a
-# tolerance — does a classical simulation with a certificate exist, and
+# tolerance, does a classical simulation with a certificate exist, and
 # at what cost? The rewrite simulates only a cone of sites around the
 # observable and certifies the truncation A-POSTERIORI: by Duhamel,
 #   ||A(t) - A_cone(t)|| <= int_0^t ||[H - H_cone, A_cone(s)]|| ds,
 # and only the two bonds crossing the cone boundary fail to commute
 # with the cone-supported A_cone(s), so the integrand is MEASURED
-# inside the cone simulation itself — no Lieb-Robinson velocity
+# inside the cone simulation itself, no Lieb-Robinson velocity
 # constants, and the bound is near-zero until the light cone
 # physically reaches the edge. Quadrature is made rigorous by the
 # Banach-valued interpolation remainder: with K(s) = [P, A_cone(s)],
@@ -3246,11 +3250,11 @@ def _opnorm_ub(M):
 
 
 def _lr_cone_run(n, site, t, J, g, r, n_steps):
-    """One cone of the TFI chain H = -J sum ZZ - g sum X: evolve
-    Z_site as a dense operator under the cone Hamiltonian and return
-    (value, err) with value = <all-up| Z_site(t) |all-up> and err the
-    certified truncation + quadrature bound (see the section comment).
-    err is exactly 0 when the cone covers the whole chain."""
+    """One cone of the TFI chain H = -J sum ZZ - g sum X. Evolve Z_site
+    as a dense operator under the cone Hamiltonian and return
+    (value, err). value is <all-up| Z_site(t) |all-up>, and err is the
+    certified truncation plus quadrature bound (see the section
+    comment). err is exactly 0 when the cone covers the whole chain."""
     lo, hi = max(0, site - r), min(n - 1, site + r)
     nc = hi - lo + 1
     dim = 1 << nc
@@ -3314,8 +3318,9 @@ def tfi_quench_dispatch(n: int, site: int, t: float, tol: float,
     an n-site transverse-field Ising chain, certified within tol by the
     smallest Lieb-Robinson cone whose measured boundary-commutator
     certificate meets it. Cost depends on the cone, never on n.
-    Refuses — with the measured (radius, err) ladder and the price of
-    the next cone — when no cone within max_dim certifies tol."""
+    Refuses when no cone within max_dim certifies tol, and the refusal
+    carries the measured (radius, err) ladder and the price of the next
+    cone."""
     if t < 0:
         raise ValueError("t must be >= 0")
 
@@ -3350,21 +3355,21 @@ def tfi_quench_dispatch(n: int, site: int, t: float, tol: float,
 # ------------------------------------------------------------- Plasma
 # hierarchy (guiding-center reduction): the ASYMPTOTIC tier's first
 # shipment. The tier's semantics, made concrete: the truncation
-# EXPONENT of a reduction is a theorem — guiding-center drift theory
-# errs at O(eps^{order+1}) in eps = gyroradius/gradient scale — but
+# EXPONENT of a reduction is a theorem, guiding-center drift theory
+# errs at O(eps^{order+1}) in eps = gyroradius/gradient scale, but
 # the CONSTANT is not computable. So the certificate measures it where
 # measuring is cheap: the full kinetic solve costs ~1/eps, so a ladder
 # of LARGE eps calibrates the constant with cheap solves, the observed
 # convergence order is checked against the proven exponent (refusing
-# if it falls short — the asymptotic regime has not set in), the most
+# if it falls short, the asymptotic regime has not set in), the most
 # pessimistic ladder constant is kept with a declared safety factor,
 # and the bound is extrapolated DOWN to the query's small eps, where
 # the kinetic solve would be expensive. Proven (the exponent), measured
 # (the constant, the observed order), and assumed (no higher-term
-# takeover below the ladder) are all named in the provenance — that is
+# takeover below the ladder) are all named in the provenance, that is
 # what Tier.ASYMPTOTIC means. Truth functional: the guiding-center
 # transform X = x + (v x zhat)/Omega applied to the true orbit's
-# endpoints — operational and gyrophase-free at leading order. Orbit
+# endpoints, operational and gyrophase-free at leading order. Orbit
 # solves at rtol 1e-11; solver error not carried (declared), matching
 # the Phase 3/4 precedent.
 
@@ -3410,20 +3415,21 @@ def asymptotic_extrapolate(predict: Callable[[float], float],
                            eps: float, k: int, ladder,
                            eta: float = 2.0,
                            ratio_slack: float = 2.0) -> Certified:
-    """The ASYMPTOTIC tier's generic certifier. A reduction with a
-    PROVEN truncation exponent k — error = O(eps^k) — but an unknown
-    constant: measure the envelope constant C = max E(eps)/eps^k on a
-    calibration ladder where truth(eps) is affordable, then certify
-    predict(eps) at any eps at or below the ladder floor with
-    err = eta * C * eps^k. The truncation coefficient may oscillate
-    (gyrophase-like), so the check is on the ENVELOPE, in the one
-    dangerous direction: refuse when the measured constant GROWS
-    toward the ladder floor (monotonically, or the floor rung exceeds
-    ratio_slack times the coarser rungs) — the signature of a claimed
-    exponent the data contradict. Refuses to extrapolate above the
-    ladder. What is proven (k), measured (C and its spread), and
-    assumed (no higher-term takeover below the ladder) are named in
-    the provenance; that declaration is what Tier.ASYMPTOTIC means."""
+    """The ASYMPTOTIC tier's generic certifier. It handles a reduction
+    whose truncation exponent k is PROVEN, so error = O(eps^k), but
+    whose constant is unknown. Measure the envelope constant
+    C = max E(eps)/eps^k on a calibration ladder where truth(eps) is
+    affordable. Then certify predict(eps) at any eps at or below the
+    ladder floor with err = eta * C * eps^k. The truncation coefficient
+    may oscillate, gyrophase-like, so the check is on the ENVELOPE and
+    in the one dangerous direction. Refuse when the measured constant
+    GROWS toward the ladder floor, either monotonically or because the
+    floor rung exceeds ratio_slack times the coarser rungs. That growth
+    is the signature of a claimed exponent the data contradict. Refuses
+    to extrapolate above the ladder. The provenance names what is proven
+    (k), what is measured (C and its spread), and what is assumed (no
+    higher-term takeover below the ladder). That declaration is what
+    Tier.ASYMPTOTIC means."""
     els = sorted(ladder, reverse=True)
     if eps > els[-1]:
         raise ValueError(f"eps={eps:g} above the calibration ladder floor "
@@ -3452,9 +3458,9 @@ def gc_drift_asymptotic(eps: float, order: int = 1, a: float = 0.3,
     """ASYMPTOTIC certificate on the order-`order` guiding-center
     prediction at eps, calibrated by full kinetic solves on the (cheap,
     large-eps) ladder. The order-1 truncation coefficient is
-    gyrophase-oscillatory here — measured, its envelope is flat while
-    pairwise log-slopes swing wildly — which is exactly why the generic
-    certifier checks envelopes, not slopes."""
+    gyrophase-oscillatory here. Measured, its envelope is flat while
+    pairwise log-slopes swing wildly. That is exactly why the generic
+    certifier checks envelopes rather than slopes."""
     c = asymptotic_extrapolate(
         lambda e: _gc_prediction(order, e, a, v, T),
         lambda e: _gc_truth_cached(e, a, v, T),
@@ -3468,8 +3474,8 @@ def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
                       **kw) -> Certified:
     """Certified dispatch along the reduction hierarchy: the cheapest
     guiding-center order whose asymptotic certificate meets tol.
-    Refuses — pricing the full kinetic fallback — when the hierarchy
-    is exhausted."""
+    Refuses when the hierarchy is exhausted, and prices the full
+    kinetic fallback."""
     rw = Rewrite(
         "gc-hierarchy", (0, 1), lambda o: float(o + 1),
         lambda o: gc_drift_asymptotic(eps, o, a, v, T, **kw),
@@ -3487,7 +3493,7 @@ def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
 # dV/dt vanishes). Minimizing the sup over V is a sum-of-squares
 # program. The project split applies verbatim: the SEARCH for V and
 # for a Gram matrix is unrigorous float optimization; the CERTIFICATE
-# is exact rational arithmetic — the polynomial identity
+# is exact rational arithmetic, the polynomial identity
 # U - Phi - grad V . f = m^T Q m is checked coefficient by coefficient
 # over Q (the rationals), and Q >= 0 is proven by rational LDL^T. No
 # SDP solver is trusted and no float enters the proof. Boundedness of
@@ -3495,7 +3501,7 @@ def gc_drift_dispatch(eps: float, tol: float, a: float = 0.3,
 # certificate: K - delta W - grad W . f >= 0 globally for the
 # classical Lorenz Lyapunov function W, so W <= K/delta absorbs.
 # Polynomials are dicts {(i, j, k): coeff} over x^i y^j z^k, coeff
-# type Fraction (exact path) or float (search path) — the same code
+# type Fraction (exact path) or float (search path), the same code
 # runs both.
 
 
@@ -3640,13 +3646,13 @@ def _rational_ldl_psd(M):
 
 def _sos_exact_check(S, margin=1e-7, structure=None, warm=None):
     """Exact-rational global-nonnegativity certificate for the
-    polynomial S (dict of Fraction coefficients): float-search a Gram
-    matrix (or take the caller's candidate via structure/warm — any
-    solver may propose, none is trusted), rationalize its free
+    polynomial S (dict of Fraction coefficients). Float-search a Gram
+    matrix, or take the caller's candidate via structure/warm. Any
+    solver may propose and none is trusted. Then rationalize its free
     entries, restore the polynomial identity EXACTLY through the
-    absorber entries, then prove each block PSD by rational LDL^T.
-    One-sided: True is a theorem, False means no certificate was
-    found."""
+    absorber entries, and prove each block PSD by rational LDL^T. The
+    result is one-sided. True is a theorem, and False means no
+    certificate was found."""
     from fractions import Fraction
     blocks, entries, groups = structure if structure is not None \
         else _sos_structure(S)
@@ -3661,7 +3667,7 @@ def _sos_exact_check(S, margin=1e-7, structure=None, warm=None):
         lam, vals = _sos_search({m: float(c) for m, c in S.items()},
                                 blocks, entries, groups)
     # the exact LDL^T is the arbiter (zero pivots are legal PSD);
-    # the float lambda only gates hopeless cases — rationalization of
+    # the float lambda only gates hopeless cases, rationalization of
     # free entries can perturb a boundary Gram, and then LDL refuses,
     # which is the safe direction
     if vals is None or lam < -abs(margin):
@@ -3743,8 +3749,8 @@ def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
     globally SOS in exact rational arithmetic. Lower bound: the fixed
     points C+- are exact trajectories with <z> = rho - 1 = 27
     (algebraic identity). Boundedness of all trajectories by the
-    absorbing-ball SOS certificate. Tier RIGOROUS throughout — the
-    float search chose V, the rational proof never trusted it."""
+    absorbing-ball SOS certificate. Tier RIGOROUS throughout. The float
+    search chose V, and the rational proof never trusted it."""
     from fractions import Fraction
     ok, ball = _lorenz_absorbing_certificate()
     if not ok:
@@ -3761,7 +3767,7 @@ def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
         # The search is a genuine SDP; naive coordinate/subgradient
         # ascent stalls on the thin curved feasible sliver (measured:
         # Powell -7e-8, alternating projections -3e-3). cvxpy+SCS is a
-        # SEARCH-ONLY dependency — the proof below never trusts it —
+        # SEARCH-ONLY dependency; the proof below never trusts it.
         # and the problem must be nondimensionalized (x -> 25 u, exact)
         # or SCS returns garbage (measured: U*=33 raw vs 27.000004
         # scaled).
@@ -3810,7 +3816,7 @@ def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
         import warnings
         with warnings.catch_warnings():
             # SCS self-reports "inaccurate" near its tolerance floor;
-            # irrelevant here — the exact rational check is the arbiter
+            # irrelevant here, the exact rational check is the arbiter
             warnings.simplefilter("ignore")
             prob.solve(solver=cp.SCS, eps=1e-10, max_iters=400000)
         if t.value is None or t.value < 1e-6:
@@ -3845,19 +3851,19 @@ def lorenz_mean_z_bracket(degree: int = 4) -> Certified:
 # ------------------------------------------------------------- GW
 # surrogates (the last TARGETS domain). The purest resolution-limited
 # query in physics: a waveform need only match to the detector's
-# noise-weighted mismatch — epsilon set by instrument and SNR, not by
+# noise-weighted mismatch, epsilon set by instrument and SNR, not by
 # formalism. The rewrite is the standard surrogate pipeline (greedy
 # reduced basis over a waveform manifold + smooth coefficient fits),
 # and the certificate is the field's own practice made honest:
 # accuracy studies against held-out truth, upgraded to a
-# distribution-free conformal guarantee — the worst mismatch over
+# distribution-free conformal guarantee, the worst mismatch over
 # n_cal held-out parameter draws bounds a fresh draw from the SAME
 # distribution with P(miss) <= 1/(n_cal+1), by exchangeability alone.
 # Tier EMPIRICAL with the fail probability printed; refusal outside
 # the training hull and below the calibrated mismatch. The truth
 # family here is a declared Newtonian-chirp-shaped model (the demo's
 # stand-in for numerical relativity); nothing in the pipeline peeks
-# at closed forms — only waveform evaluations, as with real NR data.
+# at closed forms, only waveform evaluations, as with real NR data.
 
 
 _GW_T = np.linspace(0.0, 1.0, 4096, endpoint=False)
@@ -3867,10 +3873,10 @@ def _gw_chirp(lam: float) -> np.ndarray:
     """Model waveform family, complex analytic signal: a Newtonian
     chirp phase plus a PN-flavored correction with a different lam
     power, amplitude rising to merger with its own lam dependence.
-    lam plays chirp mass: ~40 cycles at lam=1 down to ~26 at lam=2,
-    so raw waveforms decorrelate strongly across the range — the
-    surrogate must discover the smooth amplitude/phase structure from
-    data, exactly as with numerical-relativity input."""
+    lam plays chirp mass, giving ~40 cycles at lam=1 down to ~26 at
+    lam=2, so raw waveforms decorrelate strongly across the range. The
+    surrogate must discover the smooth amplitude and phase structure
+    from data, exactly as with numerical-relativity input."""
     tau = 1.02 - _GW_T
     phase = -250.0 * (tau / lam) ** 0.625 - 40.0 * tau ** 0.375 / lam ** 1.125
     amp = tau ** -0.25 * (1.0 + 0.15 * np.sqrt(tau) / lam)
@@ -3879,7 +3885,7 @@ def _gw_chirp(lam: float) -> np.ndarray:
 
 def _gw_mismatch(a: np.ndarray, b: np.ndarray) -> float:
     """1 - |<a,b>| / (||a|| ||b||): the |.| maximizes the overlap over
-    a global phase (no time marginalization — declared)."""
+    a global phase (no time marginalization, declared)."""
     return float(1.0 - abs(np.vdot(a, b))
                  / (np.linalg.norm(a) * np.linalg.norm(b)))
 
@@ -3888,16 +3894,16 @@ def gw_surrogate_build(lam_range=(1.0, 2.0), n_train: int = 48,
                        eps_build: float = 1e-8, n_cal: int = 49,
                        fit_degree: int = 14, seed: int = 0) -> dict:
     """Offline stage, the gwsurrogate architecture in miniature. Raw
-    waveforms decorrelate wildly in lam (hundreds of radians of
-    dephasing), so no basis fits them directly — but amplitude and
+    waveforms decorrelate wildly in lam, with hundreds of radians of
+    dephasing, so no basis fits them directly. But amplitude and
     unwrapped phase are SMOOTH in lam. Fix the free global phase by
-    rotating each training waveform to h(0) real-positive (mismatch
-    maximizes over that phase anyway), unwrap the phase along t, then
-    SVD each of the amplitude and phase matrices, keeping modes while
-    the relative singular-value tail exceeds eps_build; Chebyshev-fit
-    the mode coefficients over lam. Conformal calibration on n_cal
-    fresh uniform draws records the worst mismatch m_cal. All
-    expensive truth evaluations happen offline, never online."""
+    rotating each training waveform to h(0) real-positive, which
+    mismatch maximizes over anyway. Unwrap the phase along t. Then SVD
+    each of the amplitude and phase matrices, keeping modes while the
+    relative singular-value tail exceeds eps_build, and Chebyshev-fit
+    the mode coefficients over lam. Conformal calibration on n_cal fresh
+    uniform draws records the worst mismatch m_cal. All expensive truth
+    evaluations happen offline, never online."""
     lo, hi = lam_range
     lams = np.linspace(lo, hi, n_train)
     H = np.stack([_gw_chirp(l) for l in lams])
@@ -3942,8 +3948,8 @@ def gw_surrogate_eval(sur, lam: float) -> Certified:
     """Online query: the surrogate waveform at lam with the conformal
     mismatch certificate. err is the 2-norm bound sqrt(2 m_cal) up to
     a global phase (min over phase of ||h_sur - e^{i theta} h_true||),
-    valid for lam drawn from the calibration distribution — declared,
-    like every EMPIRICAL certificate."""
+    valid for lam drawn from the calibration distribution. That is
+    declared, like every EMPIRICAL certificate."""
     lo, hi = sur["range"]
     if not lo <= lam <= hi:
         raise ValueError(f"lam={lam:g} outside the training hull "
@@ -4021,30 +4027,30 @@ def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
                     unit: str = "") -> Certified:
     """Turn a ladder of certificates about discretized models into one
     certificate about the thing being modelled. Every rung is rigorous
-    about its own mesh and silent about the mesh itself; this adds the
+    about its own mesh and silent about the mesh itself. This adds the
     only statement that crosses that line, and it is a measured one.
 
-    Two errors compose and they are of different kinds. The distance
+    Two errors compose, and they are of different kinds. The distance
     from the finest rung to h -> 0 is read off the ladder by
     gci_extrapolate, so it is EMPIRICAL however rigorous the rungs
-    were; the finest rung's own error is whatever it was and simply
-    adds. The tier of the pair is the weaker, which means a continuum
-    answer is never RIGOROUS no matter what it is built from. Saying
-    so is the point: the exchange rate between a proven statement
-    about a model and a measured one about the world is usually a
-    factor of hundreds and a tier, and printing both is what lets a
-    reader see it.
+    were. The finest rung's own error is whatever it was, and it simply
+    adds. The tier of the pair is the weaker one, which means a
+    continuum answer is never RIGOROUS no matter what it is built from.
+    Saying so is the point. The exchange rate between a proven statement
+    about a model and a measured one about the world is usually a factor
+    of hundreds and a tier. Printing both is what lets a reader see
+    it.
 
     One precondition is checked rather than hoped for. A measured
-    convergence order is a ratio of differences between rungs, so if
-    the rungs' own error bars are comparable to those differences the
-    order is fitted to bracket noise and the certificate that follows
-    is fiction. The rule here is a factor of ten, and falling short of
-    it is a refusal that prices the fix: tighten the rungs or coarsen
-    the ladder.
+    convergence order is a ratio of differences between rungs. So if the
+    rungs' own error bars are comparable to those differences, the order
+    is fitted to bracket noise and the certificate that follows is
+    fiction. The rule here is a factor of ten. Falling short of it is a
+    refusal that prices the fix: tighten the rungs or coarsen the
+    ladder.
 
     scale and unit only make the refusal readable in the field's own
-    units -- 10^5 and pcm for a reactor, 1 and nC/cm^2 for a junction.
+    units, 10^5 and pcm for a reactor, 1 and nC/cm^2 for a junction.
     They touch no bound."""
     if len(rungs) < 3:
         raise ValueError("a grid-convergence certificate needs >= 3 rungs")
@@ -4077,7 +4083,7 @@ def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
 # query has to be designed before it can be certified: the raw peak
 # pressure of a breaking-wave impact is famously irreproducible (it
 # depends on entrapped air and the last millimeter of breaker shape),
-# and the resolution ladder shows it — no asymptotic range, so the
+# and the resolution ladder shows it, no asymptotic range, so the
 # GCI certifier refuses. The time-smoothed impact force converges,
 # and that is the quantity sea-wall design practice actually uses.
 # Certificates here are EMPIRICAL (measured convergence order, GCI):
@@ -4234,7 +4240,7 @@ def sph_dam_break(nres: int = 18, tank=(4.0, 3.0), column=(1.0, 1.0),
 def wave_impact_force(F, ts, tau: float):
     """The queried functional: the largest boxcar average of the wall
     force over a window tau. tau = 0 asks for the raw instantaneous
-    peak — the query the ladder refuses to certify."""
+    peak, the query the ladder refuses to certify."""
     if tau <= 0.0:
         return float(np.max(F))
     w = max(1, int(round(tau / (ts[1] - ts[0]))))
@@ -4265,9 +4271,10 @@ def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
 # where lam1 is the exact first Dirichlet eigenvalue of the rectangle
 # and |||.||| the kappa-weighted energy norm. FEniCSx proposes: it
 # solves the primal problem and a mixed RT problem for sigma. The
-# bound holds for whatever it returns — a bad sigma costs tightness,
-# never truth (measured: a sign error in the mixed boundary term gave
-# efficiency 27x, still a valid bound; fixed, 1.6x). Implicit
+# bound holds for whatever it returns. A bad sigma loosens the bound
+# and cannot invalidate it (measured: a sign error in the mixed
+# boundary term gave efficiency 27x, still a valid bound; fixed,
+# 1.6x). Implicit
 # coupling c*psi in the source is certified through the contraction
 # factor theta = c Rmax / (Rmin lam1), refusing at theta >= 1. Tier
 # RIGOROUS; assembly and linear-solver arithmetic are not carried
@@ -4284,9 +4291,9 @@ def legendre_source_profile(A: float, rho: float, k: int) -> Certified:
     tail has L2(Omega) norm squared sum_{j>=k} A^2 rho^{2j} * 2HW *
     2/(2j+1) <= 2HW * (2/(2k+1)) * A^2 rho^{2k} / (1 - rho^2), a
     rigorous bound in exact arithmetic. The value is the coefficient
-    vector, the err is the tail bound -- the entry ticket for a
-    composed plan that feeds this profile into the equilibrium
-    solve and converts this err through the solve's exported
+    vector, and the err is the tail bound. That is the entry ticket for
+    a composed plan that feeds this profile into the equilibrium solve
+    and converts this err through the solve's exported
     sensitivity."""
     if not 0.0 < rho < 1.0:
         raise ValueError("rho must lie in (0, 1) for a summable tail")
@@ -4397,19 +4404,19 @@ def gs_equilibrium_certified(n: int = 16, c: float = 0.0,
     energy-norm bound and a Certified value of the total poloidal
     flux content, integral of psi over the domain. Refuses when the
     coupling exceeds the contraction limit. dg0 adds a constant to the
-    source profile — a uniform current-density offset — and
+    source profile, which is a uniform current-density offset.
     source_coeffs adds a Legendre profile in (R - R0)/W, the shape
     legendre_source_profile certifies.
 
-    The flux also exports its sensitivity to that source: subtracting
-    the weak forms of two coupled solutions with the same boundary
-    data, the difference e obeys (1-theta)|||e|||^2 <=
+    The flux also exports its sensitivity to that source. Subtract the
+    weak forms of two coupled solutions with the same boundary data.
+    The difference e then obeys (1-theta)|||e|||^2 <=
     sqrt(Rmax/lam1) ||dg||/Rmin |||e|||, and |Q moves| <=
-    sqrt(area Rmax/lam1) |||e|||; chained, |Q moves| <=
-    sqrt(area) Rmax / (lam1 Rmin (1-theta)) * ||dg||_L2. The same
-    contraction machinery that certifies the solve, repriced as a
-    Lipschitz bound — the datum a composed plan needs before feeding
-    this solve from an upstream certified profile."""
+    sqrt(area Rmax/lam1) |||e|||. Chained, |Q moves| <=
+    sqrt(area) Rmax / (lam1 Rmin (1-theta)) * ||dg||_L2. That is the
+    same contraction machinery that certifies the solve, repriced as a
+    Lipschitz bound. It is the datum a composed plan needs before
+    feeding this solve from an upstream certified profile."""
     R0, W, H = 3.0, 1.0, 1.0
     # O-point (magnetic axis) at (R0, 0): needs 9 b + d > 0;
     # these give psi_RR/psi_ZZ ~ 2, a mildly elongated core
@@ -4502,28 +4509,28 @@ def _fl_matvec(M, x):
 def mmatrix_witness(L: np.ndarray) -> np.ndarray:
     """Proof that L inverts to something non-negative, which is what the
     whole certificate rests on. Two facts do it. First, L must be a
-    Z-matrix: every off-diagonal entry non-positive, checked exactly on
-    the stored floats. Second, there must exist a strictly positive u
-    with L u >= 1 everywhere; a Z-matrix admitting one is a nonsingular
-    M-matrix, so L^-1 >= 0, and the same u bounds the inverse, since
-    L^-1 e <= u componentwise.
+    Z-matrix, meaning every off-diagonal entry is non-positive, checked
+    exactly on the stored floats. Second, there must exist a strictly
+    positive u with L u >= 1 everywhere. A Z-matrix admitting one is a
+    nonsingular M-matrix, so L^-1 >= 0, and the same u bounds the
+    inverse, since L^-1 e <= u componentwise.
 
     We find u by solving L u = 1 and scaling up for slack, then VERIFY
     the result against a bound on the check's own rounding. How u was
-    found does not matter; that L u >= 1 holds is what is checked, and
+    found does not matter. What is checked is that L u >= 1 holds, and
     a solver that lied would fail the check rather than corrupt the
-    bound -- which is the proposer/checker split the whole library
+    bound. That is the proposer and checker split the whole library
     runs on, applied to a hypothesis instead of an answer. Both tests
-    are needed: flipping one off-diagonal of a reactor operator positive
+    are needed. Flipping one off-diagonal of a reactor operator positive
     leaves a u that still passes the second check, and only the
     Z-matrix test catches it.
 
     The scaling is measured, not guessed. A fixed nudge is a bet that
     the solve came back accurate to better than the nudge, and the bet
-    is lost the moment L is ill-conditioned: the Jacobian of a
+    is lost the moment L is ill-conditioned. The Jacobian of a
     semiconductor's nonlinear Poisson equation, written the way the
     physics writes it, has a condition number in the hundreds of
-    millions, so a solve is wrong in the eighth digit and a 10^-9
+    millions. The solve is then wrong in the eighth digit, and a 10^-9
     nudge leaves L u short of 1. Scaling u by its own measured
     shortfall costs one extra matvec, needs no constant, and cannot be
     outgrown, because both the shortfall and the rounding pad scale
@@ -4558,17 +4565,19 @@ def keff_bracket(L: np.ndarray, F: np.ndarray, phi: np.ndarray,
     """A two-sided bracket on a reactor's criticality eigenvalue k_eff,
     from any strictly positive trial flux. Collatz-Wielandt on
     A = L^-1 F: form psi = A phi and take the smallest and largest of
-    the ratios psi_i / phi_i. A bad trial flux costs width, never truth,
-    which is the same bargain the variational brackets strike, bought
-    with positivity instead of a minimum principle.
+    the ratios psi_i / phi_i. A bad trial flux makes the bracket wider
+    and cannot make it wrong. That is the same bargain the variational
+    brackets strike, bought with positivity instead of a minimum
+    principle.
 
     Applying A needs a linear solve, and the solve is inexact. That
     error is absorbed rather than assumed away, by the positivity
-    already proven: with residual r = F phi - L psi_hat, the true psi
-    differs from the computed one by L^-1 r, and since L^-1 >= 0 that
-    is at most max|r| times the witness u, componentwise. So the same
-    fact that licenses the theorem also prices the solver's mistake,
-    and the bracket stays rigorous however sloppily psi was computed.
+    already proven. With residual r = F phi - L psi_hat, the true psi
+    differs from the computed one by L^-1 r. Since L^-1 >= 0, that
+    difference is at most max|r| times the witness u, componentwise. So
+    the same fact that licenses the theorem also prices the solver's
+    mistake, and the bracket stays rigorous however sloppily psi was
+    computed.
 
     Rounding in both matrix products is carried as well, and so is the
     arithmetic that forms the ratios, so what comes back is a bracket
@@ -4613,13 +4622,13 @@ def slab_reactor(N: int = 100, width: float = 70.0, D1: float = 1.4,
                  D2: float = 0.4, sr1: float = 0.030, sa2: float = 0.100,
                  ss12: float = 0.020, nf1: float = 0.007,
                  nf2: float = 0.130) -> dict:
-    """A two-group diffusion reactor in one dimension: the smallest
-    model that is still a reactor rather than an eigenvalue problem
-    wearing one's clothes. Fast neutrons are born from fission, leak
-    and slow down; thermal neutrons arrive only by slowing down, and
-    are where most of the fissioning happens. That one-way traffic --
-    down-scatter with no path back up -- is what makes the loss
-    operator non-symmetric.
+    """A two-group diffusion reactor in one dimension. This is the
+    smallest model that is still a reactor rather than a generic
+    eigenvalue problem. Fast neutrons are born from fission, then leak
+    and slow down. Thermal neutrons arrive only by slowing down, and
+    they are where most of the fissioning happens. That one-way traffic,
+    down-scatter with no path back up, is what makes the loss operator
+    non-symmetric.
 
     Cell-centred finite volume, zero flux at both edges, cross sections
     in the usual light-water range. Cheap enough to build dense, and
@@ -4659,19 +4668,19 @@ def sn_slab_reactor(N: int = 60, width: float = 10.0, nang: int = 8,
     the width is in mean free paths.
 
     Nothing about the certificate changes, and that is the point.
-    Streaming is differenced upwind -- step differencing, whose whole
-    reason for existing is that it cannot produce a negative flux --
+    Streaming is differenced upwind, using step differencing. That
+    scheme exists precisely because it cannot produce a negative flux,
     which is exactly the statement that the operator stays a Z-matrix.
     So mmatrix_witness and keff_bracket apply here unaltered, with no
     new proof and no new code. A certificate hung on a cone rather than
     on a quadratic form does not care which equation it is looking at,
     only whether the equation respects the cone. Diamond differencing
-    would break this, and would deserve to: it is the scheme that can
+    would break this, and it should, because it is the scheme that can
     return negative fluxes.
 
     Cost is cells times angles, so this is dense-solvable in a slab and
-    would not be in a reactor. Kept small on purpose: it is here to
-    show the archetype transferring, not to compete with a production
+    would not be in a reactor. It is kept small on purpose. It is here
+    to show the archetype transferring, not to compete with a production
     transport code."""
     mu, w = np.polynomial.legendre.leggauss(nang)
     w = w / w.sum()             # so sum_b w_b psi_b is the isotropic average
@@ -4746,7 +4755,7 @@ def inverse_bound(J: np.ndarray):
     provenance.
 
     The first route is the reactor's witness. When J is a nonsingular
-    M-matrix the bound is not merely valid, it is essentially exact:
+    M-matrix the bound is not merely valid, it is essentially exact.
     J^-1 >= 0 makes the row sums of |J^-1| equal to J^-1 e, so
     ||J^-1||_inf is literally ||J^-1 e||_inf, and that is what the
     witness computes. Measured on twelve junction Jacobians it lands
@@ -4757,10 +4766,10 @@ def inverse_bound(J: np.ndarray):
     series for (RJ)^-1 converges, J is nonsingular, and
     ||J^-1|| <= ||R|| / (1 - alpha). The cost is a matrix inverse and
     two matrix products, so it is a factor of n dearer than the
-    witness, and it is the only route open once the Jacobian has a
-    positive off-diagonal -- a fourth-order stencil, or the
-    consistent mass matrix that a Grad-Shafranov pressure profile
-    subtracts from its stiffness.
+    witness. It is also the only route open once the Jacobian has a
+    positive off-diagonal, which happens with a fourth-order stencil,
+    or with the consistent mass matrix that a Grad-Shafranov pressure
+    profile subtracts from its stiffness.
 
     Both the product and the row sums are computed in floating point,
     so both are padded. |fl(RJ) - RJ| <= gamma_n |R||J| entrywise with
@@ -4817,11 +4826,11 @@ def newton_enclosure(res: float, J: np.ndarray, lip):
 
     beta comes from inverse_bound, which tries the cheap cone route
     first and falls back to the Neumann one. Nothing here cares which
-    answered, and the theorem never asked for a Z-matrix; that was a
+    answered. The theorem never asked for a Z-matrix. That was a
     restriction inherited from the only pricing method on hand.
 
     K is supplied by the caller as a function of the ball radius,
-    because no generic code can know it -- it is a second-derivative
+    because no generic code can know it. It is a second-derivative
     bound on the specific equations. The ball is then searched from
     tight to loose, and the first radius whose K certifies an enclosure
     no larger than the ball itself is the answer. Refuses when none
@@ -4867,17 +4876,17 @@ def pn_junction(N: int = 200, length_um: float = 1.0, Na: float = 1e17,
     densities in the intrinsic concentration, and length in the device
     length. C(x) is the doping, negative in the p region and positive
     in the n region. V is the reverse bias, entering as the split
-    between the two carrier quasi-Fermi levels -- the standard
+    between the two carrier quasi-Fermi levels. That is the standard
     depletion-regime model, exact only where the current is negligible,
     which is what reverse bias means.
 
-    Returned scaled so the residual is O(1): the equation is divided by
-    lambda^2/h^2, leaving a plain second difference against a small
-    multiple of the exponentials. That is not cosmetic. Undivided, the
-    two terms differ by ten orders of magnitude, the residual cannot be
-    evaluated below 10^-5 in double precision, and Kantorovich needs
-    10^-8 to close -- the certificate would fail for no reason but
-    arithmetic."""
+    It is returned scaled so the residual is O(1). The equation is
+    divided by lambda^2/h^2, leaving a plain second difference against
+    a small multiple of the exponentials. That is not cosmetic.
+    Undivided, the two terms differ by ten orders of magnitude, and the
+    residual cannot be evaluated below 10^-5 in double precision.
+    Kantorovich needs 10^-8 to close, so the certificate would fail for
+    no reason but arithmetic."""
     L = length_um * 1e-4
     x = np.linspace(0.0, 1.0, N + 1)
     C = np.where(x < 0.5, -Na, Nd) / _NI
@@ -4947,15 +4956,16 @@ def junction_charge_bracket(dev: dict, volts: float,
     potential, so its own error is r times the functional's gradient,
     bounded over the ball rather than evaluated at the iterate.
 
-    What this does NOT cover is stated rather than implied: the mesh.
-    The bound is about the exact solution of the discretized equations,
-    not of the differential equation. Measured on the default junction
-    at 1 V, the mesh costs about 7 parts in 10^4 at N=100 and falls as
-    h^2, while a converged rung's certified radius is worth 10^-8
-    nC/cm^2 -- six orders of magnitude apart, with the discretization
-    the larger. Which of the two binds does depend on the rung: at the
-    FIRST rung that certifies at all the radius is worth 0.78 nC/cm^2
-    and the mesh is the smaller of the two. Both are printed."""
+    What this does NOT cover is the mesh, and that is stated rather
+    than implied. The bound is about the exact solution of the
+    discretized equations, not of the differential equation. Measured on
+    the default junction at 1 V, the mesh costs about 7 parts in 10^4 at
+    N=100 and falls as h^2. A converged rung's certified radius is worth
+    10^-8 nC/cm^2. That is six orders of magnitude apart, with the
+    discretization the larger. Which of the two binds does depend on the
+    rung. At the FIRST rung that certifies at all, the radius is worth
+    0.78 nC/cm^2 and the mesh is the smaller of the two. Both are
+    printed."""
     v = volts / _VT
     N, a, C, h = dev["N"], dev["a"], dev["C"], dev["h"]
 
@@ -4999,12 +5009,12 @@ def depletion_width_analytic(dev: dict, volts: float) -> float:
     depletion region is swept perfectly clean of carriers and the
     neutral regions perfectly neutral; then the charge is the doping,
     Poisson integrates twice by hand, and the width is a square root.
-    Not a certificate and not used by one -- it is the independent
-    truth the computed model is measured against. It should be close
-    and it should not be exact: the real transition is smooth over a
-    few Debye lengths, so the true depletion charge is a little smaller
-    than this, and the gap must shrink as reverse bias widens the
-    region it is wrong about."""
+    This is not a certificate and is not used by one. It is the
+    independent truth the computed model is measured against. It should
+    be close, and it should not be exact. The real transition is smooth
+    over a few Debye lengths, so the true depletion charge is a little
+    smaller than this. The gap must then shrink as reverse bias widens
+    the region it is wrong about."""
     vbi = _VT * math.log(dev["Na"] * dev["Nd"] / (_NI * _NI))
     return math.sqrt(2 * _EPS_SI * (vbi + volts) / _QE
                      * (1.0 / dev["Na"] + 1.0 / dev["Nd"])) * 1e7
@@ -5053,31 +5063,31 @@ def gs_nonlinear_certified(n: int = 16, c: float = 4.0, psi0: float = 0.2,
     """A tokamak equilibrium whose pressure profile is a real one:
     peaked on the magnetic axis, decaying outward, so the source is a
     nonlinear function of the flux and no contraction certificate
-    reaches it. FEniCSx proposes a Newton iterate, untrusted as usual;
-    Kantorovich proves an exact solution of the discrete equations
-    exists nearby and says how near.
+    reaches it. FEniCSx proposes a Newton iterate, untrusted as usual.
+    Kantorovich then proves an exact solution of the discrete equations
+    exists nearby, and says how near.
 
     The profile is exponential in the flux, and it is manufactured
     about the Solov'ev polynomial so that psi_ex remains an exact
     solution of the NONLINEAR problem at every c. That costs the
     certificate nothing, since it never looks at psi_ex except as
     boundary data, and it buys an independent truth to measure the
-    discretization against -- the job slab_buckling_keff does for the
-    reactor and depletion_width_analytic for the junction.
+    discretization against. That is the job slab_buckling_keff does for
+    the reactor and depletion_width_analytic for the junction.
 
     Newton starts cold, with the interior at zero, because a warm
     start from psi_ex would begin at the answer and hide the ladder.
-    From cold the ladder is real and its length depends on the
-    physics: measured, two steps certify at c = 1 and at c = 4, three
-    at c = 16.
+    From cold the ladder is real, and its length depends on the
+    physics. Measured, two steps certify at c = 1 and at c = 4, and
+    three at c = 16.
 
     The Dirichlet nodes are eliminated rather than constrained. Their
     values are data and not unknowns, so the system certified is the
     one on the interior nodes and the radius is a max-norm on those.
-    What the radius does not cover is the mesh: measured second order
-    in h, worth 1.4e-3 in flux at n=16 against a converged rung's
-    1e-15. Twelve orders apart, with the discretization the larger,
-    and both printed.
+    What the radius does not cover is the mesh. That is measured second
+    order in h, and it is worth 1.4e-3 in flux at n=16 against a
+    converged rung's 1e-15. Twelve orders apart, with the
+    discretization the larger, and both printed.
 
     Assembly quadrature is not carried, the same declaration the
     Prager-Synge path makes. Everything from the assembled residual
@@ -5208,11 +5218,11 @@ class Rewrite:
     """One way to answer a question, with a declared ladder of effort.
     knobs is the ladder, cheapest rung first. cost predicts what a
     rung will cost, in any units kept consistent within one front
-    door; it is a guess and is never trusted. run executes a rung and
-    returns a Certified -- the only arbiter. A rung may itself raise:
-    that refusal is a measurement too, and the planner records it and
-    moves on. price_beyond, when given, names what the rung past the
-    ladder would cost, for the refusal receipt."""
+    door. It is a guess and is never trusted. run executes a rung and
+    returns a Certified, which is the only arbiter. A rung may itself
+    raise, and that refusal is a measurement too, so the planner records
+    it and moves on. price_beyond, when given, names what the rung past
+    the ladder would cost, for the refusal receipt."""
     name: str
     knobs: Tuple[Any, ...]
     cost: Callable[[Any], float]
@@ -5222,14 +5232,14 @@ class Rewrite:
 
 def _fit_jump(meas, tol, remaining):
     """Model-guided escalation. After two honest failures there is no
-    reason to keep climbing one rung at a time: fit the measured
-    errors to geometric decay, err ~ A * rho^knob -- a straight line
-    in (knob, log err) -- and jump to the first remaining rung the
-    line predicts will land at tol/2. Aiming past the target absorbs
-    a wobbly fit, and a wrong jump costs one extra run, because the
-    certificate still arbitrates. Whenever the data refuse the model
-    -- fewer than two points, errors not decreasing, a slope that is
-    flat or rising -- fall back to plain stepping."""
+    reason to keep climbing one rung at a time. Fit the measured errors
+    to geometric decay, err ~ A * rho^knob, which is a straight line in
+    (knob, log err). Then jump to the first remaining rung the line
+    predicts will land at tol/2. Aiming past the target absorbs a wobbly
+    fit, and a wrong jump costs one extra run, because the certificate
+    still arbitrates. Fall back to plain stepping whenever the data
+    refuse the model: fewer than two points, errors not decreasing, or a
+    slope that is flat or rising."""
     if len(meas) < 2:
         return remaining[0]
     es = [e for _, e in meas]
@@ -5258,38 +5268,39 @@ def plan(slug: str, tol: float, rewrites, jump: bool = True,
     rewrite, priced by each one's own cost model, and run whichever
     rung is predicted cheapest. If its certificate meets the
     tolerance, that rewrite wins, and the plan trace is appended to
-    the certificate's provenance. If not, the measurement is kept,
-    the rewrite's next rung -- chosen by _fit_jump when jumping is on
-    -- goes back on the frontier, and the next-cheapest promise runs.
+    the certificate's provenance. If not, the measurement is kept and
+    the rewrite's next rung goes back on the frontier, chosen by
+    _fit_jump when jumping is on. Then the next-cheapest promise runs.
     That promise may belong to a competing rewrite, so a rewrite that
     measures badly is dethroned the moment its next rung gets
-    expensive. Cost models decide only the order of attempts;
+    expensive. Cost models decide only the order of attempts, and
     certificates decide what is true. When every ladder is exhausted,
-    the planner refuses with the full receipt. Every rung's predicted
-    and measured cost is logged as structure -- the receipt field of
-    the winning certificate, the tried field of the Refusal -- so the
-    cost models are auditable and every run is calibration data for
-    better ones -- for the machine that produced it. Measured seconds
-    are the honest unit and the only one here: dividing them by a
-    fixed microbenchmark to make them portable was tried and measured
-    not to work, because a short benchmark and a long rung do not
-    respond alike to contention or to cache state (see the compiler
-    case page). Portability is a job for a cost model over the
-    rewrite's own parameters, not for a yardstick. The provenance
-    trace itself stays deterministic: provenance is part of the
-    certificate; timings are data about one run of it.
+    the planner refuses with the full receipt.
 
-    A rewrite whose knob is a tuple is not a ladder, it is an
+    Every rung's predicted and measured cost is logged as structure,
+    in the receipt field of the winning certificate and the tried field
+    of the Refusal. So the cost models are auditable, and every run is
+    calibration data for better ones on the machine that produced it.
+    Measured seconds are the honest unit and the only one here.
+    Dividing them by a fixed microbenchmark to make them portable was
+    tried and measured not to work. A short benchmark and a long rung
+    do not respond alike to contention or to cache state (see the
+    compiler case page). Portability is a job for a cost model over
+    the rewrite's own parameters, not for a yardstick. The provenance
+    trace itself stays deterministic, because provenance is part of the
+    certificate while timings are data about one run of it.
+
+    A rewrite whose knob is a tuple is not a ladder. It is an
     assignment across several stages, and building one by hand is the
-    debt this planner spent a while carrying: four front doors each
+    debt this planner spent a while carrying. Four front doors each
     wrote their own allocation, their own product ladder, and their
     own sentence about which stage was short. So the planner refuses
     one now unless compose built it. The rule is not a style
     preference. A hand-rolled assignment cannot derive its binding
     stage, cannot share a node between branches, and cannot return a
-    solved stage's unspent share to the stages after it -- all three
-    are properties of the graph, and a front door that flattens the
-    graph into a list of tuples has thrown the graph away."""
+    solved stage's unspent share to the stages after it. All three are
+    properties of the graph, and a front door that flattens the graph
+    into a list of tuples has thrown the graph away."""
     if not _composed:
         for rw in rewrites:
             if rw.knobs and isinstance(rw.knobs[0], (tuple, list)):
@@ -5671,17 +5682,17 @@ def heisenberg_energy_dispatch(N: int, tol: float,
     """Ground energy of the N-site spin-1/2 Heisenberg chain, certified
     so the bracket half-width per bond meets tol. This is the one front
     door where two rewrites compete, and competition is what forces
-    them onto a single currency: cost here is eigendecompositions times
+    them onto a single currency. Cost here is eigendecompositions times
     dimension. A window rung runs the multiplier ascent before it
-    brackets anything, so it costs correction_iters x 2^ell; the dense
+    brackets anything, so it costs correction_iters x 2^ell. The dense
     bracket diagonalizes once at 2^N and is exact, so it enters the
     race only when the chain is small enough to form (N <= dense_max).
     Pricing the window at 2^ell alone dropped the iteration count and
-    inverted the only comparison the library ever makes: it quoted the
+    inverted the only comparison the library ever makes. It quoted the
     widest window at half the price of a dense rung that measures
-    nearly twice as fast. The planner runs whichever promises cheapest;
-    the certificates decide. Returns the total-energy bracket, plan
-    trace last in its provenance."""
+    nearly twice as fast. The planner runs whichever promises cheapest,
+    and the certificates decide. Returns the total-energy bracket, with
+    the plan trace last in its provenance."""
     tol_total = tol * (N - 1)
     ells = tuple(range(2, min(N - 1, ell_max or 10) + 1))
     eighs = max(correction_iters, 1)      # the ascent, or one bracket
@@ -5733,29 +5744,30 @@ def smeared_spectral_dispatch(measure: Callable, cov1: Callable,
     """The first composed plan: one error budget, two bills to pay.
     A smeared spectral value from noisy correlator data carries two
     error streams. The smearing bill c*C(1) is what the kernel
-    reconstruction cannot resolve; it shrinks only by buying more
+    reconstruction cannot resolve, and it shrinks only by buying more
     correlator times N. The statistics bill z*amp/sqrt(m) is what the
-    noise obscures; it shrinks only by buying more samples m -- and
+    noise obscures, and it shrinks only by buying more samples m. Here
     amp is the noise's reach into the answer, measured through the
     same g whose norm the certificate exports. One tolerance must cover
     both. For each rung N of the declared ladder the smearing bill is
     what it is, the leftover budget goes to statistics, and the sample
-    count follows in closed form from the 1/sqrt(m) law -- the
+    count follows in closed form from the 1/sqrt(m) law. That is the
     marginal-cost balancing MLMC uses for level allocation, collapsed
     to a formula because one stage is continuous. Each rung is priced
-    at N*m (measure an N-point correlator m times), the planner runs
-    the cheapest promise, and the certificate of the run decides -- a
-    wrong pilot estimate costs extra rungs, never truth.
+    at N*m, which is an N-point correlator measured m times. The
+    planner runs the cheapest promise and the certificate of the run
+    decides, so a wrong pilot estimate costs extra rungs and cannot
+    cost truth.
 
-    measure(N, m) must return the m-sample mean correlator C(1..N);
+    measure(N, m) must return the m-sample mean correlator C(1..N), and
     cov1(N) the covariance of a single sample. The split aims at 80%
     of the leftover budget so a wobbly pilot C(1) does not push the
     first rung over.
 
     Wired through compose, and the shape it needed is the reason
     compose grew a stage that produces no certificate. There is only
-    ONE certificate here -- smeared_spectral's -- and both bills are
-    inside it. The kernel is not a second certificate to add on; it is
+    ONE certificate here, smeared_spectral's, and both bills are
+    inside it. The kernel is not a second certificate to add on. It is
     a choice that spends budget and shows up in somebody else's error.
     Declaring it that way is what lets the sample count be solved
     against what the kernel leaves, which is the whole plan."""
@@ -5803,22 +5815,22 @@ def gs_flux_dispatch(tol: float, c: float = 1.0, A: float = 0.4,
                      rho: float = 0.5, meshes=(8, 16, 32),
                      k_max: int = 12) -> Certified:
     """The first pipeline of two different rewrites under one budget.
-    The query: total poloidal flux of the coupled equilibrium whose
-    current profile is the full declared Legendre series -- a source
-    no solve ever sees exactly. Two rewrites answer it together:
+    The query is the total poloidal flux of the coupled equilibrium
+    whose current profile is the full declared Legendre series. No solve
+    ever sees that source exactly. Two rewrites answer it together.
     legendre_source_profile truncates the series at k terms and
-    certifies the dropped tail; gs_equilibrium_certified solves on a
+    certifies the dropped tail. gs_equilibrium_certified solves on a
     mesh of n cells and certifies its own discretization. The solve's
-    exported sensitivity is the exchange rate between them: total
+    exported sensitivity is the exchange rate between them, so total
     error = solve error + sensitivity * tail. One tolerance pays both,
-    so per mesh rung the leftover budget prices the truncation --
-    and because the tail curve is known in advance (orthogonality,
-    no solve needed), k follows by lookup, while the mesh bill is
-    only predicted (first-order decay from a pilot) and must be
-    re-certified by the run. Each rung costs n^3 + k; the planner
-    runs the cheapest promise; the composed certificate -- chained by
-    Certified.through, tier the weakest claim in the chain -- is the
-    referee."""
+    so per mesh rung the leftover budget prices the truncation. The
+    tail curve is known in advance, by orthogonality and with no solve
+    needed, so k follows by lookup. The mesh bill is only predicted,
+    by first-order decay from a pilot, and must be re-certified by the
+    run. Each rung costs n^3 + k, and the planner runs the cheapest
+    promise. The composed certificate is the referee. It is chained by
+    Certified.through, and its tier is the weakest claim in the
+    chain."""
     pilot_prof = legendre_source_profile(A, rho, 2)
     r0 = gs_equilibrium_certified(n=meshes[0], c=c,
                                   source_coeffs=tuple(pilot_prof.value))
@@ -5904,11 +5916,11 @@ def pole_correlator(A: float, rho: float, E0: float, dE: float,
     """A declared spectral model, truncated where you can afford to.
     The model is an infinite tower of poles: weight A*rho^k at energy
     E0 + k*dE, k = 0, 1, 2, ... Its Euclidean correlator is
-    C(t) = sum_k A rho^k exp(-(E0 + k dE) t). Keep the first K poles
-    and the dropped tail at each time is itself a geometric series --
-    exp(-E_k t) with E_k linear in k IS geometric in k -- so the
-    truncation error is not estimated, it is summed in closed form.
-    value is the truncated correlator on the grid t = 1..N; err is
+    C(t) = sum_k A rho^k exp(-(E0 + k dE) t). Keep the first K poles,
+    and the dropped tail at each time is itself a geometric series,
+    because exp(-E_k t) with E_k linear in k IS geometric in k. So the
+    truncation error is not estimated. It is summed in closed form.
+    value is the truncated correlator on the grid t = 1..N. err is
     the 2-norm of the exact tail over that grid, which is the norm
     the smearing certificate's exported sensitivity converts."""
     if not (0.0 < rho < 1.0 and dE >= 0.0):
@@ -5934,46 +5946,46 @@ def spectral_pipeline_dispatch(sample: Callable, cov1: Callable,
                                K_max: int = 64, m_max: int = 1 << 20,
                                z: float = 5.0) -> Certified:
     """A three-stage chain, with the last stage repricing the first.
-    The query: the smeared spectral value of the full declared pole
-    tower -- infinitely many states, so no finite correlator ever
-    holds them all. Three bills against one tolerance. The model
-    bill: truncate the tower at K poles, tail priced exactly by
-    pole_correlator. The statistics bill: measure the truncated
-    correlator m times through a noisy channel. The smearing bill:
+    The query is the smeared spectral value of the full declared pole
+    tower. There are infinitely many states, so no finite correlator
+    ever holds them all. Three bills go against one tolerance. The model
+    bill truncates the tower at K poles, with the tail priced exactly by
+    pole_correlator. The statistics bill measures the truncated
+    correlator m times through a noisy channel. The smearing bill is
     what the N-point kernel cannot resolve. The exchange rate between
     model error and answer error is the smearing certificate's
-    exported sensitivity, and that constant depends on N -- a
+    exported sensitivity, and that constant depends on N, because a
     different kernel is a different linear functional with a
-    different norm. So K is not a constant of the problem: every rung
+    different norm. So K is not a constant of the problem. Every rung
     of the resolution ladder reprices the model stage before it, and
     the same tail that fits one rung's budget can be over or under
     another's. That midstream repricing is what makes this a chain
     rather than three independent budgets.
 
     Per rung the split is closed-form. C(1) of the model is a
-    geometric sum, so the smearing bill needs no pilot; a tenth of
+    geometric sum, so the smearing bill needs no pilot. A tenth of
     the leftover prices the model tail, which is exponentially cheap,
-    so K grows only logarithmically; the rest buys samples by the
+    so K grows only logarithmically. The rest buys samples by the
     1/sqrt(m) law, aimed at 80% to absorb wobble. sample(C, m) must
-    return the m-sample noisy mean of the exact correlator C; cov1(N)
-    the single-sample covariance. Each rung costs N*m + K; the
-    planner runs the cheapest promise; the chained certificate --
-    model tail converted by Certified.through -- is the referee.
+    return the m-sample noisy mean of the exact correlator C, and
+    cov1(N) the single-sample covariance. Each rung costs N*m + K, and
+    the planner runs the cheapest promise. The chained certificate is
+    the referee, with the model tail converted by Certified.through.
 
     Wired through compose, and it is the plan that says why a stage
     may be a choice rather than a certificate. The kernel's grid is
     named by BOTH the model, whose tail is normed over t = 1..N, and
-    the measurement, whose smearing bill it sets -- one knob, two
-    consumers, and the memo keys both on it so changing the kernel
+    the measurement, whose smearing bill it sets. That is one knob with
+    two consumers, and the memo keys both on it, so changing the kernel
     recomputes both. The midstream repricing that makes this a chain
-    rather than three budgets is then nothing special: the model stage
+    rather than three budgets is then nothing special. The model stage
     solves against a budget that already has the kernel's bill taken
     out of it, so a different kernel hands it a different budget."""
     C1 = A * math.exp(-E0) / (1.0 - rho * math.exp(-dE))
 
     def rate(N):
         # mirrors smeared_spectral's exported sensitivity; drifting
-        # from it costs mis-priced rungs, never truth, because the run
+        # from it mis-prices rungs and cannot cost truth, because the run
         # converts the tail through the certificate's own bound
         g, c = _hlt_solve(N, omega, sigma)
         return math.hypot(c, float(np.linalg.norm(g)))
@@ -6036,32 +6048,32 @@ def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
     The other pipelines here are lines: one stage's answer becomes the
     next stage's input, and the sensitivity is the exchange rate that
     converts error along the line. This query has no line. It asks for
-    the energy gap of the n-atom hydrogen chain between two geometries
-    -- how much it costs to stretch the chain from d_near to d_far --
-    and that is a difference of two brackets that never see each
-    other. Errors add, with no exchange rate to convert; the only
+    the energy gap of the n-atom hydrogen chain between two geometries,
+    meaning how much it costs to stretch the chain from d_near to
+    d_far. That is a difference of two brackets which never see each
+    other. Errors add, with no exchange rate to convert. The only
     question is how to divide one tolerance between two independent
     branches.
 
     That division cannot be done by formula here. Every other
-    allocation in this library leans on something known before the run
-    -- a geometric tail summed exactly, a 1/sqrt(m) statistics law, a
-    first-order mesh decay fitted from a pilot -- and the h-chain
-    window ladder offers none of them: what a window of width ell
-    certifies is whatever the run measures. So the
-    allocation is a search. Every pair of window widths is a rung,
-    priced 4^ell_near + 4^ell_far, and the planner walks the product
-    ladder in cost order until a pair certifies. The certificates
-    arbitrate, exactly as along a line.
+    allocation in this library leans on something known before the run,
+    such as a geometric tail summed exactly, a 1/sqrt(m) statistics
+    law, or a first-order mesh decay fitted from a pilot. The h-chain
+    window ladder offers none of them. What a window of width ell
+    certifies is whatever the run measures. So the allocation is a
+    search. Every pair of window widths is a rung, priced
+    4^ell_near + 4^ell_far, and the planner walks the product ladder in
+    cost order until a pair certifies. The certificates arbitrate,
+    exactly as along a line.
 
-    Two things follow that a line does not show. Branches are shared,
-    so a memo makes the product ladder cost the SUM of the two
-    ladders, not their product -- escalating one branch reuses the
-    other. And the winning pair is asymmetric, because the branches
-    are not equally hard: the compressed chain delocalizes across all
-    n atoms and a window of ell misses more of that, while the
-    stretched chain is nearly decoupled and a window of the same ell
-    captures almost everything. Measured at n=6, the compressed
+    Two things follow that a line does not show. First, branches are
+    shared, so a memo makes the product ladder cost the SUM of the two
+    ladders rather than their product, because escalating one branch
+    reuses the other. Second, the winning pair is asymmetric, because
+    the branches are not equally hard. The compressed chain delocalizes
+    across all n atoms and a window of ell misses more of that, while
+    the stretched chain is nearly decoupled and a window of the same
+    ell captures almost everything. Measured at n=6, the compressed
     bracket is 3-4.3x the stretched one at equal ell, so the budget
     buys width where width is scarce. A single shared knob cannot say
     that."""
@@ -6080,9 +6092,9 @@ def h_chain_gap_dispatch(n: int, tol: float, d_near: float = 1.8,
 def keff_dispatch(rx: dict, tol_pcm: float, m_max: int = 40,
                   jump: bool = True) -> Certified:
     """k_eff for a reactor, certified to a tolerance stated the way the
-    field states it: in pcm, hundred-thousandths of k. The knob is the
-    number of fission-source iterations spent sharpening the trial
-    flux, and it is a ladder the planner can trust to be monotone,
+    field states it, in pcm, meaning hundred-thousandths of k. The knob
+    is the number of fission-source iterations spent sharpening the
+    trial flux. It is a ladder the planner can trust to be monotone,
     because the bracket provably NESTS. If A phi >= m phi then applying
     A to both sides preserves the inequality, since A >= 0, so the
     lower bound can only rise and the upper only fall. Nothing here can
@@ -6090,21 +6102,22 @@ def keff_dispatch(rx: dict, tol_pcm: float, m_max: int = 40,
 
     The ladder ends at a floor, not at a wall. Past some rung the
     sandwich is thinner than the certified error of the linear solve
-    inside it, and further iterations buy nothing; the refusal says so,
+    inside it, and further iterations buy nothing. The refusal says so,
     and prices the next move as precision rather than effort. Measured
-    on the default slab that floor is around 10^-6 pcm: a million
-    times below the 1 pcm the field argues about, and a million times
-    below the discretization error that separates this model from a
-    reactor. On this problem the certificate is never the weak link,
+    on the default slab that floor is around 10^-6 pcm. That is a
+    million times below the 1 pcm the field argues about, and a million
+    times below the discretization error that separates this model from
+    a reactor. On this problem the certificate is never the weak link,
     which is worth saying out loud, because a bound whose own limit
     nobody has looked for is a bound nobody knows the strength of.
 
     One rewrite, one knob, and deliberately no competitor. The obvious
-    rival is to hand the matrix to a dense eigensolver, and it is not a
+    rival is to hand the matrix to a dense eigensolver. That is not a
     rewrite this planner can race, because it returns an eigenvalue
-    without a bound and no cheap bound exists for a non-symmetric one.
+    without a bound, and no cheap bound exists for a non-symmetric
+    one.
     An entry with no certificate is not a cheaper answer to the same
-    question; it is an answer to a different one."""
+    question. It is an answer to a different one."""
     from scipy.linalg import lu_factor, lu_solve
     L, F = rx["L"], rx["F"]
     u = mmatrix_witness(L)
@@ -6138,27 +6151,27 @@ def keff_continuum_bracket(width: float = 70.0, Ns=(25, 50, 100, 200),
                            tol_pcm: float = 0.01, **xs) -> Certified:
     """The continuum answer, and the price of asking for it. Everything
     keff_bracket certifies is about a reactor made of finitely many
-    cells; the reactor itself has none, and the distance between the
+    cells. The reactor itself has none, and the distance between the
     two is the model's error, not the certificate's. This closes that
-    gap the only way it can be closed cheaply: refine the mesh, watch
+    gap the only way it can be closed cheaply. Refine the mesh, watch
     the answer move, and bound where it is going.
 
     Each rung is a rigorously certified discrete bracket, and the
     rungs are then fed to the same grid-convergence machinery the SPH
     sea-wall uses. Two errors compose. The distance from the finest
     mesh to h -> 0 is measured, not proven, so it arrives EMPIRICAL and
-    the composed answer inherits that; the finest rung's own half-width
+    the composed answer inherits that. The finest rung's own half-width
     is rigorous and simply adds. One precondition is checked rather
-    than hoped for: the discrete brackets must be far narrower than the
+    than hoped for. The discrete brackets must be far narrower than the
     differences between rungs, or the measured order is reading its own
     noise. Measured on the default ladder they are 0.7% of the
     smallest difference.
 
-    The result is worth staring at. The continuum certificate is
-    hundreds of times WIDER than the discrete one it is built from, and
-    a tier weaker. That is not a defect in either; it is the honest
+    The result is worth looking at closely. The continuum certificate
+    is hundreds of times WIDER than the discrete one it is built from,
+    and a tier weaker. That is not a defect in either. It is the honest
     exchange rate between a rigorous statement about a model and a
-    statistical one about the world, and the reason this library prints
+    statistical one about the world, and it is why this library prints
     both rather than quietly reporting the tighter number."""
     rungs = [keff_dispatch(slab_reactor(N=N, width=width, **xs), tol_pcm)
              for N in Ns]
@@ -6170,37 +6183,38 @@ def keff_continuum_bracket(width: float = 70.0, Ns=(25, 50, 100, 200),
 def junction_dispatch(dev: dict, volts: float, tol_nC: float,
                       m_max: int = 80, jump: bool = True) -> Certified:
     """The depletion charge of a junction, certified to a tolerance
-    stated in the unit a process engineer reads: nC/cm^2 of charge per
-    unit area, the quantity a capacitance-voltage measurement
-    integrates. The knob is the number of Newton steps.
+    stated in the unit a process engineer reads. That unit is nC/cm^2
+    of charge per unit area, the quantity a capacitance-voltage
+    measurement integrates. The knob is the number of Newton steps.
 
     This ladder has a shape none of the others has. Everywhere else in
     this library the error shrinks smoothly and the planner walks down
-    it. Here the early rungs return NOTHING -- not a loose bound, no
-    bound at all -- because Kantorovich either closes or does not, and
-    below the critical rung it does not. Then Newton's quadratic
-    convergence squares the residual each step and the certificate
-    appears at full strength in one rung.
+    it. Here the early rungs return NOTHING, not even a loose bound,
+    because Kantorovich either closes or does not, and below the
+    critical rung it does not. Then Newton's quadratic convergence
+    squares the residual each step, and the certificate appears at full
+    strength in one rung.
 
     The measured numbers on the default junction at 1 V are worth
     quoting, because they are the argument for doing any of this. The
-    last refusing rung has residual 1.3 * 10^-3; one Newton step later
-    the residual is 5 * 10^-6 and the certificate closes -- at 0.78
+    last refusing rung has residual 1.3 * 10^-3. One Newton step later
+    the residual is 5 * 10^-6 and the certificate closes, at 0.78
     nC/cm^2, which is half a per cent of the answer. Five parts in a
     million of residual buys half a per cent of charge. The gap is
     the inverse Jacobian, about 236 here, times the charge
     functional's own gradient, and neither is visible in the residual.
     A stopping rule written on the residual is guessing at that
-    product; one more step, and the certified error falls to 10^-5
+    product. One more step, and the certified error falls to 10^-5
     nC/cm^2.
 
     Why the discrete solution is unique is worth saying, since
     Kantorovich alone would only give uniqueness in a ball. The
     nonlinearity exp(psi - V) - exp(-psi) is strictly increasing, so
     the Jacobian is a Z-matrix with a strictly dominant diagonal
-    everywhere, not just at the answer -- a nonsingular M-matrix at
-    every potential. A strictly monotone operator has one root. The
-    enclosure is around the solution, not around a solution."""
+    everywhere, not just at the answer. That makes it a nonsingular
+    M-matrix at every potential. A strictly monotone operator has one
+    root. The enclosure is around the solution, not around a
+    solution."""
     knobs = tuple(range(1, m_max + 1))
 
     def run(m):

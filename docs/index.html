@@ -16,89 +16,70 @@
 </head>
 <body>
   <h1>Sufficit</h1>
-  <p class="sub"><em>A query compiler for physics: declare the model, the
-  question, and the tolerance — get an algorithm and a certificate.</em></p>
-  <p class="sub">The certificates are real, each from a rewrite built and
-  proved by hand. The search half is growing: a planner that selects and
-  escalates among competing rewrites by declared cost with the
-  certificate as referee, a composed plan that splits one error budget
-  between two stages priced by an exported sensitivity, and pipelines
-  of different rewrites chained by exported sensitivities — two stages
-  for the equilibrium solve, three for the smeared spectral value,
-  where each resolution rung reprices the model stage before it, and a
-  fan-in where one budget divides between two branches that never feed
-  each other and no formula predicts what either will certify. Those
-  four specified a combinator, which now exists: a plan is declared as
-  stages and one assemble function, each stage naming the stages it
-  consumes, so the object is a graph; stages that can solve for a knob
-  given a budget are solved and the rest are enumerated and walked
-  cheapest-first. All four are now wired through it, to the same knobs
-  and the same costs the hand-written versions chose, and the split
-  and the binding stage are derived rather than written down per front
-  door. Hand-rolling one again is not a matter of discipline: the
-  planner refuses a multi-dimensional knob it did not build, and the
-  build refuses a front door that switches that check off. The search
-  itself is closed by measurement rather than by code: three ways of
-  using the graph's shape instead of only its cost were built and
-  abandoned, all for the same reason, which is that the shared-node
-  memo already makes node computations linear in the graph, leaving
-  only assemblies to save, and assemblies are free arithmetic.</p>
+  <p class="sub"><em>A query compiler for physics. Declare the model, the
+  question, and the error you can tolerate. Get back a cheap computation
+  and a proof of how wrong it could be.</em></p>
+  <p class="sub">Every rewrite here was built and proved by hand, one per
+  problem. A planner chooses among competing rewrites by their declared
+  cost, and the certificate decides whether the answer is good enough. A
+  plan can also be built from stages, so one error budget is divided
+  across several steps. All four of the current plans work that way.</p>
   <ul>
-    <li><a href="explainer.html">The illustrated tour</a> — start here</li>
-    <li>Certified cases — the idea, the program rendered from the
-        module, and the result of running it, one page each:
+    <li><a href="explainer.html">The illustrated tour</a>. Start here.</li>
+    <li>Certified cases. Each page states the idea, shows the program
+        rendered from the module, and reports the result of running it.
       <ul>
-        <li><a href="cases/the-compiler.html">The planner</a> — one
-            question at three tolerances gets three algorithms; the
-            certificates, not the cost models, decide</li>
-        <li><a href="cases/the-budget.html">One budget, two bills</a> —
-            the first composed plan splits a tolerance between smearing
-            and statistics, priced by an exported sensitivity</li>
+        <li><a href="cases/the-compiler.html">The planner</a>. One question
+            at three tolerances gets three algorithms. The certificates
+            decide, not the cost models.</li>
+        <li><a href="cases/the-budget.html">One budget, two bills</a>. A
+            single tolerance is split between smearing and statistics,
+            priced by a sensitivity the certificate exports.</li>
         <li><a href="cases/criticality.html">A reactor is not
-            symmetric</a> — no minimum principle to overshoot, so
-            k<sub>eff</sub> is bracketed by positivity instead</li>
+            symmetric</a>. There is no minimum principle to overshoot, so
+            k<sub>eff</sub> is bracketed by positivity instead.</li>
         <li><a href="cases/junction.html">A small residual is not a small
-            error</a> — Kantorovich turns a stopped Newton iteration into
-            a proof that the solution exists, and a radius holding it</li>
-        <li><a href="cases/h2-bracket.html">The hydrogen molecule</a> —
-            a two-sided energy bracket, ±10⁻¹³ hartree</li>
+            error</a>. Kantorovich turns a stopped Newton iteration into a
+            proof that a solution exists, and a radius that contains it.</li>
+        <li><a href="cases/h2-bracket.html">The hydrogen molecule</a>. A
+            two-sided energy bracket, ±10⁻¹³ hartree.</li>
         <li><a href="cases/hchain-ladder.html">The window-length
-            ladder</a> — hydrogen-chain brackets at cost 4<sup>ℓ</sup>,
-            independent of chain length</li>
+            ladder</a>. Hydrogen-chain brackets at cost 4<sup>ℓ</sup>. The
+            chain length does not enter the cost.</li>
         <li><a href="cases/tfi-reduced-basis.html">A certified sweep
-            across a phase transition</a> — six solves, a hundred
-            certified points</li>
+            across a phase transition</a>. Six solves give a hundred
+            certified points.</li>
         <li><a href="cases/butterfly-crossover.html">The butterfly
-            crossover</a> — where the factorization starts to win,
-            measured</li>
-        <li><a href="cases/ising-cluster.html">The 2D Ising model</a> —
-            cluster expansions with interval arithmetic, refusing
-            outside their proven region</li>
+            crossover</a>. Where the factorization starts to win,
+            measured.</li>
+        <li><a href="cases/ising-cluster.html">The 2D Ising model</a>.
+            Cluster expansions in interval arithmetic, refusing outside
+            the region where they provably converge.</li>
         <li><a href="cases/smeared-spectral.html">Two peaks from
-            sixteen numbers</a> — smeared spectral functions, where
-            resolution costs certified error</li>
+            sixteen numbers</a>. Smeared spectral functions, where sharper
+            resolution costs certified error.</li>
         <li><a href="cases/mz-closure.html">Dropping the fast
-            variables</a> — Mori–Zwanzig closures priced by the
-            spectral gap</li>
+            variables</a>. Mori-Zwanzig closures priced by the spectral
+            gap.</li>
         <li><a href="cases/lr-dispatch.html">A light cone, measured at
-            its boundary</a> — quantum dynamics certified inside a
-            cone, refusing when outrun</li>
+            its boundary</a>. Quantum dynamics certified inside a cone,
+            refusing when the cone outruns the budget.</li>
         <li><a href="cases/plasma-hierarchy.html">The guiding-center
-            hierarchy</a> — the asymptotic tier: exponent proven,
-            constant measured</li>
-        <li><a href="cases/sos-transport.html">A bound on chaos</a> —
-            Lorenz time averages, proven over the rationals</li>
+            hierarchy</a>. The asymptotic tier: the exponent is proven and
+            the constant is measured.</li>
+        <li><a href="cases/sos-transport.html">A bound on chaos</a>.
+            Lorenz time averages, proven over the rationals.</li>
         <li><a href="cases/gw-surrogate.html">Waveform surrogates with
-            stated odds</a> — the detector's ε served by a conformal
-            certificate</li>
+            stated odds</a>. A conformal certificate serves the tolerance
+            the detector can distinguish.</li>
         <li><a href="cases/sph-wall.html">A breaking wave against a sea
-            wall</a> — the impulse certifies, the peak refuses, and a
-            berm provably shields</li>
-        <li><a href="cases/gs-equilibrium.html">A tokamak
-            equilibrium with a guaranteed error bound</a> — FEniCSx
-            proposes, Prager–Synge decides; and where a real pressure
-            profile puts that certificate out of reach, an existence
-            proof takes over</li>
+            wall</a>. The impulse certifies, the peak refuses, and a berm
+            provably shields.</li>
+        <li><a href="cases/gs-equilibrium.html">A tokamak equilibrium
+            with a guaranteed error bound</a>. FEniCSx proposes and
+            Prager-Synge decides. A real pressure profile puts that
+            certificate out of reach, and an existence proof takes
+            over.</li>
       </ul>
     </li>
     <li><a href="https://github.com/GlassOnTin/sufficit">Source on GitHub</a></li>
