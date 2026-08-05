@@ -242,7 +242,31 @@ involved.
    still returning something plausible, and it showed up as coverage of zero
    and, oddly, tighter noise refusing MORE often. Reading the docstring would
    never have found it, because the docstring described the correct rule.
-3. **A finite-size ladder.** `continuum_limit` already does this shape.
+3. **A finite-size ladder. DONE**, and it turned out to be a transfer rather
+   than a build. A ladder of certified values at decreasing 1/N is the same
+   object as a ladder at decreasing mesh spacing, so `continuum_limit` reads
+   it with no change at all: the function that lifts a reactor off its mesh
+   and a junction off its grid lifts a molecular simulation off its box size.
+   That is the flywheel claim doing work rather than being asserted.
+
+   The finite-size parameter is 1/N rather than 1/L on purpose. The leading
+   correction goes as 1/N, so in that variable the formal order is 1 and sits
+   under the cap `gci_extrapolate` applies. In 1/L the same correction is
+   third order and would be capped to 2, which only loosens the bound but
+   reports an order the physics does not have. The ladder has to be geometric
+   because Roache's method needs a fixed refinement ratio, and each rung is
+   eight times the molecules, which is what doubling a box costs.
+
+   Gated on a synthetic ladder with the infinite-size limit known by
+   construction. It reads the ladder and contains that limit, and the refusal
+   boundary is exactly the factor-of-ten precondition: the closest pair of
+   rungs differ by 1.1e-4, so it wants a statistical half-width below 1.1e-5,
+   and at a per-frame noise of 1e-4 the half-width is 6.9e-6 and it reads
+   while at 3e-4 it is 2.1e-5 and it refuses.
+
+   That boundary is where the real difficulty of this whole challenge sits.
+   In a molecular simulation the sampling error and the finite-size shift are
+   routinely the same size, and when they are, no extrapolation is honest.
 4. **An untrusted molecular-dynamics engine.** OpenMM proposes, we certify, on
    the same line every other engine here sits on.
 5. **The query end to end**, against a model whose maximum-density temperature

@@ -4388,3 +4388,57 @@ def test_argmax_bracket_width_costs_the_square_of_the_precision():
     assert wide.err / tight.err < 4.0        # not linear in the sampling
     for c in (wide, tight):
         assert c.value - c.err <= 3.98 <= c.value + c.err
+
+
+def _box_ladder(sigma, seed, vinf=0.997047, c=0.064, ns=(64, 512, 4096),
+                nsamp=20_000):
+    """A synthetic finite-size ladder, v(N) = v_inf + c/N, which is the
+    usual leading correction for a periodic box, sampled through
+    correlated series. v_inf is known by construction."""
+    rungs = [sf.timeseries_mean(
+        vinf + c / n + sigma * _ar1(nsamp, 0.8, 0.0, seed * 50 + i))
+        for i, n in enumerate(ns)]
+    return rungs, [1.0 / n for n in ns], vinf
+
+
+def test_finite_size_ladder_transfers_to_continuum_limit():
+    """Block 3 of the water challenge, and it turned out to be a
+    transfer rather than a build. A ladder of certified values at
+    decreasing 1/N is the same object as a ladder at decreasing mesh
+    spacing, so `continuum_limit` reads it with no change at all: the
+    function that lifts a reactor off its mesh and a junction off its
+    grid lifts a molecular simulation off its box size.
+
+    The finite-size parameter is 1/N rather than 1/L on purpose. The
+    leading correction goes as 1/N, so in that variable the formal order
+    is 1, which sits under the order cap gci_extrapolate applies. In 1/L
+    the same correction is third order and would be capped to 2, which
+    only loosens the bound but reports an order the physics does not
+    have. The ladder is geometric because Roache's method needs a fixed
+    refinement ratio, and each rung here is eight times the molecules,
+    which is what doubling a box costs."""
+    rungs, hs, vinf = _box_ladder(1e-4, 0)
+    c = sf.continuum_limit(rungs, hs, "finite-size ladder")
+    assert c.value - c.err <= vinf <= c.value + c.err
+    assert c.tier == sf.Tier.EMPIRICAL          # it was already empirical
+    assert c.fail_p >= 0.05                     # union bound over the rungs
+    assert "finite-size ladder" in c.provenance[-1]
+
+
+def test_finite_size_ladder_refuses_when_sampling_swamps_it():
+    """The precondition is the whole value of the thing. A measured
+    convergence order is a ratio of differences between rungs, so if the
+    rungs' own error bars are comparable to those differences the order
+    is fitted to sampling noise and the extrapolation is fiction.
+
+    Measured on this ladder the closest pair of rungs differ by 1.1e-4,
+    so the factor-of-ten rule wants a statistical half-width below
+    1.1e-5. At a per-frame noise of 1e-4 the half-width is 6.9e-6 and it
+    reads; at 3e-4 it is 2.1e-5 and it refuses. That boundary is where
+    the real difficulty of this whole challenge sits, because in a
+    molecular simulation the sampling error and the finite-size shift
+    are routinely the same size."""
+    for sigma in (3e-4, 1e-3):
+        rungs, hs, _ = _box_ladder(sigma, 1)
+        with pytest.raises(ValueError, match="cannot be read"):
+            sf.continuum_limit(rungs, hs, "finite-size ladder")
