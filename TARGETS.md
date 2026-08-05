@@ -144,6 +144,76 @@ variational scaffolding. Certificate outlook: variational bounds on kinetics,
 statistical on sampling, declared-empirical on the model itself. Ecosystem
 hooks: OpenMM, deeptime, pymbar.
 
+### The standing challenge: water's density maximum
+
+The named goal for this column is to certify the temperature of maximum
+density of a declared water model. Water is densest at about 3.98 °C at one
+atmosphere, because the collapse of the open tetrahedral hydrogen-bonded
+network competes with ordinary thermal expansion, and below that temperature
+the collapse wins. It is the sharpest test of a force field anyone routinely
+runs, and it is a good target here for three separate reasons.
+
+It punishes the model specifically. Rigid three-site models miss the maximum by
+tens of kelvin, and TIP3P has no maximum in the liquid range at all.
+TIP4P/2005 and TIP5P land within a degree or two, on the same functional form
+and at the same cost. Getting the density right at 25 °C tells you almost
+nothing about whether a model will do this.
+
+It is a sampling problem before it is a physics problem. Between 0 and 4 °C the
+density moves by about one part in ten thousand, so the statistical error on an
+NPT average has to sit well below that before the question can even be asked.
+
+And the query is a stationary point, not a value, which changes what has to be
+certified. Locating a maximum means certifying an ORDERING: rho(T1) < rho(T2) >
+rho(T3), with the certified intervals disjoint enough that the ordering is
+forced. The precision needed is set by the curvature of rho(T) near the peak
+rather than by any tolerance stated up front, and precision at the peak trades
+against width in T. That is a well-posed query in this library's terms and a
+better-behaved one than asking for the density itself.
+
+The error budget splits three ways and only two of them are ours. Statistical
+error from finite sampling is certifiable, at the empirical tier, with a
+printed failure probability. Finite-size error is a system-size ladder read by
+the same grid-convergence machinery the reactor, the junction and the tokamak
+already share, so it is an archetype transfer rather than new work. Force-field
+error is neither, and it dominates both by orders of magnitude. So the
+achievable claim is "the maximum-density temperature of TIP4P/2005 is 278 +- 2
+K", and the unachievable one is "the maximum-density temperature of water is
+277.13 K". The gap between those two sentences is exactly what the tier system
+exists to declare rather than hide, and here it is tens of kelvin wide
+depending on which model was declared.
+
+The blocks, cheapest and most reusable first. The first two need no molecular
+dynamics and no new dependency, and both can be gated against a truth known by
+construction, so the certification machinery gets tested before an engine is
+involved.
+
+1. **A certified mean of a correlated time series.** The bottleneck, and needed
+   by every molecular-dynamics observable rather than just this one. An NPT
+   average is over autocorrelated samples, so bounding it needs an effective
+   sample size and a statement that survives correlation. Rigorously that wants
+   a spectral gap nobody will have, so it lands at the empirical tier with a
+   declared stationarity assumption. The interesting part is the refusal:
+   estimate the integrated autocorrelation time on a ladder of batch sizes, and
+   if it has not plateaued the series is too short to bound the mean at all.
+   That is the same refusal the sea wall makes when a resolution ladder shows
+   no asymptotic range. Gate: an AR(1) process with a known mean, coverage
+   measured over replicas.
+2. **A certified stationary point.** The ordering argument above, composed from
+   three certified means. Gate: a synthetic rho(T) with a maximum put in by
+   hand.
+3. **A finite-size ladder.** `continuum_limit` already does this shape.
+4. **An untrusted molecular-dynamics engine.** OpenMM proposes, we certify, on
+   the same line every other engine here sits on.
+5. **The query end to end**, against a model whose maximum-density temperature
+   is published.
+
+The model temperatures quoted above are recollection and are not gated. This
+project has been bitten both ways in one sitting: the STO-3G exponents were
+recalled correctly and passed their gate, and the N2 energy was recalled
+correctly while the code around it was wrong. Nothing here should be repeated
+as measured until it has been run.
+
 ## Quantum dynamics and near-term quantum hardware
 
 The query with commercial teeth is dispatch. Given a circuit, an observable, a
