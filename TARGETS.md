@@ -79,8 +79,10 @@ The lower half of that pair now exists. The 2-positivity relaxation is
 solved and certified in `rdm2_energy_bracket`, and spin blocking carries it to
 H₁₄, which is 2²⁸ Fock states and well past the point where the Hamiltonian
 can be formed. It certifies the N-electron sector rather than the whole Fock space,
-which is a narrower claim than the bracket beside it, and the upper half is
-still a single determinant.
+which is a narrower claim than the bracket beside it. Its upper half is the
+window ladder's variational trial state, so the sandwich is assembled from two
+proofs that know nothing about each other, and the planner races the pair
+against the window alone.
 
 The compiler's addition is replacing the folklore method ladder with
 per-system, per-query selection of thresholds and rewrites against a composed

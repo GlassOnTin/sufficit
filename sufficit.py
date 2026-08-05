@@ -3120,14 +3120,23 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                                     upper -= 0.5 * g \
                                         * gA[2 * ip + sp, 2 * is2 + sq] \
                                         * gB[2 * iq + sq, 2 * ir + sp]
-        return upper
+        # the trial state's electron count, so a caller pairing this
+        # upper half with a fixed-N lower bound can check rather than
+        # assume that the two are talking about the same sector. Each
+        # block ground state is taken over its whole Fock space, so half
+        # filling is a measured property of these integrals and not a
+        # theorem.
+        nel = sum(float(np.trace(gammas[bi])) for bi in range(len(blocks)))
+        return upper, nel
 
-    upper = min(product_upper(s)
-                for s in _block_tilings(n, ell, merge_lone=False))
+    upper, nelec = min((product_upper(s)
+                        for s in _block_tilings(n, ell, merge_lone=False)),
+                       key=lambda t: t[0])
     return Certified(0.5 * (upper + lower), 0.5 * (upper - lower),
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
-                      f"iters={correction_iters} block-product-upper",))
+                      f"iters={correction_iters} block-product-upper "
+                      f"upper-nelec={nelec:.6f}",))
 
 
 # --------------------------------------------- the 2-RDM lower bound. The
@@ -3501,27 +3510,12 @@ def _rdm2_determinant_upper(h, eri, N):
                  - e[d[:, None], d[None, :], d[None, :], d[:, None]].sum())
 
 
-def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
-                        upper: float = None, eps: float = 1e-8,
-                        max_iters: int = 100_000) -> Certified:
-    """Certified bracket on the ground energy of the N-electron sector,
-    with the lower half from the 2-positivity relaxation of the 2-RDM.
+def _rdm2_lower(h, eri, N, enuc, eps, max_iters):
+    """The lower half on its own, returned as (bound, provenance).
 
-    h and eri are spatial-orbital integrals in an ORTHONORMAL basis, eri
-    in chemists' (pq|rs). The claim is about those matrices exactly as
-    stored, which is the same declaration the eigenvalue brackets make.
-
-    Two things separate this from the window ladder, and both are worth
-    stating. Its cost is polynomial in orbitals rather than exponential
-    in states. And it certifies the N-electron sector rather than the
-    whole Fock space, which is a narrower question, so the two rewrites
-    do not bracket quite the same number. Where the global ground state
-    is known to carry N electrons the two agree, and knowing that is a
-    separate claim this function does not make.
-
-    The upper half is a single determinant unless the caller supplies a
-    better one, and it is usually the loose side by a wide margin.
-    """
+    It is separate because it does not depend on whatever upper bound it
+    will be paired with, so a caller that tries several upper bounds
+    pays for the semidefinite program once."""
     h = np.asarray(h, float)
     eri = np.asarray(eri, float)
     hs, g = _rdm2_spin_block(h, eri)
@@ -3551,19 +3545,100 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
         mu = lo if mu is None else min(mu, lo)
     lower = (mu - padW) * T + c0 - padc + enuc
 
+    blocks = "+".join(str(m) for _, m in mp["dl"]["sizes"] if m)
+    return lower, (f"rdm2-DQG N={N} nso={nso} D-blocks={blocks} "
+                   f"scs={status} shift={max(shifts):.1e} "
+                   f"pad=({padW:.1e},{padc:.1e}) +fp")
+
+
+def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
+                        upper: float = None, eps: float = 1e-8,
+                        max_iters: int = 100_000,
+                        lower: Tuple[float, str] = None) -> Certified:
+    """Certified bracket on the ground energy of the N-electron sector,
+    with the lower half from the 2-positivity relaxation of the 2-RDM.
+
+    h and eri are spatial-orbital integrals in an ORTHONORMAL basis, eri
+    in chemists' (pq|rs). The claim is about those matrices exactly as
+    stored, which is the same declaration the eigenvalue brackets make.
+
+    Two things separate this from the window ladder, and both are worth
+    stating. Its cost is polynomial in orbitals rather than exponential
+    in states. And it certifies the N-electron sector rather than the
+    whole Fock space, which is a narrower question, so the two rewrites
+    do not bracket quite the same number. Where the global ground state
+    is known to carry N electrons the two agree, and knowing that is a
+    separate claim this function does not make.
+
+    The upper half is a single determinant unless the caller supplies a
+    better one, and it is usually the loose side by a wide margin. Pass
+    lower to reuse a bound _rdm2_lower already computed, which is what a
+    planner racing several upper bounds against one lower does.
+    """
+    lo, prov = _rdm2_lower(h, eri, N, enuc, eps, max_iters) \
+        if lower is None else lower
     up = _rdm2_determinant_upper(h, eri, N) + enuc if upper is None \
         else float(upper)
-    if up < lower:
+    if up < lo:
         raise ValueError(
-            f"2-RDM lower bound {lower:.9f} exceeds the upper bound "
+            f"2-RDM lower bound {lo:.9f} exceeds the upper bound "
             f"{up:.9f}; the upper bound is not variational for N={N}")
-    blocks = "+".join(str(m) for _, m in mp["dl"]["sizes"] if m)
-    return Certified(0.5 * (up + lower), 0.5 * (up - lower), Tier.RIGOROUS,
-                     (f"rdm2-DQG N={N} nso={nso} D-blocks={blocks} "
-                      f"scs={status} shift={max(shifts):.1e} "
-                      f"pad=({padW:.1e},{padc:.1e}) "
-                      f"{'determinant' if upper is None else 'given'}-upper "
-                      "+fp",))
+    return Certified(0.5 * (up + lo), 0.5 * (up - lo), Tier.RIGOROUS,
+                     (prov + " "
+                      + ("determinant" if upper is None else "given")
+                      + "-upper",))
+
+
+def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
+                         eps: float = 1e-8,
+                         max_iters: int = 100_000,
+                         window: Certified = None,
+                         lower: Tuple[float, str] = None) -> Certified:
+    """The two halves of one bracket, from two unrelated proofs.
+
+    The upper half is the window ladder's product of block ground
+    states, which is a variational trial state. The lower half is the
+    2-positivity relaxation of the 2-RDM. That is the sandwich the
+    chemistry column of TARGETS describes, and neither half knows the
+    other exists.
+
+    The halves have to be talking about the same sector or the sandwich
+    is not one. The 2-RDM bound is about the N-electron sector, and the
+    window's trial state is a product of block ground states taken over
+    each block's whole Fock space, so its electron count is whatever the
+    blocks prefer. Measured on hydrogen chains at d = 1.8 every block
+    comes out exactly half filled, but that is a property of these
+    integrals rather than a theorem, so it is read off the window
+    certificate and checked here. A mismatch refuses.
+
+    The window's own lower half bounds the ground energy over all
+    sectors, which also bounds the N-electron one, so the two lower
+    bounds intersect and the tighter is kept.
+    """
+    win = h_chain_bracket(n, d, ell) if window is None else window
+    tag = "upper-nelec="
+    prov = win.provenance[0]
+    if tag not in prov:
+        raise ValueError("the window certificate does not report its "
+                         "trial state's electron count")
+    nelec = float(prov[prov.index(tag) + len(tag):].split()[0])
+    if abs(nelec - n) > 1e-6:
+        raise ValueError(
+            f"the window trial state holds {nelec:.6f} electrons, not "
+            f"{n}, so its energy does not bound the {n}-electron sector")
+
+    T, V, eri, enuc = _h_chain_basis(n, d)
+    up = win.value + win.err
+    c = rdm2_energy_bracket(T + V.sum(0), eri, n, enuc, upper=up,
+                            eps=eps, max_iters=max_iters, lower=lower)
+    lower = max(c.value - c.err, win.value - win.err)
+    binding = "2rdm" if c.value - c.err >= win.value - win.err else "window"
+    return Certified(0.5 * (up + lower), 0.5 * (up - lower),
+                     min(win.tier, c.tier),
+                     win.provenance + c.provenance
+                     + (f"intersect-lower binding={binding}",),
+                     min(1.0, win.fail_p + c.fail_p))
+
 
 # --------------------------------------------- certified reduced bases /
 # eigenvector continuation. For AFFINE operator families
@@ -6151,25 +6226,81 @@ def heisenberg_energy_dispatch(N: int, tol: float,
 
 def h_chain_energy_dispatch(n: int, tol: float, d: float = 1.8,
                             ell_max: int = 5,
-                            jump: bool = True) -> Certified:
-    """Ground-energy bracket for the n-atom hydrogen chain, certified
-    so the half-width per atom meets tol. One rewrite, one knob: the
-    window length ell, at cost 4^ell. This is quantum chemistry's
-    folklore method ladder -- run a cheap method, distrust it, run a
-    dearer one -- replaced by a declared ladder the planner climbs, or
-    jumps, until a certificate says stop. Returns the total-energy
-    bracket with the plan trace."""
+                            jump: bool = True,
+                            rdm2: bool = True) -> Certified:
+    """Ground-energy bracket for the n-atom hydrogen chain, certified so
+    the half-width per atom meets tol. Two rewrites race here.
+
+    The window ladder answers with one knob, the window length ell, at
+    cost 4^ell. That is quantum chemistry's folklore method ladder, run
+    a cheap method and distrust it and run a dearer one, replaced by a
+    declared ladder the planner climbs or jumps until a certificate says
+    stop.
+
+    The second rewrite keeps that ladder's upper half and replaces its
+    lower half with the 2-positivity relaxation of the 2-RDM. Neither
+    half knows the other exists, which is the variational sandwich the
+    chemistry column of TARGETS asks for. The trade is real in both
+    directions. The 2-RDM lower bound stops depending on ell, so it is
+    computed once and every later rung buys only a better upper bound,
+    but the semidefinite program costs more than several window rungs at
+    small n. Measured at n=6: the bracket at ell=2 goes from 387 mHa per
+    atom to 25, and at ell=4 from 44 to 14, while the program itself
+    costs about as much as ell=7 would.
+
+    So the cheap window rungs run first and the pair only gets its turn
+    when they have all failed, which is the cost model doing its job.
+    Certificates still decide. The lower halves intersect, since the
+    window bounds the ground energy over all sectors and the 2-RDM
+    bounds the N-electron one, and the tighter of the two is kept.
+    """
     tol_total = tol * n
     ells = tuple(range(2, min(n - 1, ell_max) + 1))
+    win_memo, rdm_memo = {}, {}
+
+    def window_at(ell):
+        if ell not in win_memo:
+            win_memo[ell] = h_chain_bracket(n, d, ell)
+        return win_memo[ell]
 
     def beyond():
         nxt = ells[-1] + 1
         return (f"the next window ell={nxt} costs 4^{nxt} = {4 ** nxt} "
                 f"and is past the declared ladder (ell_max={ell_max})")
 
-    rw = Rewrite("window", ells, lambda ell: 4.0 ** ell,
-                 lambda ell: h_chain_bracket(n, d, ell), beyond)
-    return plan("hchain-energy", tol_total, [rw], jump=jump,
+    rewrites = [Rewrite("window", ells, lambda ell: 4.0 ** ell,
+                        window_at, beyond)]
+
+    if rdm2 and ells:
+        # The semidefinite program is priced 13 n^4 in the window's own
+        # currency of 4^ell. Exponent and constant are both measured, on
+        # the chains n = 8 to 14 where the fixed overheads have washed
+        # out, and like every cost model here it only orders the
+        # attempts. Only the first rung is charged for it, because the
+        # lower half does not depend on ell and is computed once. Both
+        # rewrites also share the window memo, so a rung the other
+        # already ran measures as nearly free, exactly the state
+        # dependence the compiler page reports.
+        sdp_price = 13.0 * n ** 4
+
+        def paired_cost(ell):
+            return 4.0 ** ell + (sdp_price if ell == ells[0] else 0.0)
+
+        def paired(ell):
+            if "lower" not in rdm_memo:
+                try:
+                    T, V, eri, enuc = _h_chain_basis(n, d)
+                    rdm_memo["lower"] = _rdm2_lower(T + V.sum(0), eri, n,
+                                                    enuc, 1e-8, 100_000)
+                except ImportError as exc:
+                    raise ValueError(
+                        f"the 2-RDM rung needs cvxpy and scs: {exc}")
+            return h_chain_rdm2_bracket(n, d, ell, window=window_at(ell),
+                                        lower=rdm_memo["lower"])
+
+        rewrites.append(Rewrite("window+2rdm", ells, paired_cost, paired))
+
+    return plan("hchain-energy", tol_total, rewrites, jump=jump,
                 context=f"n={n}")
 
 

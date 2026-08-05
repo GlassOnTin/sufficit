@@ -3947,3 +3947,64 @@ def test_rdm2_spin_blocking_keeps_the_bound_and_cuts_the_cost():
     assert lo <= truth
     assert abs(lo - (-2.177661152)) < 1e-5      # unblocked, to solver tol
     assert "D-blocks=6+16+6" in c.provenance[0]
+
+
+def test_rdm2_pairing_tightens_the_window_bracket():
+    """Two proofs, one bracket. The upper half is the window ladder's
+    product of block ground states, which is variational; the lower half
+    is the 2-positivity relaxation, which knows nothing about it. The
+    pair has to keep the upper half exactly, contain the truth, and be
+    substantially tighter than either alone, or there was no point
+    pairing them. Measured at H4 with ell=3 the half-width per atom goes
+    from 44.9 mHa to 18.7."""
+    truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
+    w = sf.h_chain_bracket(4, 1.8, 3)
+    c = sf.h_chain_rdm2_bracket(4, 1.8, 3)
+    assert c.value - c.err <= truth <= c.value + c.err
+    assert c.value + c.err == pytest.approx(w.value + w.err, abs=1e-12)
+    assert c.err < 0.5 * w.err
+    assert c.tier == sf.Tier.RIGOROUS and "binding=2rdm" in c.provenance[-1]
+
+
+def test_rdm2_pairing_refuses_a_trial_state_in_the_wrong_sector():
+    """The halves must be about the same sector. The 2-RDM bound is for
+    N electrons, and the window's trial state is a product of block
+    ground states taken over each block's whole Fock space, so its
+    electron count is whatever the blocks prefer. On these integrals
+    every block comes out half filled, which is measured rather than
+    proven, so the count is carried on the window certificate and
+    checked. Hand the pairing a certificate claiming a different count
+    and it must refuse instead of returning a bracket that brackets
+    nothing."""
+    w = sf.h_chain_bracket(4, 1.8, 3)
+    assert "upper-nelec=4.000000" in w.provenance[0]
+    bad = sf.replace(w, provenance=(w.provenance[0].replace(
+        "upper-nelec=4.000000", "upper-nelec=3.000000"),))
+    with pytest.raises(ValueError, match="electrons"):
+        sf.h_chain_rdm2_bracket(4, 1.8, 3, window=bad)
+
+
+def test_hchain_dispatch_races_the_window_against_the_2rdm():
+    """The second real competition in this library, and the first since
+    the Heisenberg front door. The window ladder is cheap and its lower
+    half is loose; the pair costs a semidefinite program and is much
+    tighter. The cost model must therefore spend nothing on the SDP
+    while the cheap rewrite still meets the tolerance, and must reach
+    for it once the window has run out of ladder. Both ends are pinned
+    here, and so is the refusal past both."""
+    loose = sf.h_chain_energy_dispatch(4, tol=0.05)
+    assert "chose window@" in loose.provenance[-1]
+    assert all(r[0] == "window" for r in loose.receipt)
+
+    tight = sf.h_chain_energy_dispatch(4, tol=0.03)
+    assert "chose window+2rdm@" in tight.provenance[-1]
+    assert tight.err / 4 <= 0.03
+    truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
+    assert tight.value - tight.err <= truth <= tight.value + tight.err
+    # the window rungs ran first and were rejected, which is the cost
+    # model ordering the attempts and the certificates deciding
+    names = [r[0] for r in tight.receipt]
+    assert names.index("window") < names.index("window+2rdm")
+
+    with pytest.raises(sf.Refusal):
+        sf.h_chain_energy_dispatch(4, tol=0.005)
