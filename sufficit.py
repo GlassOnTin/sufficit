@@ -1246,6 +1246,149 @@ def conformal_closure(traj_full, traj_red, sampler, x_new,
                      fail_p=1.0 / (n_cal + 1))
 
 
+# ------------------------------------------------ correlated sampling.
+# Every molecular-dynamics observable is an average over a trajectory,
+# and consecutive frames are not independent. So the honest count is not
+# how many samples there are but how many independent ones they are
+# worth, and a bound on the mean needs that number before it needs
+# anything else.
+#
+# Rigorously this wants a concentration inequality for the underlying
+# Markov chain, which needs a spectral gap nobody sampling a liquid is
+# going to have. So the tier is EMPIRICAL and the assumption is stated:
+# the series is stationary, and the batch means are close enough to
+# normal for a t interval. What is NOT assumed is that the samples are
+# independent, which is the usual quiet mistake.
+#
+# The interesting part is the refusal. The integrated autocorrelation
+# time is estimated on a ladder of batch sizes, and it only stops
+# growing once the batches are long compared with the correlation. If it
+# is still climbing at the longest batch the series can afford, the
+# series is too short to bound the mean at all, and saying so is the
+# answer. That is the same refusal the sea wall makes when a resolution
+# ladder shows no asymptotic range.
+
+
+def timeseries_mean(x, tol: float = None, alpha: float = 0.05,
+                    min_batches: int = 32, plateau: float = 1.15,
+                    rungs: int = 3, batch_factor: float = 10.0) -> Certified:
+    """Certified mean of a stationary, correlated time series.
+
+    x is a one-dimensional sequence of samples in trajectory order, and
+    the order matters: shuffling it would destroy the only evidence
+    there is about how correlated it is.
+
+    The half-width is a t interval on non-overlapping batch means, so
+    fail_p is alpha under the stated assumptions. min_batches sets how
+    many batches the interval is built from, which is what makes the t
+    quantile meaningful. plateau is how much the estimated
+    autocorrelation time is allowed to still be growing across the top
+    rungs of the batch ladder before the series is judged too short.
+
+    Raises when the ladder has not plateaued, and prices it in the only
+    currency that helps: how many samples would be needed. Raises the
+    same way if tol is given and the achieved half-width misses it,
+    which is what eigen_bracket does with its own tol.
+    """
+    x = np.asarray(x, float).ravel()
+    n = len(x)
+    if n < 4 * min_batches:
+        raise ValueError(
+            f"timeseries-mean: the series has {n} samples and the "
+            f"interval is built from {min_batches} batches, so it needs "
+            f"at least {4 * min_batches}")
+
+    mean = float(np.mean(x))
+    var = float(np.var(x, ddof=1))
+    if var == 0.0:
+        return Certified(mean, 0.0, Tier.EMPIRICAL,
+                         (f"timeseries-mean n={n} constant-series",),
+                         fail_p=0.0)
+
+    # batch ladder, longest batch first, keeping only sizes that still
+    # leave min_batches of them
+    sizes = []
+    b = n // min_batches
+    while b >= 1 and len(sizes) < 8:
+        sizes.append(b)
+        b //= 2
+    if len(sizes) < rungs:
+        raise ValueError(
+            f"timeseries-mean: only {len(sizes)} batch sizes fit in {n} "
+            f"samples, and the plateau test needs {rungs}")
+
+    taus, stats = [], {}
+    for b in sizes:
+        m = n // b
+        bm = x[:m * b].reshape(m, b).mean(axis=1)
+        s2 = float(np.var(bm, ddof=1))
+        taus.append(b * s2 / var)
+        stats[b] = (m, s2)
+
+    # taus[0] is the longest batch. It has stopped growing when the
+    # longest batches agree with each other
+    top = [t for t in taus[:rungs] if t > 0]
+    if len(top) < rungs:
+        raise ValueError(
+            "timeseries-mean: a batch-mean variance came out "
+            "non-positive, so the autocorrelation time cannot be "
+            "estimated")
+    # tau estimates are noisy: with m batches the relative standard
+    # deviation of a batch variance is about sqrt(2/(m-1)), so a fixed
+    # ratio tolerance fires on noise rather than on growth. Measured, a
+    # flat 1.35 refused a quarter of INDEPENDENT series. The threshold
+    # therefore carries the noise of the two rungs being compared.
+    b = sizes[0]
+    ms = [n // bb for bb in sizes[:rungs]]
+    noise = math.sqrt(sum(2.0 / max(m - 1, 1) for m in (ms[0], ms[-1])))
+    allow = plateau * (1.0 + 2.0 * noise)
+    ratio = max(top) / min(top)
+    tau = float(taus[0])
+    if ratio > allow:
+        need = int(math.ceil(min_batches * 20 * max(tau, 1.0)))
+        raise ValueError(
+            f"timeseries-mean: the autocorrelation time is still growing "
+            f"across the top {rungs} batch sizes, by {ratio:.2f}x against "
+            f"a tolerance of {allow:.2f}, so the batches are not yet "
+            f"independent and the mean cannot be bounded. Estimated "
+            f"tau={tau:.1f}, so about {need:,} samples would be needed "
+            f"against {n:,} in hand")
+
+    # The plateau test is only a proxy for what actually matters, which
+    # is that a batch is long compared with the correlation time. Say it
+    # directly as well. Measured on AR(1) at phi=0.99, where the longest
+    # affordable batch is about 3 tau, the plateau test let 64% of series
+    # through and those covered 0.901 against a nominal 0.95. Requiring
+    # ten correlation times per batch removes that regime.
+    if b < batch_factor * tau:
+        need = int(math.ceil(min_batches * batch_factor * max(tau, 1.0)))
+        raise ValueError(
+            f"timeseries-mean: the longest affordable batch is {b} "
+            f"samples against an estimated correlation time of "
+            f"{tau:.1f}, which is {b / max(tau, 1e-12):.1f} correlation "
+            f"times and short of the {batch_factor:g} this asks for, so "
+            f"the batches are not independent enough to bound the mean. "
+            f"About {need:,} samples would be needed against {n:,} in "
+            f"hand")
+
+    from scipy.stats import t as _student
+    m, s2 = stats[b]
+    half = float(_student.ppf(1.0 - alpha / 2.0, m - 1)) \
+        * math.sqrt(s2 / m)
+    if tol is not None and half > tol:
+        need = int(math.ceil(n * (half / tol) ** 2))
+        raise ValueError(
+            f"timeseries-mean: half-width {half:.4g} exceeds tol={tol:g}; "
+            f"the interval narrows as 1/sqrt(n), so about {need:,} "
+            f"samples would be needed against {n:,} in hand")
+    return Certified(mean, half, Tier.EMPIRICAL,
+                     (f"timeseries-mean n={n} batches={m}x{b} "
+                      f"tau={tau:.2f} ess={n / max(tau, 1.0):.0f} "
+                      f"plateau={ratio:.2f} alpha={alpha:g}",),
+                     fail_p=alpha)
+
+
+
 def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
                    targets=(), tol: float = None):
     """Phase 4 rewrite: automatic slow-variable identification. Greedy

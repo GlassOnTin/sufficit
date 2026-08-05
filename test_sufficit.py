@@ -4232,3 +4232,72 @@ def test_rhf_restarts_because_the_core_guess_is_not_enough():
     assert best < two_atoms               # the good one is bound
     assert best < core_only - 0.5         # by a lot
     assert abs(best - (-107.496)) < 5e-3
+
+
+def _ar1(n, phi, mu=0.0, seed=0):
+    """A stationary AR(1) series with a known mean and a known
+    correlation time, tau = (1 + phi) / (1 - phi)."""
+    from scipy.signal import lfilter
+    rng = np.random.default_rng(seed)
+    e = rng.standard_normal(n)
+    e[0] /= math.sqrt(1.0 - phi * phi)
+    return mu + lfilter([1.0], [1.0, -phi], e)
+
+
+def test_timeseries_mean_covers_a_known_mean_under_correlation():
+    """A molecular-dynamics average is over a correlated trajectory, so
+    the honest count is not how many samples there are but how many
+    independent ones they are worth. This is the block everything in the
+    water density challenge stands on, and it is gated where the truth
+    is known by construction rather than recalled.
+
+    Measured over 300 replicas at n=20,000, coverage runs 0.946 at
+    phi=0, 0.946 at 0.8 and 0.946 at 0.95, against a nominal 0.95, with
+    about 1% of series refused. The interval widens with correlation
+    exactly as it should: 0.0144, 0.0718, 0.2816."""
+    phi, n, mu = 0.8, 20_000, 7.0
+    hits = ok = 0
+    for s in range(120):
+        try:
+            c = sf.timeseries_mean(_ar1(n, phi, mu, s), alpha=0.05)
+        except ValueError:
+            continue
+        ok += 1
+        hits += abs(c.value - mu) <= c.err
+        assert c.tier == sf.Tier.EMPIRICAL and c.fail_p == 0.05
+    assert ok >= 110                       # it should rarely refuse here
+    assert hits / ok >= 0.90               # nominal 0.95, measured 0.946
+    tau = float(re.search(r"tau=([0-9.]+)",
+                          sf.timeseries_mean(_ar1(n, phi, mu, 0))
+                          .provenance[0]).group(1))
+    assert 6.0 < tau < 13.0                # true tau = (1+phi)/(1-phi) = 9
+
+
+def test_timeseries_mean_refuses_a_series_it_cannot_bound():
+    """The refusal is the interesting half. A batch has to be long
+    compared with the correlation time or the batch means are not
+    independent and the interval is a fiction.
+
+    The plateau test alone was not enough, and that is measured: at
+    phi=0.99 the longest affordable batch is about three correlation
+    times, the plateau test let 64% of series through, and those covered
+    0.901 against a nominal 0.95. Asking directly for ten correlation
+    times per batch refuses that whole regime, 300 out of 300.
+
+    A drifting trajectory, which is what an unequilibrated simulation
+    looks like, is refused for the same reason."""
+    with pytest.raises(ValueError, match="correlation time"):
+        sf.timeseries_mean(_ar1(20_000, 0.99, 7.0, 0))
+
+    rng = np.random.default_rng(0)
+    drift = 7.0 + np.linspace(0.0, 3.0, 20_000) + 0.3 * rng.standard_normal(20_000)
+    with pytest.raises(ValueError):
+        sf.timeseries_mean(drift)
+
+    # given enough samples the same correlation is fine
+    c = sf.timeseries_mean(_ar1(200_000, 0.99, 7.0, 0))
+    assert abs(c.value - 7.0) <= c.err
+
+    # and a requested tolerance it cannot meet is priced in samples
+    with pytest.raises(ValueError, match="samples would be needed"):
+        sf.timeseries_mean(_ar1(20_000, 0.0, 7.0, 0), tol=1e-3)

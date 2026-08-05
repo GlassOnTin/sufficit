@@ -188,17 +188,30 @@ dynamics and no new dependency, and both can be gated against a truth known by
 construction, so the certification machinery gets tested before an engine is
 involved.
 
-1. **A certified mean of a correlated time series.** The bottleneck, and needed
-   by every molecular-dynamics observable rather than just this one. An NPT
-   average is over autocorrelated samples, so bounding it needs an effective
-   sample size and a statement that survives correlation. Rigorously that wants
-   a spectral gap nobody will have, so it lands at the empirical tier with a
-   declared stationarity assumption. The interesting part is the refusal:
-   estimate the integrated autocorrelation time on a ladder of batch sizes, and
-   if it has not plateaued the series is too short to bound the mean at all.
-   That is the same refusal the sea wall makes when a resolution ladder shows
-   no asymptotic range. Gate: an AR(1) process with a known mean, coverage
-   measured over replicas.
+1. **A certified mean of a correlated time series. DONE**, as
+   `timeseries_mean`. The bottleneck, and needed by every molecular-dynamics
+   observable rather than just this one. An NPT average is over autocorrelated
+   samples, so bounding it needs an effective sample size and a statement that
+   survives correlation. Rigorously that wants a spectral gap nobody will have,
+   so it lands at the empirical tier with a declared stationarity assumption.
+   Measured over 300 AR(1) replicas of 20,000 samples, coverage runs 0.946
+   against a nominal 0.95 at correlation times of 1, 9 and 39, and about 1% of
+   series are refused.
+
+   The refusal is the interesting half. The integrated autocorrelation time is
+   estimated on a ladder of batch sizes, and if it has not plateaued the series
+   is too short to bound the mean at all, which is the same refusal the sea
+   wall makes when a resolution ladder shows no asymptotic range. Two
+   measurements changed how that test is written. A fixed plateau tolerance
+   fired on estimator noise and refused a quarter of INDEPENDENT series, so the
+   threshold now carries the noise of the rungs being compared. And the plateau
+   test alone was still too weak: at a correlation time of 199, where the
+   longest affordable batch is about three correlation times, it let 64% of
+   series through and those covered 0.901 rather than 0.95. It is only a proxy
+   for what actually matters, so the direct requirement is now stated as well,
+   that a batch be at least ten correlation times long. That refuses the whole
+   under-covering regime, 300 out of 300. A drifting series, which is what an
+   unequilibrated trajectory looks like, is refused for the same reason.
 2. **A certified stationary point.** The ordering argument above, composed from
    three certified means. Gate: a synthetic rho(T) with a maximum put in by
    hand.
