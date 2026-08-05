@@ -11,7 +11,11 @@
       body { color: #E6E4DE; background: #14181D; } a { color: #3E8CC2; } }
     a { color: #1D6FA5; }
     h1 { letter-spacing: -0.01em; }
+    h2 { font-size: 1.05rem; margin: 1.9rem 0 0.4rem; }
     .sub { color: #5A6472; }
+    .field { color: #5A6472; font-size: 0.95rem; margin: 0.1rem 0 0.5rem; }
+    ul { padding-left: 1.2rem; }
+    li { margin-bottom: 0.6rem; }
   </style>
 </head>
 <body>
@@ -23,74 +27,168 @@
   problem. A planner chooses among competing rewrites by their declared
   cost, and the certificate decides whether the answer is good enough. A
   plan can also be built from stages, so one error budget is divided
-  across several steps. All four of the current plans work that way.</p>
+  across several steps.</p>
+
+  <p><a href="explainer.html"><strong>The illustrated tour</strong></a>.
+  Start here.</p>
+
+  <p>Below, the certified cases, grouped by the field each one comes
+  from. Every page states the idea, shows the program rendered from the
+  module, and reports the result of running it, and each regenerates
+  from a fresh run on every push.</p>
+
+  <h2>The compiler itself</h2>
+  <p class="field">The machinery, shown on problems where the answer is
+  already known.</p>
   <ul>
-    <li><a href="explainer.html">The illustrated tour</a>. Start here.</li>
-    <li>Certified cases. Each page states the idea, shows the program
-        rendered from the module, and reports the result of running it.
-      <ul>
-        <li><a href="cases/the-compiler.html">The planner</a>. One question
-            at three tolerances gets three algorithms. The certificates
-            decide, not the cost models.</li>
-        <li><a href="cases/the-budget.html">One budget, two bills</a>. A
-            single tolerance is split between smearing and statistics,
-            priced by a sensitivity the certificate exports.</li>
-        <li><a href="cases/criticality.html">A reactor is not
-            symmetric</a>. There is no minimum principle to overshoot, so
-            k<sub>eff</sub> is bracketed by positivity instead.</li>
-        <li><a href="cases/junction.html">A small residual is not a small
-            error</a>. Kantorovich turns a stopped Newton iteration into a
-            proof that a solution exists, and a radius that contains it.</li>
-        <li><a href="cases/h2-bracket.html">The hydrogen molecule</a>. A
-            two-sided energy bracket, ±10⁻¹³ hartree.</li>
-        <li><a href="cases/hchain-ladder.html">The window-length
-            ladder</a>. Hydrogen-chain brackets at cost 4<sup>ℓ</sup>. The
-            chain length does not enter the cost.</li>
-        <li><a href="cases/rdm2-bound.html">A second lower bound on the
-            same question</a>. A relaxation of the two-particle density
-            matrix, priced in orbitals rather than in states, and raced
-            against the window ladder.</li>
-        <li><a href="cases/molecule.html">A molecule too big to form</a>.
-            Polarization functions double the orbital count, the Fock
-            space is four to that power, and only one of the two rewrites
-            survives the crossing.</li>
-        <li><a href="cases/tfi-reduced-basis.html">A certified sweep
-            across a phase transition</a>. Six solves give a hundred
-            certified points.</li>
-        <li><a href="cases/butterfly-crossover.html">The butterfly
-            crossover</a>. Where the factorization starts to win,
-            measured.</li>
-        <li><a href="cases/ising-cluster.html">The 2D Ising model</a>.
-            Cluster expansions in interval arithmetic, refusing outside
-            the region where they provably converge.</li>
-        <li><a href="cases/smeared-spectral.html">Two peaks from
-            sixteen numbers</a>. Smeared spectral functions, where sharper
-            resolution costs certified error.</li>
-        <li><a href="cases/mz-closure.html">Dropping the fast
-            variables</a>. Mori-Zwanzig closures priced by the spectral
-            gap.</li>
-        <li><a href="cases/lr-dispatch.html">A light cone, measured at
-            its boundary</a>. Quantum dynamics certified inside a cone,
-            refusing when the cone outruns the budget.</li>
-        <li><a href="cases/plasma-hierarchy.html">The guiding-center
-            hierarchy</a>. The asymptotic tier: the exponent is proven and
-            the constant is measured.</li>
-        <li><a href="cases/sos-transport.html">A bound on chaos</a>.
-            Lorenz time averages, proven over the rationals.</li>
-        <li><a href="cases/gw-surrogate.html">Waveform surrogates with
-            stated odds</a>. A conformal certificate serves the tolerance
-            the detector can distinguish.</li>
-        <li><a href="cases/sph-wall.html">A breaking wave against a sea
-            wall</a>. The impulse certifies, the peak refuses, and a berm
-            provably shields.</li>
-        <li><a href="cases/gs-equilibrium.html">A tokamak equilibrium
-            with a guaranteed error bound</a>. FEniCSx proposes and
-            Prager-Synge decides. A real pressure profile puts that
-            certificate out of reach, and an existence proof takes
-            over.</li>
-      </ul>
-    </li>
-    <li><a href="https://github.com/GlassOnTin/sufficit">Source on GitHub</a></li>
+    <li><a href="cases/the-compiler.html">The planner</a>. One question
+        asked at three tolerances gets three different algorithms. The
+        certificates decide which answer is good enough, and the cost
+        models only decide what to try first. The question is the ground
+        energy of a quantum spin chain.</li>
+    <li><a href="cases/the-budget.html">One budget, two bills</a>. One
+        error budget divided between two stages, resolution and
+        statistics, before any data is bought. The question is a smeared
+        spectral function from noisy correlator data, which is how
+        lattice QCD asks about particle masses.</li>
   </ul>
+
+  <h2>Quantum chemistry</h2>
+  <p class="field">Molecular energies, in a field that already argues in
+  units of one kilocalorie per mole.</p>
+  <ul>
+    <li><a href="cases/h2-bracket.html">The hydrogen molecule</a>. A
+        two-sided bracket on the ground-state energy, ±10⁻¹³ hartree,
+        from Gaussian integrals computed here from scratch.</li>
+    <li><a href="cases/hchain-ladder.html">The window-length ladder</a>.
+        Hydrogen chains far too long to diagonalise. A window of ℓ atoms
+        costs 4<sup>ℓ</sup>, and the length of the chain never enters
+        the cost.</li>
+    <li><a href="cases/rdm2-bound.html">A second lower bound on the same
+        question</a>. The two-particle density matrix, relaxed. The cost
+        is polynomial in orbitals rather than exponential in states, so
+        it still answers at 2²⁸ configurations.</li>
+    <li><a href="cases/molecule.html">A molecule too big to form</a>.
+        Polarisation functions double the orbital count and the Fock
+        space is four to that power. Water in a published basis, and a
+        six-atom cluster past the point where the matrix can be
+        built.</li>
+  </ul>
+
+  <h2>Nuclear engineering</h2>
+  <p class="field">Whether a reactor core sustains a chain reaction.</p>
+  <ul>
+    <li><a href="cases/criticality.html">A reactor is not symmetric</a>.
+        The criticality eigenvalue k<sub>eff</sub>, which decides
+        whether a chain reaction grows or dies, bracketed to 1 pcm. The
+        operator is not self-adjoint, so positivity does the work a
+        minimum principle cannot.</li>
+  </ul>
+
+  <h2>Semiconductor devices</h2>
+  <p class="field">What a device simulator reports, and what it has
+  actually established.</p>
+  <ul>
+    <li><a href="cases/junction.html">A small residual is not a small
+        error</a>. The depletion charge of a pn junction, in the units a
+        capacitance-voltage measurement reads. A stopped Newton
+        iteration becomes a proof that a solution exists, and a radius
+        that contains it.</li>
+  </ul>
+
+  <h2>Fusion and plasma physics</h2>
+  <p class="field">The equilibrium that confines a plasma, and the
+  reductions fusion codes are built on.</p>
+  <ul>
+    <li><a href="cases/gs-equilibrium.html">A tokamak equilibrium with a
+        guaranteed error bound</a>. The magnetic flux that holds the
+        plasma, solved by FEniCSx and certified by Prager-Synge. A
+        realistic pressure profile puts that certificate out of reach,
+        and an existence proof takes over.</li>
+    <li><a href="cases/plasma-hierarchy.html">The guiding-center
+        hierarchy</a>. Particle drift in a magnetic field, from the
+        reduction gyrokinetics is built on. The exponent is proven and
+        the constant is measured, which is what the asymptotic tier
+        means.</li>
+  </ul>
+
+  <h2>Lattice field theory</h2>
+  <p class="field">Particle properties extracted from Euclidean
+  correlators.</p>
+  <ul>
+    <li><a href="cases/smeared-spectral.html">Two peaks from sixteen
+        numbers</a>. A smeared spectral density from sixteen correlator
+        values. Sharper resolution costs certified error, and the
+        certificate prices it.</li>
+  </ul>
+
+  <h2>Condensed matter and quantum dynamics</h2>
+  <p class="field">Spin systems at equilibrium, and after a kick.</p>
+  <ul>
+    <li><a href="cases/tfi-reduced-basis.html">A certified sweep across
+        a phase transition</a>. The ground energy of a spin chain at a
+        hundred field strengths, from six exact solves, including the
+        critical point.</li>
+    <li><a href="cases/lr-dispatch.html">A light cone, measured at its
+        boundary</a>. An observable after a quantum quench on a
+        million-site chain, certified inside a Lieb-Robinson cone and
+        refusing when the excitation front outruns the budget.</li>
+    <li><a href="cases/ising-cluster.html">The 2D Ising model</a>. Free
+        energy and correlations from cluster expansions, carried in
+        interval arithmetic, refusing outside the region where the
+        expansion provably converges.</li>
+  </ul>
+
+  <h2>Fluid dynamics and coastal engineering</h2>
+  <p class="field">The load a wave puts on a structure.</p>
+  <ul>
+    <li><a href="cases/sph-wall.html">A breaking wave against a sea
+        wall</a>. The impulse delivered to the wall certifies, the peak
+        pressure refuses for want of an asymptotic range, and a berm
+        provably takes the load to zero.</li>
+  </ul>
+
+  <h2>Turbulence and chaos</h2>
+  <p class="field">Long-time averages, over every trajectory at
+  once.</p>
+  <ul>
+    <li><a href="cases/sos-transport.html">A bound on chaos</a>. The
+        long-time average of a Lorenz coordinate, proven in exact
+        rational arithmetic. The same method bounds mean quantities in
+        turbulence, such as drag and heat transport.</li>
+  </ul>
+
+  <h2>Wave scattering and electromagnetics</h2>
+  <p class="field">Oscillatory kernels, and where compressing them
+  starts to pay.</p>
+  <ul>
+    <li><a href="cases/butterfly-crossover.html">The butterfly
+        crossover</a>. Where a butterfly factorisation starts to beat
+        plain low-rank compression, measured rather than asserted, with
+        the certificate holding on both sides.</li>
+  </ul>
+
+  <h2>Gravitational-wave astronomy</h2>
+  <p class="field">Waveform templates, at the tolerance a detector can
+  distinguish.</p>
+  <ul>
+    <li><a href="cases/gw-surrogate.html">Waveform surrogates with
+        stated odds</a>. A waveform for any source parameter in about
+        0.3 ms, carrying a mismatch certificate matched to the
+        detector's own resolution.</li>
+  </ul>
+
+  <h2>Molecular kinetics</h2>
+  <p class="field">Dropping the fast degrees of freedom, and pricing
+  what that costs.</p>
+  <ul>
+    <li><a href="cases/mz-closure.html">Dropping the fast
+        variables</a>. A ten-dimensional system reduced to its two slow
+        coordinates, with the error priced by the fast sector's spectral
+        gap. It refuses when there is no gap.</li>
+  </ul>
+
+  <p style="margin-top:2rem"><a
+  href="https://github.com/GlassOnTin/sufficit">Source on GitHub</a>.</p>
 </body>
 </html>

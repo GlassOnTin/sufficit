@@ -192,9 +192,9 @@ BACKGROUND = {
 def _background(slug):
     """A line of Wikipedia links at the top of each case, so a reader can
     find out what the field is about before finding out what this library
-    does to it. None of it is ours. Every title was checked against the
-    Wikipedia API before it shipped, and the two that redirected somewhere
-    unhelpful were replaced rather than left to redirect."""
+    does to it. Every title was checked against the Wikipedia API before
+    it shipped, and the two that redirected somewhere unhelpful were
+    replaced rather than left to redirect."""
     import urllib.parse
     titles = BACKGROUND.get(slug)
     if not titles:
@@ -203,7 +203,7 @@ def _background(slug):
         f'<a href="https://en.wikipedia.org/wiki/'
         f'{urllib.parse.quote(t.replace(" ", "_"))}">{esc(t)}</a>'
         for t in titles)
-    return f'<p class="note">Background, none of it ours: {links}.</p>'
+    return f'<p class="note">Background: {links}.</p>'
 
 
 def page(title, eyebrow, h1, dek, sections, slug=None):
