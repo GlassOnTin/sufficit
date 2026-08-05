@@ -126,7 +126,84 @@ def check_composed():
             "guard is unreachable and this check is watching nothing")
 
 
-def page(title, eyebrow, h1, dek, sections):
+BACKGROUND = {
+    "the-compiler": [
+        "Quantum Heisenberg model", "Query optimization",
+        "Variational method (quantum mechanics)", "Anytime algorithm"],
+    "the-budget": [
+        "Spectral density", "Inverse problem", "Lattice QCD",
+        "Monte Carlo method"],
+    "criticality": [
+        "Nuclear chain reaction", "Neutron transport",
+        "Perron–Frobenius theorem", "Discrete ordinates method"],
+    "junction": [
+        "p–n junction", "Depletion region", "Newton's method",
+        "M-matrix"],
+    "h2-bracket": [
+        "Full configuration interaction", "STO-nG basis sets",
+        "Variational method (quantum mechanics)",
+        "Cholesky decomposition"],
+    "hchain-ladder": [
+        "Quantum chemistry", "Configuration interaction",
+        "Hubbard model", "Slater determinant"],
+    "rdm2-bound": [
+        "Density matrix", "Semidefinite programming",
+        "Hartree–Fock method", "Full configuration interaction"],
+    "tfi-reduced-basis": [
+        "Transverse-field Ising model", "Quantum phase transition",
+        "Model order reduction"],
+    "butterfly-crossover": [
+        "Fast multipole method", "Helmholtz equation",
+        "Low-rank approximation", "Hierarchical matrix"],
+    "ising-cluster": [
+        "Ising model", "Cluster expansion",
+        "Partition function (statistical mechanics)",
+        "Interval arithmetic"],
+    "smeared-spectral": [
+        "Spectral density", "Lattice QCD", "Inverse problem",
+        "Well-posed problem"],
+    "mz-closure": [
+        "Mori–Zwanzig formalism", "Master equation",
+        "Conformal prediction"],
+    "lr-dispatch": [
+        "Lieb–Robinson bounds", "Transverse-field Ising model",
+        "Light cone", "Quantum simulator"],
+    "plasma-hierarchy": [
+        "Guiding center", "Gyrokinetics", "Adiabatic invariant",
+        "Fusion power"],
+    "sos-transport": [
+        "Lorenz system", "Sum-of-squares optimization",
+        "Semidefinite programming", "Attractor"],
+    "gw-surrogate": [
+        "Gravitational wave", "Numerical relativity", "Matched filter",
+        "Conformal prediction"],
+    "sph-wall": [
+        "Smoothed-particle hydrodynamics", "Breaking wave",
+        "Shallow water equations", "Richardson extrapolation"],
+    "gs-equilibrium": [
+        "Grad–Shafranov equation", "Tokamak", "Magnetohydrodynamics",
+        "Finite element method"],
+}
+
+
+def _background(slug):
+    """A line of Wikipedia links at the top of each case, so a reader can
+    find out what the field is about before finding out what this library
+    does to it. None of it is ours. Every title was checked against the
+    Wikipedia API before it shipped, and the two that redirected somewhere
+    unhelpful were replaced rather than left to redirect."""
+    import urllib.parse
+    titles = BACKGROUND.get(slug)
+    if not titles:
+        return ""
+    links = ", ".join(
+        f'<a href="https://en.wikipedia.org/wiki/'
+        f'{urllib.parse.quote(t.replace(" ", "_"))}">{esc(t)}</a>'
+        for t in titles)
+    return f'<p class="note">Background, none of it ours: {links}.</p>'
+
+
+def page(title, eyebrow, h1, dek, sections, slug=None):
     body = "\n".join(sections)
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -138,6 +215,7 @@ def page(title, eyebrow, h1, dek, sections):
 <p class="eyebrow"><a href="../index.html">sufficit</a> · {eyebrow}</p>
 <h1>{h1}</h1>
 <p class="dek">{dek}</p>
+{_background(slug)}
 {body}
 <hr>
 <p class="note">Every number and figure above comes from the run that
@@ -301,7 +379,8 @@ around the exact ground energy across the quantum phase transition">
             f"{gap_at_crit:.2e}</strong>, from six snapshot vectors.</li>"
             "<li>Cost per point after the offline stage: one "
             "<strong>6×6</strong> eigenvalue problem.</li></ul>",
-        ])
+        ],
+        slug="tfi-reduced-basis")
 
 
 # ======================================================================
@@ -378,7 +457,8 @@ total energy (hartree)</text></svg>'''
             f"{errs[i_eq]:.0e}</strong> at R = {Rs[i_eq]:.1f} bohr. "
             "The published FCI/STO-3G value is −1.13727 at 1.4.</li>"
             "</ul>",
-        ])
+        ],
+        slug="h2-bracket")
 
 
 # ======================================================================
@@ -458,7 +538,8 @@ certified width, mHa per atom (log scale)</text></svg>'''
             "<li>Widths halve, roughly, per unit ℓ. This chain is "
             "critical, the slowest case; gapped systems tighten "
             "faster.</li></ul>",
-        ])
+        ],
+        slug="hchain-ladder")
 
 
 # ======================================================================
@@ -549,7 +630,8 @@ butterfly apply cost ÷ plain low-rank cost (matched certified accuracy)</text>
             f"{stats_last[2]:.0e}</strong>.</li>"
             f"<li>Measured crossover: {ratios[0]:.2f}× → {ratios[-1]:.2f}× "
             "the plain low-rank cost as N grows at fixed R.</li></ul>",
-        ])
+        ],
+        slug="butterfly-crossover")
 
 
 # ======================================================================
@@ -653,7 +735,8 @@ error bound versus measured deviation across the high-temperature region">
             f"<li>Zero-coupling limit: log Z = log 2 "
             f"{'contained' if zero_ok else 'NOT CONTAINED'} with width "
             f"{c0.err:.1e}.</li></ul>",
-        ])
+        ],
+        slug="ising-cluster")
 
 
 # ======================================================================
@@ -750,7 +833,8 @@ band around the smeared spectral density, resolving two peaks">
             "σ = 0.6 → 0.4 → 0.25.</li>"
             "<li>The certificate never used the truth. It is c·C(1), "
             "from the data and the kernel bound alone.</li></ul>",
-        ])
+        ],
+        slug="smeared-spectral")
 
 
 # ======================================================================
@@ -852,7 +936,8 @@ tubes around the reduced-model trajectories of both slow variables">
             f"{'refused' if refused else 'NOT REFUSED'}</strong>. An "
             "undamped fast mode means the memory kernel never "
             "certifiably decays.</li></ul>",
-        ])
+        ],
+        slug="mz-closure")
 
 
 # ======================================================================
@@ -1050,7 +1135,8 @@ against time at two resolutions: peaks scatter, areas agree better">
             f"{'refused' if mid_refused else 'NOT REFUSED'}</strong>. "
             "The crest jet is under-resolved at this budget, and the "
             "certificate says so.</li></ul>",
-        ])
+        ],
+        slug="sph-wall")
 
 
 # ======================================================================
@@ -1157,7 +1243,8 @@ its conformal calibrated bound">
             "<li>Dispatch refuses below the calibrated mismatch and "
             "outside the training range. Both cases are exercised in "
             "the test suite.</li></ul>",
-        ])
+        ],
+        slug="gw-surrogate")
 
 
 # ======================================================================
@@ -1265,7 +1352,8 @@ interval ladder on the Lorenz mean of z, with witness and attractor">
             "<li>cvxpy/SCS is a search-only dependency. Removing it "
             "kills the degree-4 search and weakens no certificate."
             "</li></ul>",
-        ])
+        ],
+        slug="sos-transport")
 
 
 # ======================================================================
@@ -1386,7 +1474,8 @@ extrapolating down in epsilon, verification solves beneath them">
             "ε, fed to a certifier claiming ε², was <strong>"
             f"{'refused' if refused else 'NOT REFUSED'}</strong>.</li>"
             "</ul>",
-        ])
+        ],
+        slug="plasma-hierarchy")
 
 
 # ======================================================================
@@ -1510,7 +1599,8 @@ shaded past the budget wall">
             f"{big_secs:.1f} s</strong>, bit-identical to the "
             "2001-site run: "
             f"<strong>{'yes' if identical else 'NO'}</strong>.</li></ul>",
-        ])
+        ],
+        slug="lr-dispatch")
 
 
 STYLE = '''<style>
@@ -1918,7 +2008,8 @@ strength, with the contraction certificate's refusal marked">
             "them in exactly the opposite order to their usefulness, "
             "because the rigorous one is silent about the only "
             "approximation that mattered here.</p>",
-        ])
+        ],
+        slug="gs-equilibrium")
 
 
 # ======================================================================
@@ -2281,7 +2372,8 @@ chosen algorithm cost against tolerance, with the window-to-dense wall">
             '<a href="the-budget.html">its own page</a>. Every '
             "composed plan since goes through one combinator, which "
             "the planner and the build now jointly require.</li></ul>",
-        ])
+        ],
+        slug="the-compiler")
 
 
 # ======================================================================
@@ -2860,7 +2952,8 @@ its own smearing bill, with the plan's chosen splits marked">
             "every knob, meaning coarse rungs dear and fine rungs "
             "cheap, which is the opposite of every ladder "
             "here.</li></ul>",
-        ])
+        ],
+        slug="the-budget")
 
 
 # ======================================================================
@@ -3165,7 +3258,8 @@ error, {mesh[2][1]:.2f} pcm</text>
             f"<strong>{twins[2][3]:+.0f} pcm</strong> at "
             f"{twins[2][0]:g}.</li>"
             "</ul>",
-        ])
+        ],
+        slug="criticality")
 
 
 # ======================================================================
@@ -3528,7 +3622,8 @@ nC/cm&#178;</text>
             f"Jacobian of condition number {cond:.2g}, after its fixed "
             "nudge was replaced by a measured one.</li>"
             "</ul>",
-        ])
+        ],
+        slug="junction")
 
 
 # ======================================================================
@@ -3620,28 +3715,31 @@ half-width per atom against chain length, window ladder against the pair">
 <text x="{ax.X(12) - 6:.1f}" y="{ly(wid_w[-1]) - 10:.1f}" text-anchor="end"
       class="board-text" font-size="11">window alone</text>
 <text x="{ax.X(12) - 6:.1f}" y="{ly(wid_p[-1]) + 18:.1f}" text-anchor="end"
-      class="board-text" font-size="11">window upper + 2-RDM lower</text>
+      class="board-text" font-size="11">2-RDM lower + determinant upper</text>
 </svg>'''
 
-    # ---- figure 2: the same two rewrites against the knob, at H6
-    six = next(r for r in rows if r["n"] == 6)
-    ells = (2, 3, 4, 5)
-    cw, cp = [], []
-    for ell in ells:
-        w = sf.h_chain_bracket(6, d, ell)
-        cw.append(w.err / 6 * 1000)
-        cp.append(sf.h_chain_rdm2_bracket(6, d, ell, window=w,
-                                          lower=six["low"]).err / 6 * 1000)
-    ax2 = Axes((1.7, 5.3), (math.log10(min(cp) * 0.6),
-                            math.log10(max(cw) * 1.7)), h=300)
+    # ---- figure 2: the rewrite's own knob, which conditions it imposes
+    conds = ("D", "DQ", "DQG")
+    cond_rows = []
+    for r in rows:
+        if r["n"] > 8:
+            continue
+        T, V, eri, enuc = sf._h_chain_basis(r["n"], d)
+        widths = []
+        for cond in conds:
+            c = sf.rdm2_energy_bracket(T + V.sum(0), eri, r["n"], enuc,
+                                       conditions=cond, eps=1e-7)
+            widths.append(c.err / r["n"] * 1000)
+        cond_rows.append((r["n"], widths))
+
+    allw = [w for _, ws in cond_rows for w in ws]
+    ax2 = Axes((-0.35, 2.35), (math.log10(min(allw) * 0.6),
+                               math.log10(max(allw) * 1.7)), h=300)
 
     def ly2(v):
         return ax2.Y(math.log10(v))
 
-    def poly2(vals):
-        return "M " + " L ".join(f"{ax2.X(e):.1f} {ly2(v):.1f}"
-                                 for e, v in zip(ells, vals))
-    t2 = [t for t in (10, 30, 100, 300, 1000)
+    t2 = [t for t in (1, 3, 10, 30, 100, 300, 1000)
           if ax2.ylim[0] <= math.log10(t) <= ax2.ylim[1]]
     grid2 = "".join(
         f'<line x1="{ax2.ml}" y1="{ly2(t):.1f}" x2="{640 - ax2.mr}" '
@@ -3650,29 +3748,31 @@ half-width per atom against chain length, window ladder against the pair">
         f'<text x="{ax2.ml - 8}" y="{ly2(t) + 3.5:.1f}" text-anchor="end" '
         f'class="board-text" font-size="10.5" opacity="0.7">{t:g}</text>'
         for t in t2)
-    band_lo, band_hi = min(cp), min(cw)
+    shades = ["0.35", "0.65", "1.0"]
+    curves = ""
+    for k, (nn, ws) in enumerate(cond_rows):
+        op = shades[min(k, 2)]
+        curves += (f'<path d="M ' + " L ".join(
+            f"{ax2.X(i):.1f} {ly2(w):.1f}" for i, w in enumerate(ws))
+            + f'" fill="none" class="blue-ink" stroke-width="2" '
+              f'opacity="{op}"/>')
+        curves += "".join(f'<circle cx="{ax2.X(i):.1f}" cy="{ly2(w):.1f}" '
+                          f'r="4" class="blue-fill" opacity="{op}"/>'
+                          for i, w in enumerate(ws))
+        curves += (f'<text x="{ax2.X(2) + 8:.1f}" y="{ly2(ws[-1]) + 4:.1f}" '
+                   f'class="board-text" font-size="11" '
+                   f'opacity="{op}">H{nn}</text>')
     svg_knob = f'''<svg viewBox="0 0 640 300" role="img" aria-label="Bracket
-half-width per atom against window length at H6, for both rewrites">
-<rect x="{ax2.ml}" y="{ly2(band_hi):.1f}" width="{640 - ax2.mr - ax2.ml}"
-      height="{ly2(band_lo) - ly2(band_hi):.1f}" fill="var(--blue)"
-      opacity="0.10"/>
-<text x="{640 - ax2.mr - 8}" y="{(ly2(band_hi) + ly2(band_lo)) / 2 + 4:.1f}"
-      text-anchor="end" class="board-text" font-size="10.5" opacity="0.8">
-only the pair reaches this band</text>
+half-width per atom against which conditions the relaxation imposes">
 {grid2}
-{"".join(f'<text x="{ax2.X(e):.1f}" y="282" text-anchor="middle" '
-         f'class="board-text" font-size="10.5" opacity="0.7">'
-         f'&#8467; = {e}</text>' for e in ells)}
+{"".join(f'<text x="{ax2.X(i):.1f}" y="282" text-anchor="middle" '
+         f'class="board-text" font-size="11" opacity="0.8">{c}</text>'
+         for i, c in enumerate(conds))}
 <text x="14" y="{ax2.mt + 4}" class="board-text" font-size="10.5"
       opacity="0.75">mHa</text>
 <text x="14" y="{ax2.mt + 17}" class="board-text" font-size="10.5"
       opacity="0.75">/atom</text>
-<path d="{poly2(cw)}" fill="none" class="rust-ink" stroke-width="2"/>
-<path d="{poly2(cp)}" fill="none" class="blue-ink" stroke-width="2"/>
-{"".join(f'<circle cx="{ax2.X(e):.1f}" cy="{ly2(v):.1f}" r="4" '
-         f'class="rust-fill"/>' for e, v in zip(ells, cw))}
-{"".join(f'<circle cx="{ax2.X(e):.1f}" cy="{ly2(v):.1f}" r="4" '
-         f'class="blue-fill"/>' for e, v in zip(ells, cp))}
+{curves}
 </svg>'''
 
     # ---- the race, three tolerances at H6
@@ -3747,12 +3847,14 @@ only the pair reaches this band</text>
             code_section(sf._rdm2_maps, sf._rdm2_lower,
                          sf.h_chain_rdm2_bracket),
             "<h2>The result</h2>"
-            "<p>Both rewrites certify a lower bound on the same hydrogen "
-            "chain, and the upper half is the window ladder's variational "
-            "trial state in either case. What changes is the lower half. "
-            "The window's own is a marginal decomposition priced at "
-            "4<sup>&#8467;</sup>; the other is the relaxation, priced in "
-            "orbitals.</p>"
+            "<p>Both rewrites bracket the ground energy of the same "
+            "hydrogen chain. The window ladder decomposes it into "
+            "marginals priced at 4<sup>&#8467;</sup>. The other relaxes "
+            "the 2-RDM for its lower half, priced in orbitals, and takes "
+            "a self-consistent determinant for its upper half. The "
+            "pairing keeps whichever upper bound is better and reports "
+            "which, and at these sizes the determinant wins every "
+            "time.</p>"
             f"<figure>{svg_reach}<figcaption>Bracket half-width per atom, "
             "on log axes, at the widest window each chain affords up to "
             "&#8467; = 5. Rust is the window ladder alone and blue is the "
@@ -3769,35 +3871,42 @@ only the pair reaches this band</text>
             "<p class='note'>Half-widths in mHa per atom. The last two "
             "rows are past the point where the Fock matrix can be formed, "
             "so no exact answer exists there and none is needed.</p>",
-            "<h2>Two proofs, one bracket</h2>"
-            "<p>The halves have to be about the same sector or the "
-            "sandwich is not one. The 2-RDM bound is for N electrons, and "
-            "the window's trial state is a product of block ground states "
-            "taken over each block's whole Fock space, so its electron "
-            "count is whatever the blocks prefer. Measured on these "
-            "integrals every block comes out exactly half filled, but "
-            "that is a property of the integrals rather than a theorem. "
-            "So the count is carried on the window certificate and "
-            "checked at the pairing, and a mismatch refuses.</p>"
-            "<p>The window's own lower half bounds the ground energy over "
-            "all sectors, which also bounds the N-electron one, so the "
-            "two lower bounds intersect and the tighter is kept.</p>"
-            f"<figure>{svg_knob}<figcaption>The same two rewrites at H6, "
-            "against the window length. Rust is the window alone, blue is "
-            "the pair. The window's lower half improves with "
-            "&#8467; and the pair's does not, because the relaxation does "
-            "not know what a window is, so the pair is flat until the "
-            "upper half improves. The shaded band is the range of "
-            "tolerances only the pair reaches within this "
-            "ladder.</figcaption></figure>",
+            "<h2>The knob is which conditions it imposes</h2>"
+            "<p>Dropping a condition only enlarges the feasible set, so "
+            "every rung is still a lower bound and the ladder runs from "
+            "D through DQ to DQG, cheapest and loosest first. D alone "
+            "fixes only the trace, so its minimum collapses to the "
+            "smallest eigenvalue of the two-electron operator and it is "
+            "very loose indeed.</p>"
+            "<p>Monotonicity is a property of the optimum rather than of "
+            "the certificate. The certificate is built from the solver's "
+            "dual, so where every rung already sits on the exact answer "
+            "the dual's quality decides and the order can invert. "
+            "Measured on H2 with a pz shell, where two electrons make D "
+            "complete by Coleman's theorem, DQ came back 2.6&#215;10"
+            "<sup>&#8722;5</sup> below D. Looser, not wrong.</p>"
+            "<p>The upper half is a self-consistent determinant. Any "
+            "orthonormal orbitals give a variational bound, so "
+            "convergence is not part of the claim and a stopped "
+            "iteration is as honest as a converged one. Self-consistency "
+            "only chooses better orbitals, and it is worth doing because "
+            "the upper half is the binding side of every bracket here: "
+            "at H4 the core-Hamiltonian guess sits 261 mHa above exact "
+            "and the converged determinant 62.</p>"
+            f"<figure>{svg_knob}<figcaption>Bracket half-width per atom "
+            "against the conditions imposed, on log axes, one line per "
+            "chain and darker for longer. Each rung costs more cone and "
+            "buys a tighter bound, and the three chains land on top of "
+            "each other at DQG, which is the point: what the relaxation "
+            "certifies per atom barely depends on how long the chain "
+            "is.</figcaption></figure>",
             "<h2>The race</h2>"
-            "<p>The planner runs both. The program is priced 13n&#8308; "
-            "in the window's own currency of 4<sup>&#8467;</sup>, with "
-            "exponent and constant measured on the chains n = 8 to 14, "
-            "and only the first paired rung is charged for it because the "
-            "lower half does not depend on &#8467;. So the cheap window "
-            "rungs run first and the pair gets its turn only when they "
-            "have all failed. Verbatim:</p>"
+            "<p>The planner runs both. The rungs of the relaxation are "
+            "priced k&#183;n&#8308; with k measured at 0.1, 5 and 30 for "
+            "D, DQ and DQG, in the window's own currency of "
+            "4<sup>&#8467;</sup>. So the cheap window rungs run first and "
+            "the relaxation gets its turn only when they have all "
+            "failed. Verbatim:</p>"
             f"<pre>{esc(chr(10).join(traces))}</pre>"
             "<p>and the receipts behind them, predicted cost beside "
             "measured seconds:</p>"
@@ -3834,7 +3943,8 @@ only the pair reaches this band</text>
             "nothing here. And the pair's real territory is chains too "
             "long to form, where it is the only rewrite that answers and "
             "therefore has nothing to race.</li></ul>",
-        ])
+        ],
+        slug="rdm2-bound")
 
 
 CASES = {

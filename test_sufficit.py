@@ -3949,21 +3949,23 @@ def test_rdm2_spin_blocking_keeps_the_bound_and_cuts_the_cost():
     assert "D-blocks=6+16+6" in c.provenance[0]
 
 
-def test_rdm2_pairing_tightens_the_window_bracket():
-    """Two proofs, one bracket. The upper half is the window ladder's
-    product of block ground states, which is variational; the lower half
-    is the 2-positivity relaxation, which knows nothing about it. The
-    pair has to keep the upper half exactly, contain the truth, and be
-    substantially tighter than either alone, or there was no point
-    pairing them. Measured at H4 with ell=3 the half-width per atom goes
-    from 44.9 mHa to 18.7."""
+def test_rdm2_pairing_keeps_the_better_of_two_upper_bounds():
+    """Two upper bounds are in hand and both are variational for N
+    electrons, so the pairing keeps the better one. It is the
+    self-consistent determinant, and that was not true when the
+    determinant was built on core-Hamiltonian orbitals: measured at H4,
+    the block product sits 147 mHa above exact and the core guess 261,
+    but the converged determinant sits 62. So the window ladder now
+    contributes nothing to this bracket at the window lengths a planner
+    reaches, which is why the front door stopped racing the pairing and
+    started racing the relaxation on its own."""
     truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
     w = sf.h_chain_bracket(4, 1.8, 3)
     c = sf.h_chain_rdm2_bracket(4, 1.8, 3)
     assert c.value - c.err <= truth <= c.value + c.err
-    assert c.value + c.err == pytest.approx(w.value + w.err, abs=1e-12)
-    assert c.err < 0.5 * w.err
-    assert c.tier == sf.Tier.RIGOROUS and "binding=2rdm" in c.provenance[-1]
+    assert c.err < 0.25 * w.err
+    assert "upper=determinant" in c.provenance[-1]
+    assert c.value + c.err < w.value + w.err     # strictly the better one
 
 
 def test_rdm2_pairing_refuses_a_trial_state_in_the_wrong_sector():
@@ -3984,27 +3986,139 @@ def test_rdm2_pairing_refuses_a_trial_state_in_the_wrong_sector():
         sf.h_chain_rdm2_bracket(4, 1.8, 3, window=bad)
 
 
-def test_hchain_dispatch_races_the_window_against_the_2rdm():
+def test_hchain_dispatch_races_the_window_against_the_relaxation():
     """The second real competition in this library, and the first since
     the Heisenberg front door. The window ladder is cheap and its lower
-    half is loose; the pair costs a semidefinite program and is much
-    tighter. The cost model must therefore spend nothing on the SDP
-    while the cheap rewrite still meets the tolerance, and must reach
-    for it once the window has run out of ladder. Both ends are pinned
-    here, and so is the refusal past both."""
-    loose = sf.h_chain_energy_dispatch(4, tol=0.05)
+    half is loose; the relaxation costs a semidefinite program and is
+    much tighter. The cost model must spend nothing on the program while
+    the cheap rewrite still meets the tolerance, and must reach for it
+    once the window has run out of ladder. Measured at n=4 the band
+    where only the relaxation answers runs from 8.0 to 44.9 mHa per
+    atom, and at n=6 from 8.3 to 17.5."""
+    loose = sf.h_chain_energy_dispatch(4, tol=0.06)
     assert "chose window@" in loose.provenance[-1]
-    assert all(r[0] == "window" for r in loose.receipt)
 
-    tight = sf.h_chain_energy_dispatch(4, tol=0.03)
-    assert "chose window+2rdm@" in tight.provenance[-1]
-    assert tight.err / 4 <= 0.03
+    tight = sf.h_chain_energy_dispatch(4, tol=0.02)
+    assert "chose rdm2@" in tight.provenance[-1]
+    assert tight.err / 4 <= 0.02
     truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
     assert tight.value - tight.err <= truth <= tight.value + tight.err
-    # the window rungs ran first and were rejected, which is the cost
-    # model ordering the attempts and the certificates deciding
     names = [r[0] for r in tight.receipt]
-    assert names.index("window") < names.index("window+2rdm")
+    assert names.index("window") < names.index("rdm2")
 
     with pytest.raises(sf.Refusal):
         sf.h_chain_energy_dispatch(4, tol=0.005)
+
+
+def test_rdm2_conditions_ladder_tightens_where_it_bites():
+    """The rewrite's knob is which conditions it imposes. Dropping one
+    only enlarges the feasible set, so every rung is a valid lower
+    bound, and imposing more should tighten it. Measured at H4 the
+    ladder runs -2.900, -2.214, -2.178 against an exact -2.175.
+
+    Monotonicity is a property of the OPTIMUM, not of the certificate.
+    The certificate is built from the solver's dual, so where every rung
+    already sits on the exact answer the dual's quality decides and the
+    order can inverate by solver noise. Measured on H2 with a pz shell,
+    where two electrons make even D complete by Coleman's theorem, DQ
+    came back 2.6e-5 BELOW D. That is looser, not wrong, and it is why
+    this test asks for monotonicity only where the relaxation bites."""
+    T, V, eri, enuc = sf._h_chain_basis(4, 1.8)
+    h = T + V.sum(0)
+    truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
+    lows = []
+    for cond in ("D", "DQ", "DQG"):
+        lo, prov = sf._rdm2_lower(h, eri, 4, enuc, 1e-8, 100_000, cond)
+        assert lo <= truth, f"{cond} is not a lower bound"
+        assert f"rdm2-{cond} " in prov
+        lows.append(lo)
+    assert lows[0] < lows[1] < lows[2] <= truth
+    assert truth - lows[0] > 0.5          # D alone is very loose indeed
+    assert truth - lows[2] < 0.01
+
+
+def test_scf_determinant_upper_is_valid_and_beats_the_core_guess():
+    """Any orthonormal orbitals give a variational upper bound, so
+    convergence is not part of the claim and a stopped iteration is as
+    honest as a converged one. Self-consistency only chooses better
+    orbitals, and it is worth doing because the upper half is the
+    binding side of every 2-RDM bracket measured. Measured: 4.2x closer
+    at H4 and 6.5x at H6."""
+    for n in (4, 6):
+        T, V, eri, enuc = sf._h_chain_basis(n, 1.8)
+        h = T + V.sum(0)
+        truth = _sector_ground(sf.h_chain_fock_hamiltonian(n, 1.8), n)
+        core = sf._rdm2_determinant_upper(h, eri, n, scf_iters=0) + enuc
+        scf = sf._rdm2_determinant_upper(h, eri, n) + enuc
+        assert scf >= truth and core >= truth      # both are upper bounds
+        assert (core - truth) > 3 * (scf - truth)
+
+
+def test_fit_jump_steps_when_the_ladder_is_not_numeric():
+    """The 2-RDM ladder is D, DQ, DQG, and a fitted geometric jump has
+    nothing to fit there. The planner used to crash on it, trying to
+    take float("D"). It must fall back to plain stepping, the same way
+    it does when the errors refuse the model."""
+    meas = [("D", 1.2), ("DQ", 0.1)]
+    assert sf._fit_jump(meas, 0.01, ["DQG"]) == "DQG"
+    # and the numeric path still jumps
+    assert sf._fit_jump([(2, 1.0), (3, 0.1)], 1e-4, [4, 5, 6, 7]) > 4
+
+
+def test_molecule_front_door_dense_and_relaxation_agree():
+    """The molecular front door takes Cartesian Gaussians of any angular
+    momentum through McMurchie-Davidson, so a p shell is available and a
+    small molecule can be pushed past the point where its Fock sector
+    can be formed. Here it is still formable, which is the only place
+    the two rewrites can be checked against each other.
+
+    Two electrons make D complete by Coleman's theorem, so the
+    relaxation should land on the exact answer even at the cheapest rung
+    of its ladder."""
+    pos = [(0.0, 0.0, 0.0), (0.0, 0.0, 1.4)]
+    atoms = [(1, p) for p in pos]
+    shells = sf.hydrogen_shells(pos, polarized=True)
+    assert len(shells) == 4                       # two s, two pz
+    dense = sf.molecule_dense_bracket(atoms, shells, 2)
+    h, eri, enuc = sf.molecular_integrals(atoms, shells)
+    rel = sf.rdm2_energy_bracket(h, eri, 2, enuc, conditions="D", eps=1e-7)
+    assert rel.value - rel.err <= dense.value <= rel.value + rel.err
+    assert abs((rel.value - rel.err) - dense.value) < 1e-6
+    # the polarized answer must be below the s-only one, or the p shell
+    # is not doing anything
+    plain = sf.molecule_dense_bracket(
+        atoms, sf.hydrogen_shells(pos), 2)
+    assert dense.value < plain.value - 1e-4
+
+
+def test_molecule_dispatch_offers_dense_only_when_it_can_afford_it():
+    """The dense rewrite pays twice, once to assemble the whole 4^nao
+    Fock operator and once to diagonalize the sector it cuts out of it,
+    so it is capped on both. Pricing only the diagonalization was wrong
+    and measurably so: at eight orbitals with two electrons the sector
+    is 120 wide and instant, while the assembly it needs first takes
+    five seconds.
+
+    With the caps in place the exact rewrite wins when it is offered.
+    Deny it the assembly budget and the relaxation answers instead, on
+    the same question."""
+    pos = [(0.0, 0.0, 0.0), (0.0, 0.0, 1.4)]
+    atoms = [(1, p) for p in pos]
+    shells = sf.hydrogen_shells(pos, polarized=True)
+
+    got = sf.molecule_energy_dispatch(atoms, shells, 2, tol=1e-6)
+    assert "chose dense@" in got.provenance[-1]
+
+    denied = sf.molecule_energy_dispatch(atoms, shells, 2, tol=0.05,
+                                         dense_nao_max=2, eps=1e-7)
+    assert "chose rdm2@" in denied.provenance[-1]
+    assert all(r[0] == "rdm2" for r in denied.receipt)
+    assert denied.value - denied.err <= got.value <= denied.value + denied.err
+
+    # max_iters is cut here only to keep the refusal cheap. A stopped
+    # solver gives a looser certificate, never an invalid one, which is
+    # the property this whole rewrite is built on.
+    with pytest.raises(sf.Refusal, match="dense_nao_max"):
+        sf.molecule_energy_dispatch(atoms, shells, 2, tol=1e-9,
+                                    dense_nao_max=2, eps=1e-5,
+                                    max_iters=2000)

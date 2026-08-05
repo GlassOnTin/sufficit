@@ -3387,12 +3387,19 @@ def _rdm2_energy_operator(mp, hs, g):
     return out
 
 
-def _rdm2_propose(mp, W0, T, eps, max_iters):
+def _rdm2_propose(mp, W0, T, eps, max_iters, conditions="DQG"):
     """The untrusted half. SCS minimizes the energy over the blocked
-    2-positivity relaxation, and its dual variables for the Q and G
-    blocks are the multipliers the certificate wants. Nothing here is
-    believed: the returned matrices are only a starting point, and the
-    caller shifts them until eigen_bracket says they are PSD."""
+    relaxation, and its dual variables for the Q and G blocks are the
+    multipliers the certificate wants. Nothing here is believed: the
+    returned matrices are only a starting point, and the caller shifts
+    them until eigen_bracket says they are PSD.
+
+    conditions selects which blocks are required PSD, and it is the
+    rewrite's ladder. D alone is the cheapest and loosest, since with
+    only the trace fixed the minimum collapses to the smallest
+    eigenvalue of the two-electron operator. Adding Q and then G costs
+    more cone and buys a tighter bound. Dropping a condition only
+    enlarges the feasible set, so every rung is still a lower bound."""
     import cvxpy as cp
     dl, gl = mp["dl"], mp["gl"]
     dsz = [m for _, m in dl["sizes"] if m]
@@ -3416,11 +3423,11 @@ def _rdm2_propose(mp, W0, T, eps, max_iters):
     gvec = mp["AG"] @ dv
     cons = [B >> 0 for B in blocks]
     for lab, m in dl["sizes"]:
-        if m:
+        if m and "Q" in conditions:
             cons.append(reshapeF(q[dl["off"][lab]:dl["off"][lab] + m * m],
                                  (m, m)) >> 0)
     for lab, m in gl["sizes"]:
-        if m:
+        if m and "G" in conditions:
             cons.append(reshapeF(gvec[gl["off"][lab]:gl["off"][lab] + m * m],
                                  (m, m)) >> 0)
     cons.append(sum(cp.trace(B) for B in blocks) == T)
@@ -3428,7 +3435,9 @@ def _rdm2_propose(mp, W0, T, eps, max_iters):
     prob = cp.Problem(cp.Minimize(obj), cons)
     prob.solve(solver=cp.SCS, eps=eps, max_iters=max_iters)
 
-    nd, nq, ng = len(dsz), len(dsz), len(gsz)
+    nd = len(dsz)
+    nq = len(dsz) if "Q" in conditions else 0
+    ng = len(gsz) if "G" in conditions else 0
     YQ = [c.dual_value for c in cons[nd:nd + nq]]
     YG = [c.dual_value for c in cons[nd + nq:nd + nq + ng]]
     if any(y is None for y in YQ + YG):
@@ -3457,6 +3466,8 @@ def _rdm2_psd_shift(Y):
 def _rdm2_pack(mp, mats, which="dl"):
     lay = mp[which]
     out = np.zeros(lay["total"])
+    if not mats:                 # a condition the ladder did not impose
+        return out
     i = 0
     for lab, m in lay["sizes"]:
         if not m:
@@ -3491,31 +3502,45 @@ def _rdm2_assemble(mp, W0, YQ, YG):
     return blocks, padW, c0, padc
 
 
-def _rdm2_determinant_upper(h, eri, N):
+def _rdm2_determinant_upper(h, eri, N, scf_iters: int = 40):
     """A rigorous variational upper bound from one closed-shell
-    determinant, built on the core-Hamiltonian orbitals. It is loose,
-    and it is here so the rewrite can return a two-sided bracket without
-    borrowing machinery. A caller holding a better upper bound should
-    pass it in, and the bracket tightens on the side that needs it."""
+    determinant. Any orthonormal set of orbitals gives a valid bound, so
+    convergence is not part of the claim and a stopped iteration is as
+    honest as a converged one. Self-consistency only chooses better
+    orbitals, and it is worth doing here because the upper half is the
+    binding side of every 2-RDM bracket measured so far. scf_iters=0
+    falls back to the core-Hamiltonian guess.
+
+    A caller holding a better upper bound should pass it in instead, and
+    the bracket tightens on the side that needs it."""
     if N % 2:
         raise ValueError("the built-in upper bound is closed-shell only")
-    _, C = np.linalg.eigh(np.asarray(h, float))
-    occ = C[:, :N // 2]
-    hm = occ.T @ np.asarray(h, float) @ occ
-    e = np.einsum("pqrs,pi,qj,rk,sl->ijkl", np.asarray(eri, float),
-                  occ, occ, occ, occ)
+    h = np.asarray(h, float)
+    eri = np.asarray(eri, float)
+    nocc = N // 2
+    _, C = np.linalg.eigh(h)
+    for _ in range(scf_iters):
+        Cocc = C[:, :nocc]
+        P = 2.0 * Cocc @ Cocc.T
+        F = h + np.einsum("rs,pqrs->pq", P, eri) \
+            - 0.5 * np.einsum("rs,prqs->pq", P, eri)
+        _, C = np.linalg.eigh(F)
+    occ = C[:, :nocc]
+    hm = occ.T @ h @ occ
+    e = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, occ, occ, occ, occ)
     d = np.arange(N // 2)
     return float(2 * np.trace(hm)
                  + 2 * e[d[:, None], d[:, None], d[None, :], d[None, :]].sum()
                  - e[d[:, None], d[None, :], d[None, :], d[:, None]].sum())
 
 
-def _rdm2_lower(h, eri, N, enuc, eps, max_iters):
+def _rdm2_lower(h, eri, N, enuc, eps, max_iters, conditions="DQG"):
     """The lower half on its own, returned as (bound, provenance).
 
     It is separate because it does not depend on whatever upper bound it
     will be paired with, so a caller that tries several upper bounds
-    pays for the semidefinite program once."""
+    pays for the semidefinite program once. conditions is the ladder,
+    from D through DQ to DQG, cheapest and loosest first."""
     h = np.asarray(h, float)
     eri = np.asarray(eri, float)
     hs, g = _rdm2_spin_block(h, eri)
@@ -3524,7 +3549,8 @@ def _rdm2_lower(h, eri, N, enuc, eps, max_iters):
     T = N * (N - 1) / 2.0
     W0 = _rdm2_energy_operator(mp, hs, g)
 
-    YQ, YG, status, _ = _rdm2_propose(mp, W0, T, eps, max_iters)
+    YQ, YG, status, _ = _rdm2_propose(mp, W0, T, eps, max_iters,
+                                      conditions)
     shifts = []
     certified = []
     for group in (YQ, YG):
@@ -3546,15 +3572,16 @@ def _rdm2_lower(h, eri, N, enuc, eps, max_iters):
     lower = (mu - padW) * T + c0 - padc + enuc
 
     blocks = "+".join(str(m) for _, m in mp["dl"]["sizes"] if m)
-    return lower, (f"rdm2-DQG N={N} nso={nso} D-blocks={blocks} "
-                   f"scs={status} shift={max(shifts):.1e} "
+    return lower, (f"rdm2-{conditions} N={N} nso={nso} D-blocks={blocks} "
+                   f"scs={status} shift={max(shifts, default=0.0):.1e} "
                    f"pad=({padW:.1e},{padc:.1e}) +fp")
 
 
 def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
                         upper: float = None, eps: float = 1e-8,
                         max_iters: int = 100_000,
-                        lower: Tuple[float, str] = None) -> Certified:
+                        lower: Tuple[float, str] = None,
+                        conditions: str = "DQG") -> Certified:
     """Certified bracket on the ground energy of the N-electron sector,
     with the lower half from the 2-positivity relaxation of the 2-RDM.
 
@@ -3575,7 +3602,7 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
     lower to reuse a bound _rdm2_lower already computed, which is what a
     planner racing several upper bounds against one lower does.
     """
-    lo, prov = _rdm2_lower(h, eri, N, enuc, eps, max_iters) \
+    lo, prov = _rdm2_lower(h, eri, N, enuc, eps, max_iters, conditions) \
         if lower is None else lower
     up = _rdm2_determinant_upper(h, eri, N) + enuc if upper is None \
         else float(upper)
@@ -3628,16 +3655,177 @@ def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
             f"{n}, so its energy does not bound the {n}-electron sector")
 
     T, V, eri, enuc = _h_chain_basis(n, d)
-    up = win.value + win.err
-    c = rdm2_energy_bracket(T + V.sum(0), eri, n, enuc, upper=up,
+    h = T + V.sum(0)
+    # two upper bounds are in hand and both are variational for N
+    # electrons, so the better one is kept. Measured, the self-consistent
+    # determinant beats the block product at these sizes, 62 mHa above
+    # exact against 147 at H4, and it costs no window at all.
+    det = _rdm2_determinant_upper(h, eri, n) + enuc
+    up = min(win.value + win.err, det)
+    upper_from = "determinant" if det < win.value + win.err else "window"
+    c = rdm2_energy_bracket(h, eri, n, enuc, upper=up,
                             eps=eps, max_iters=max_iters, lower=lower)
     lower = max(c.value - c.err, win.value - win.err)
     binding = "2rdm" if c.value - c.err >= win.value - win.err else "window"
     return Certified(0.5 * (up + lower), 0.5 * (up - lower),
                      min(win.tier, c.tier),
                      win.provenance + c.provenance
-                     + (f"intersect-lower binding={binding}",),
+                     + (f"intersect-lower binding={binding} "
+                        f"upper={upper_from}",),
                      min(1.0, win.fail_p + c.fail_p))
+
+
+def molecular_integrals(atoms, shells):
+    """(h, eri, enuc) in an orthonormal spatial-orbital basis, from
+    Cartesian Gaussians of arbitrary angular momentum.
+
+    atoms and shells are what _md_integrals takes: [(Z, xyz)], and one
+    AO per shell as (xyz, (i, j, k), [(exponent, contraction), ...]).
+    Lowdin absorbs the overlap, so the AOs need not be normalized, and
+    eri comes back in chemists' (pq|rs), which is what every rewrite
+    downstream expects."""
+    S, h, eri, enuc = _md_integrals(atoms, shells)
+    w, U = np.linalg.eigh(S)
+    X = U @ np.diag(w ** -0.5) @ U.T
+    return (X @ h @ X,
+            np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, X, X, X, X), enuc)
+
+
+def _sector_dim(nao, nelec):
+    return math.comb(2 * nao, nelec)
+
+
+def molecule_dense_bracket(atoms, shells, nelec: int) -> Certified:
+    """The exact answer, by diagonalizing the N-electron sector of the
+    Fock space. Particle number is conserved, so the sector is a block
+    and there is no need to carry the rest: at eight orbitals the whole
+    space is 65,536 states and the six-electron sector is 8,008. The
+    bracket is eigen_bracket's, with its floating-point margins."""
+    from scipy import sparse                            # noqa: F401
+    nao = len(shells)
+    H = _fock_hamiltonian(*_md_integrals(atoms, shells), dense=False)
+    occ = np.array([bin(i).count("1") for i in range(H.shape[0])])
+    idx = np.flatnonzero(occ == nelec)
+    sub = np.asarray(H[idx][:, idx].todense())
+    c = eigen_bracket(sub)
+    return replace(c, provenance=(
+        f"molecule-dense-sector nao={nao} N={nelec} dim={len(idx)} "
+        + c.provenance[0],))
+
+
+def _rdm2_rewrite(h, eri, nelec, enuc, nao, eps, max_iters):
+    """The 2-RDM as a Rewrite, with the conditions as its ladder.
+
+    D alone fixes only the trace, so its minimum is the smallest
+    eigenvalue of the two-electron operator and it is very loose. Adding
+    Q and then G costs more cone and buys a tighter bound, and dropping
+    a condition only enlarges the feasible set, so every rung is still a
+    lower bound. Measured on hydrogen chains at n = 4 to 8, the half
+    width per atom runs 98 to 291 mHa at D, 13 to 54 at DQ, and 8.0 to
+    8.6 at DQG, while the cost runs about 0.2 s, 0.6 to 6 s, and 2.5 to
+    65 s.
+
+    The prices below are k n^4 with k measured over that range. They
+    only order the attempts, and the receipt logs predicted against
+    measured so the model is auditable."""
+    price = {"D": 0.1, "DQ": 5.0, "DQG": 30.0}
+
+    def run(cond):
+        return rdm2_energy_bracket(h, eri, nelec, enuc, eps=eps,
+                                   max_iters=max_iters, conditions=cond)
+
+    return Rewrite("rdm2", ("D", "DQ", "DQG"),
+                   lambda c: price[c] * nao ** 4, run)
+
+
+def molecule_energy_dispatch(atoms, shells, nelec: int, tol: float,
+                             dense_nao_max: int = 8,
+                             dense_dim_max: int = 5000,
+                             jump: bool = True, eps: float = 1e-7,
+                             max_iters: int = 100_000) -> Certified:
+    """Certified bracket on the N-electron ground energy of a molecule,
+    from Cartesian Gaussians of any angular momentum, with two rewrites
+    racing for it.
+
+    The first diagonalizes the N-electron sector and is exact, at a cost
+    that is the sector dimension cubed. The second relaxes the 2-RDM and
+    is priced in orbitals. Polarization functions are what make the race
+    interesting, because a p shell on every atom doubles the orbital
+    count and cubes nothing the first rewrite can afford: six hydrogens
+    with s and p are twelve orbitals and a sector of 134,596, which is
+    past forming, while the relaxation there is the same size as a
+    twelve-orbital problem anywhere else.
+
+    Both rewrites answer the same question. The dense one brackets the
+    sector directly; the relaxation bounds it from below and a
+    self-consistent determinant from above, and that determinant is an
+    N-electron state, so both brackets are about the N-electron ground
+    energy and not about the whole Fock space.
+
+    The dense rewrite is capped twice because it pays twice. It
+    assembles the whole 4^nao Fock operator before it can cut the sector
+    out, and then it diagonalizes a dense matrix of the sector's size,
+    so dense_nao_max bounds the assembly and dense_dim_max bounds the
+    diagonalization. Both have to hold or the rewrite is not offered,
+    and the refusal says which one stopped it. Pricing only the
+    diagonalization was wrong and measurably so: at eight orbitals with
+    two electrons the sector is 120 wide and takes no time at all, while
+    the assembly it needs first takes five seconds.
+    """
+    if nelec % 2:
+        raise ValueError("the determinant upper bound is closed-shell "
+                         "only, so nelec must be even")
+    nao = len(shells)
+    dim = _sector_dim(nao, nelec)
+    h, eri, enuc = molecular_integrals(atoms, shells)
+
+    rewrites = []
+    if nao <= dense_nao_max and dim <= dense_dim_max:
+        rewrites.append(Rewrite(
+            "dense", (dim,),
+            lambda k: 4.0 ** nao / 1e3 + k ** 3 / 1e6,
+            lambda k: molecule_dense_bracket(atoms, shells, nelec)))
+    rewrites.append(_rdm2_rewrite(h, eri, nelec, enuc, nao, eps, max_iters))
+
+    def beyond():
+        if nao <= dense_nao_max and dim <= dense_dim_max:
+            return ("the ladder is exhausted; the dense sector is already "
+                    "exact, so a tighter answer needs a better basis, not "
+                    "a better rewrite")
+        if nao > dense_nao_max:
+            return (f"the exact rewrite was not offered: {nao} orbitals "
+                    f"means a 4^{nao} Fock operator to assemble, past "
+                    f"dense_nao_max={dense_nao_max}")
+        return (f"the exact rewrite was not offered: the {nelec}-electron "
+                f"sector has dimension {dim:,}, past "
+                f"dense_dim_max={dense_dim_max:,}")
+
+    rewrites[-1] = replace(rewrites[-1], price_beyond=beyond)
+    return plan("molecule-energy", tol, rewrites, jump=jump,
+                context=f"nao={nao} N={nelec} sector={dim}")
+
+
+def hydrogen_shells(positions, polarized: bool = False,
+                    pz_exp: float = 1.1, full_p: bool = False):
+    """STO-3G s shells on each hydrogen, optionally polarized.
+
+    polarized adds the sigma component pz, which is the one that matters
+    for a chain along z and is what h2_polarized_bracket uses. full_p
+    adds px and py as well, which triples the added orbitals and is
+    usually more basis than the demonstration needs.
+
+    Polarization is what pushes a small molecule past the point where its
+    Fock sector can be formed, which is where the relaxation earns its
+    place: six hydrogens with s alone are six orbitals and a formable
+    924-dimensional sector, and with pz they are twelve orbitals and a
+    sector of 134,596 behind a Fock space of 16,777,216."""
+    shells = [(tuple(p), (0, 0, 0), _STO3G_H_RAW) for p in positions]
+    comps = ((1, 0, 0), (0, 1, 0), (0, 0, 1)) if full_p else ((0, 0, 1),)
+    if polarized:
+        for p in positions:
+            for lz in comps:
+                shells.append((tuple(p), lz, ((pz_exp, 1.0),)))
+    return shells
 
 
 # --------------------------------------------- certified reduced bases /
@@ -5750,13 +5938,19 @@ def _fit_jump(meas, tol, remaining):
     fit, and a wrong jump costs one extra run, because the certificate
     still arbitrates. Fall back to plain stepping whenever the data
     refuse the model: fewer than two points, errors not decreasing, or a
-    slope that is flat or rising."""
+    slope that is flat or rising, or a ladder whose knobs are not
+    numbers at all. That last one is not hypothetical: the 2-RDM ladder
+    is D, DQ, DQG, and a fitted jump has nothing to fit there."""
     if len(meas) < 2:
         return remaining[0]
     es = [e for _, e in meas]
     if any(e2 >= e1 for e1, e2 in zip(es, es[1:])) or min(es) <= 0:
         return remaining[0]
-    ks = [float(k) for k, _ in meas]
+    try:
+        ks = [float(k) for k, _ in meas] + [float(k) for k in remaining]
+    except (TypeError, ValueError):
+        return remaining[0]
+    ks = ks[:len(meas)]
     ys = [math.log(e) for e in es]
     kbar = sum(ks) / len(ks)
     ybar = sum(ys) / len(ys)
@@ -6237,22 +6431,31 @@ def h_chain_energy_dispatch(n: int, tol: float, d: float = 1.8,
     declared ladder the planner climbs or jumps until a certificate says
     stop.
 
-    The second rewrite keeps that ladder's upper half and replaces its
-    lower half with the 2-positivity relaxation of the 2-RDM. Neither
-    half knows the other exists, which is the variational sandwich the
-    chemistry column of TARGETS asks for. The trade is real in both
-    directions. The 2-RDM lower bound stops depending on ell, so it is
-    computed once and every later rung buys only a better upper bound,
-    but the semidefinite program costs more than several window rungs at
-    small n. Measured at n=6: the bracket at ell=2 goes from 387 mHa per
-    atom to 25, and at ell=4 from 44 to 14, while the program itself
-    costs about as much as ell=7 would.
+    The second rewrite is the 2-positivity relaxation of the 2-RDM,
+    bounded above by a self-consistent determinant. Its knob is which
+    conditions it imposes, from D through DQ to DQG, and it does not
+    know what a window is. Measured at n = 4 to 8 its half width per
+    atom is 8.0 to 8.6 mHa at DQG, which barely moves with the chain,
+    while the window ladder at a fixed length loses ground as the chain
+    grows. What it costs is 2.5 to 65 s against a window rung's
+    fractions of a second.
 
-    So the cheap window rungs run first and the pair only gets its turn
+    So the cheap window rungs run first and the relaxation gets its turn
     when they have all failed, which is the cost model doing its job.
-    Certificates still decide. The lower halves intersect, since the
-    window bounds the ground energy over all sectors and the 2-RDM
-    bounds the N-electron one, and the tighter of the two is kept.
+    Certificates still decide.
+
+    Both rewrites bound the same number. The window brackets the ground
+    energy over every particle sector, and its upper half is an
+    N-electron trial state, so its bracket contains the N-electron ground
+    energy too. The relaxation brackets that sector directly. The query
+    this front door answers is therefore the N-electron ground energy,
+    and the window's answer is simply looser below it.
+
+    h_chain_rdm2_bracket, which intersects the two, is still available
+    and still reports which side won. It is not raced here because the
+    window's block-product upper bound stopped winning once the
+    determinant became self-consistent, measured at 147 mHa above exact
+    against 62 at H4, so the pairing's ell knob had nothing left to buy.
     """
     tol_total = tol * n
     ells = tuple(range(2, min(n - 1, ell_max) + 1))
@@ -6281,24 +6484,17 @@ def h_chain_energy_dispatch(n: int, tol: float, d: float = 1.8,
         # rewrites also share the window memo, so a rung the other
         # already ran measures as nearly free, exactly the state
         # dependence the compiler page reports.
-        sdp_price = 13.0 * n ** 4
+        T, V, eri, enuc = _h_chain_basis(n, d)
+        rw = _rdm2_rewrite(T + V.sum(0), eri, n, enuc, n, 1e-7, 100_000)
 
-        def paired_cost(ell):
-            return 4.0 ** ell + (sdp_price if ell == ells[0] else 0.0)
+        def guarded(cond, _run=rw.run):
+            try:
+                return _run(cond)
+            except ImportError as exc:
+                raise ValueError(
+                    f"the 2-RDM rung needs cvxpy and scs: {exc}")
 
-        def paired(ell):
-            if "lower" not in rdm_memo:
-                try:
-                    T, V, eri, enuc = _h_chain_basis(n, d)
-                    rdm_memo["lower"] = _rdm2_lower(T + V.sum(0), eri, n,
-                                                    enuc, 1e-8, 100_000)
-                except ImportError as exc:
-                    raise ValueError(
-                        f"the 2-RDM rung needs cvxpy and scs: {exc}")
-            return h_chain_rdm2_bracket(n, d, ell, window=window_at(ell),
-                                        lower=rdm_memo["lower"])
-
-        rewrites.append(Rewrite("window+2rdm", ells, paired_cost, paired))
+        rewrites.append(replace(rw, run=guarded))
 
     return plan("hchain-energy", tol_total, rewrites, jump=jump,
                 context=f"n={n}")

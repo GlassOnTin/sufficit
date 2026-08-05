@@ -79,10 +79,12 @@ The lower half of that pair now exists. The 2-positivity relaxation is
 solved and certified in `rdm2_energy_bracket`, and spin blocking carries it to
 H₁₄, which is 2²⁸ Fock states and well past the point where the Hamiltonian
 can be formed. It certifies the N-electron sector rather than the whole Fock space,
-which is a narrower claim than the bracket beside it. Its upper half is the
-window ladder's variational trial state, so the sandwich is assembled from two
-proofs that know nothing about each other, and the planner races the pair
-against the window alone.
+which is a narrower claim than the bracket beside it. Its upper half is a
+self-consistent determinant, so the sandwich is assembled from two proofs that
+know nothing about each other, and the planner races it against the window
+ladder. There is now a molecular front door too, on McMurchie-Davidson
+integrals, where polarisation functions push a six-atom molecule past the
+point where its Fock sector can be formed and only the relaxation answers.
 
 The compiler's addition is replacing the folklore method ladder with
 per-system, per-query selection of thresholds and rewrites against a composed
