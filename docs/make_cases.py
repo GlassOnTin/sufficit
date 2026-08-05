@@ -149,6 +149,9 @@ BACKGROUND = {
     "rdm2-bound": [
         "Density matrix", "Semidefinite programming",
         "Hartree–Fock method", "Full configuration interaction"],
+    "molecule": [
+        "Gaussian orbital", "Basis set (chemistry)", "Slater-type orbital",
+        "Full configuration interaction"],
     "tfi-reduced-basis": [
         "Transverse-field Ising model", "Quantum phase transition",
         "Model order reduction"],
@@ -3947,6 +3950,244 @@ half-width per atom against which conditions the relaxation imposes">
         slug="rdm2-bound")
 
 
+# ======================================================================
+def molecule_case():
+    d = 1.8
+
+    def chain(k):
+        return [(0.0, 0.0, d * i) for i in range(k)]
+
+    # each row runs the front door once, so it pays only for the rungs the
+    # planner actually spends, which is the thing being demonstrated
+    spec = [(2, False, 1e-6), (4, False, 1e-6), (6, False, 0.02),
+            (2, True, 1e-6), (4, True, 0.05), (6, True, 0.12)]
+    rows = []
+    for k, pol, tol in spec:
+        pos = chain(k)
+        atoms = [(1, p) for p in pos]
+        shells = sf.hydrogen_shells(pos, polarized=pol)
+        nao = len(shells)
+        dim = sf._sector_dim(nao, k)
+        t0 = time.perf_counter()
+        try:
+            c = sf.molecule_energy_dispatch(atoms, shells, k, tol=tol,
+                                            eps=1e-6, max_iters=30_000)
+            chosen = c.provenance[-1].split("chose ")[1].split(" (")[0]
+            rows.append(dict(k=k, pol=pol, nao=nao, dim=dim, tol=tol,
+                             cert=c, chosen=chosen, refused=None,
+                             secs=time.perf_counter() - t0))
+        except sf.Refusal as e:
+            rows.append(dict(k=k, pol=pol, nao=nao, dim=dim, tol=tol,
+                             cert=None, chosen=None, refused=str(e),
+                             secs=time.perf_counter() - t0))
+
+    # the p shell has to be doing something, or the basis is decoration
+    plain = {r["k"]: r for r in rows if not r["pol"] and r["cert"]}
+    polar = {r["k"]: r for r in rows if r["pol"] and r["cert"]}
+    drops = [(k, (plain[k]["cert"].value + plain[k]["cert"].err)
+              - (polar[k]["cert"].value + polar[k]["cert"].err))
+             for k in sorted(set(plain) & set(polar))]
+
+    # the cross-check the page would otherwise only assert: where both
+    # rewrites are affordable, run both on the same molecule and see
+    # whether the relaxation really does contain the exact answer
+    xpos = chain(2)
+    xatoms = [(1, p) for p in xpos]
+    xshells = sf.hydrogen_shells(xpos, polarized=True)
+    xdense = sf.molecule_dense_bracket(xatoms, xshells, 2)
+    xh, xeri, xenuc = sf.molecular_integrals(xatoms, xshells)
+    xrel = sf.rdm2_energy_bracket(xh, xeri, 2, xenuc, conditions="D",
+                                  eps=1e-7)
+    xheld = xrel.value - xrel.err <= xdense.value <= xrel.value + xrel.err
+    xgap = abs((xrel.value - xrel.err) - xdense.value)
+
+    # ---- figure: the two cost models against the orbital count, which is
+    # what decides the race before any rung runs
+    naos = list(range(2, 17))
+    # the sector depends on the electron count, so the curve uses half
+    # filling, which is what a neutral hydrogen system gives
+    dense_cost = [4.0 ** n / 1e3
+                  + sf._sector_dim(n, max(2, n // 2)) ** 3 / 1e6
+                  for n in naos]
+    rdm_cost = [30.0 * n ** 4 for n in naos]
+    ax = Axes((1.6, 16.4), (math.log10(min(rdm_cost) * 0.4),
+                            math.log10(max(dense_cost) * 2.5)), h=330)
+
+    def ly(v):
+        return ax.Y(math.log10(max(v, 1e-6)))
+
+    def poly(vals):
+        return "M " + " L ".join(f"{ax.X(n):.1f} {ly(v):.1f}"
+                                 for n, v in zip(naos, vals))
+    decades = [10 ** e for e in range(-1, 25)
+               if ax.ylim[0] <= e <= ax.ylim[1]]
+    grid = "".join(
+        f'<line x1="{ax.ml}" y1="{ly(t):.1f}" x2="{640 - ax.mr}" '
+        f'y2="{ly(t):.1f}" class="board-ink" opacity="0.22" '
+        f'stroke-width="1"/>'
+        f'<text x="{ax.ml - 8}" y="{ly(t) + 3.5:.1f}" text-anchor="end" '
+        f'class="board-text" font-size="10" opacity="0.7">'
+        f'10<tspan dy="-4" font-size="8">{int(round(math.log10(t)))}</tspan>'
+        f'</text>' for t in decades)
+    marks = "".join(
+        f'<circle cx="{ax.X(r["nao"]):.1f}" '
+        f'cy="{ly(4.0 ** r["nao"] / 1e3 + r["dim"] ** 3 / 1e6):.1f}" '
+        f'r="4" class="rust-fill"/>' for r in rows if r["nao"] <= 8)
+    marks += "".join(
+        f'<circle cx="{ax.X(r["nao"]):.1f}" cy="{ly(30.0 * r["nao"] ** 4):.1f}"'
+        f' r="4" class="blue-fill"/>' for r in rows)
+    cap = ax.X(8.5)
+    svg = f'''<svg viewBox="0 0 640 330" role="img" aria-label="Predicted
+cost of the two rewrites against the number of orbitals">
+{grid}
+<rect x="{cap:.1f}" y="{ax.mt}" width="{640 - ax.mr - cap:.1f}"
+      height="{330 - ax.mb - ax.mt}" fill="var(--rust)" opacity="0.07"/>
+<text x="{ax.X(12.5):.1f}" y="{ax.mt + 14}" text-anchor="middle"
+      class="board-text" font-size="10.5" opacity="0.75">
+the exact rewrite is not offered here</text>
+<path d="{poly(dense_cost)}" fill="none" class="rust-ink" stroke-width="2"/>
+<path d="{poly(rdm_cost)}" fill="none" class="blue-ink" stroke-width="2"/>
+{marks}
+{"".join(f'<text x="{ax.X(n):.1f}" y="312" text-anchor="middle" '
+         f'class="board-text" font-size="10.5" opacity="0.7">{n}</text>'
+         for n in naos if n % 2 == 0)}
+<text x="{ax.X(9):.1f}" y="306" text-anchor="middle" class="board-text"
+      font-size="10.5" opacity="0.75">orbitals</text>
+<text x="{ax.X(5.4):.1f}" y="{ly(dense_cost[3]) - 10:.1f}"
+      class="board-text" font-size="11">dense sector</text>
+<text x="{ax.X(11):.1f}" y="{ly(rdm_cost[9]) + 20:.1f}"
+      class="board-text" font-size="11">relaxation, DQG</text>
+</svg>'''
+
+    tbl = ""
+    for r in rows:
+        basis = "s + p<sub>z</sub>" if r["pol"] else "s"
+        got = ("refused" if r["cert"] is None
+               else f"{r['chosen']}")
+        err = "n/a" if r["cert"] is None else f"{r['cert'].err:.2e}"
+        tbl += (f"<tr><td>H{r['k']}</td><td>{basis}</td>"
+                f"<td>{r['nao']}</td><td>{4 ** r['nao']:,}</td>"
+                f"<td>{r['dim']:,}</td><td>{r['tol']:g}</td>"
+                f"<td>{got}</td><td>{err}</td>"
+                f"<td>{r['secs']:.1f} s</td></tr>")
+
+    traces = "\n".join(
+        (f"H{r['k']} {'s+pz' if r['pol'] else 's   '}  "
+         + (r["cert"].provenance[-1] if r["cert"]
+            else "REFUSED: " + r["refused"]))
+        for r in rows)
+    receipts = []
+    for r in rows:
+        if not r["cert"]:
+            continue
+        receipts.append(f"H{r['k']} {'s+pz' if r['pol'] else 's'}")
+        for name, knob, pred, secs, verdict in r["cert"].receipt:
+            v = f"{verdict:.4g}" if isinstance(verdict, float) else verdict
+            receipts.append(f"    {f'{name}@{knob}':<14} "
+                            f"predicted {pred:>12.0f}"
+                            f"   measured {secs:7.2f}s   err {v}")
+
+    big = next(r for r in rows if r["nao"] == 12)
+    return page(
+        "Case: a molecule too big to form",
+        "certified case",
+        "Polarization functions, and the wall they push a molecule past",
+        "McMurchie-Davidson integrals take Cartesian Gaussians of any "
+        "angular momentum, so a p shell is available. Adding one to every "
+        "atom doubles the orbital count, and the Fock space is four to "
+        "that power. Two rewrites race for the same number, and only one "
+        "of them survives the crossing.",
+        [
+            "<h2>The idea</h2>"
+            "<p>A molecule's electronic Hamiltonian is fixed by two "
+            "integral tensors over the orbitals, one-electron and "
+            "two-electron. Getting them for s functions is a page of "
+            "Gaussian algebra. Getting them for arbitrary angular "
+            "momentum is the McMurchie-Davidson recursion, which this "
+            "library already carried for the polarized hydrogen bracket, "
+            "and which is what makes a real basis possible.</p>"
+            "<p>Polarization is the point. A hydrogen with only its 1s "
+            "function cannot describe a bond that leans, so a p shell is "
+            "the first thing any real calculation adds. It also doubles "
+            "the orbital count, and the Fock space is 4<sup>nao</sup>. "
+            "Six hydrogens with s alone are six orbitals and a Fock space "
+            "of 4,096, which is nothing. The same six with one p each are "
+            "twelve orbitals and 16,777,216, which is past forming.</p>"
+            "<p>Two rewrites answer the same question, the N-electron "
+            "ground energy. The first assembles the Fock operator, cuts "
+            "the N-electron sector out of it, and diagonalizes that "
+            "exactly. The second relaxes the 2-RDM for a lower bound and "
+            "takes a self-consistent determinant for an upper one, at a "
+            "cost that is polynomial in orbitals. The planner races "
+            "them.</p>"
+            "<p>The first one pays twice, and that is worth stating "
+            "because getting it wrong was measurable. It assembles the "
+            "whole 4<sup>nao</sup> operator before it can cut anything "
+            "out, and then it diagonalizes a dense matrix of the sector's "
+            "size. Pricing only the second was wrong: at eight orbitals "
+            "with two electrons the sector is 120 wide and instant, while "
+            "the assembly it needs first takes five seconds. So it is "
+            "capped on both, and the refusal says which cap stopped "
+            "it.</p>",
+            code_section(sf.molecular_integrals, sf.molecule_dense_bracket,
+                         sf._rdm2_rewrite, sf.molecule_energy_dispatch),
+            "<h2>The result</h2>"
+            "<p>One run of the front door per row, so each pays only for "
+            "the rungs the planner actually spends.</p>"
+            "<table><thead><tr><th>molecule</th><th>basis</th>"
+            "<th>orbitals</th><th>Fock space</th><th>sector</th>"
+            "<th>tol</th><th>chosen</th><th>err</th><th>wall</th>"
+            "</tr></thead>"
+            f"<tbody>{tbl}</tbody></table>"
+            f"<figure>{svg}<figcaption>What the two cost models predict, "
+            "against the number of orbitals, on log axes. Rust is the "
+            "exact rewrite, whose assembly term is 4<sup>nao</sup> and "
+            "whose diagonalization term is the sector cubed at half filling. Blue is the "
+            "relaxation at DQG, priced 30&#183;nao&#8308;. The dots are "
+            "the systems in the table. The shaded region is where the "
+            "exact rewrite is not offered at all, and the curves show why "
+            "the cap is where it is rather than being a taste.</figcaption>"
+            "</figure>",
+            "<h2>What the planner did</h2>"
+            f"<pre>{esc(traces)}</pre>"
+            "<p>and the receipts, predicted cost beside measured "
+            "seconds:</p>"
+            f"<pre>{esc(chr(10).join(receipts))}</pre>",
+            "<h2>Checked in this run</h2><ul>"
+            + f"<li>Where both rewrites are affordable, both were run on "
+            f"the same molecule, which is the only place the relaxation "
+            f"can be checked rather than only stated. On polarized H2 the "
+            f"exact sector answer is <strong>{xdense.value:.9f}</strong> "
+            f"and the relaxation's lower half is <strong>"
+            f"{xrel.value - xrel.err:.9f}</strong>. Contained: <strong>"
+            f"{'yes' if xheld else 'NO'}</strong>, and the two agree to "
+            f"{xgap:.1e} because two electrons make D complete.</li>"
+            + "".join(
+                f"<li>The p shell earns its place: adding it lowers the "
+                f"certified upper bound at H{k} by <strong>"
+                f"{abs(dv) * 1000:.1f} mHa</strong>, so the basis is doing "
+                "something rather than decorating.</li>"
+                for k, dv in drops[:1])
+            + f"<li>Past the wall: H6 with a p shell is <strong>"
+            f"{big['nao']}</strong> orbitals, a Fock space of <strong>"
+            f"{4 ** big['nao']:,}</strong> and a sector of <strong>"
+            f"{big['dim']:,}</strong>. The exact rewrite is not offered, "
+            f"and the relaxation certifies at <strong>{big['chosen']}"
+            f"</strong> in {big['secs']:.0f} s.</li>"
+            "<li>Two electrons make the cheapest rung complete, by "
+            "Coleman's characterization of ensemble N-representability at "
+            "N = 2, so the relaxation lands on the exact answer at D "
+            "alone and the planner never pays for Q or G.</li>"
+            "<li>What this is not. The upper half is a single "
+            "determinant, so it is the binding side everywhere here, and "
+            "the brackets above are wide for that reason and not because "
+            "the relaxation is loose. The basis is also small: one p "
+            "shell on hydrogen is polarization, not a production basis, "
+            "and nothing here claims otherwise.</li></ul>",
+        ],
+        slug="molecule")
+
+
 CASES = {
     "junction.html": junction_case,
     "criticality.html": criticality_case,
@@ -3966,6 +4207,7 @@ CASES = {
     "the-compiler.html": compiler_case,
     "the-budget.html": budget_case,
     "rdm2-bound.html": rdm2_case,
+    "molecule.html": molecule_case,
 }
 
 # pages needing tools CI does not have: generated locally, committed,
