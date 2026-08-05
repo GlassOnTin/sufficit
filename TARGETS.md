@@ -83,8 +83,10 @@ which is a narrower claim than the bracket beside it. Its upper half is a
 self-consistent determinant, so the sandwich is assembled from two proofs that
 know nothing about each other, and the planner races it against the window
 ladder. There is now a molecular front door too, on McMurchie-Davidson
-integrals, where polarisation functions push a six-atom molecule past the
-point where its Fock sector can be formed and only the relaxation answers.
+integrals and published STO-3G for H, C, N and O. Polarisation functions push
+a six-atom hydrogen cluster past the point where its Fock sector can be formed
+and only the relaxation answers, and on water, where the exact answer is still
+affordable, the relaxation lands 2.3 mHa below full CI.
 
 The compiler's addition is replacing the folklore method ladder with
 per-system, per-query selection of thresholds and rewrites against a composed

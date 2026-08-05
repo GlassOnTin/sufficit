@@ -3502,7 +3502,7 @@ def _rdm2_assemble(mp, W0, YQ, YG):
     return blocks, padW, c0, padc
 
 
-def _rdm2_determinant_upper(h, eri, N, scf_iters: int = 40):
+def _rdm2_determinant_upper(h, eri, N, scf_iters: int = 200):
     """A rigorous variational upper bound from one closed-shell
     determinant. Any orthonormal set of orbitals gives a valid bound, so
     convergence is not part of the claim and a stopped iteration is as
@@ -3518,20 +3518,21 @@ def _rdm2_determinant_upper(h, eri, N, scf_iters: int = 40):
     h = np.asarray(h, float)
     eri = np.asarray(eri, float)
     nocc = N // 2
-    _, C = np.linalg.eigh(h)
-    for _ in range(scf_iters):
-        Cocc = C[:, :nocc]
-        P = 2.0 * Cocc @ Cocc.T
-        F = h + np.einsum("rs,pqrs->pq", P, eri) \
-            - 0.5 * np.einsum("rs,prqs->pq", P, eri)
-        _, C = np.linalg.eigh(F)
+    if scf_iters:
+        C, its, conv = _rhf(h, eri, N, max_iters=scf_iters)
+        note = f"scf={its}it" + ("" if conv else "-unconverged")
+    else:
+        _, C = np.linalg.eigh(h)
+        note = "core-guess"
     occ = C[:, :nocc]
     hm = occ.T @ h @ occ
     e = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, occ, occ, occ, occ)
     d = np.arange(N // 2)
-    return float(2 * np.trace(hm)
-                 + 2 * e[d[:, None], d[:, None], d[None, :], d[None, :]].sum()
-                 - e[d[:, None], d[None, :], d[None, :], d[:, None]].sum())
+    energy = float(
+        2 * np.trace(hm)
+        + 2 * e[d[:, None], d[:, None], d[None, :], d[None, :]].sum()
+        - e[d[:, None], d[None, :], d[None, :], d[:, None]].sum())
+    return energy, note
 
 
 def _rdm2_lower(h, eri, N, enuc, eps, max_iters, conditions="DQG"):
@@ -3604,16 +3605,17 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
     """
     lo, prov = _rdm2_lower(h, eri, N, enuc, eps, max_iters, conditions) \
         if lower is None else lower
-    up = _rdm2_determinant_upper(h, eri, N) + enuc if upper is None \
-        else float(upper)
+    if upper is None:
+        det, note = _rdm2_determinant_upper(h, eri, N)
+        up = det + enuc
+    else:
+        up, note = float(upper), "given"
     if up < lo:
         raise ValueError(
             f"2-RDM lower bound {lo:.9f} exceeds the upper bound "
             f"{up:.9f}; the upper bound is not variational for N={N}")
     return Certified(0.5 * (up + lo), 0.5 * (up - lo), Tier.RIGOROUS,
-                     (prov + " "
-                      + ("determinant" if upper is None else "given")
-                      + "-upper",))
+                     (f"{prov} upper={note}",))
 
 
 def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
@@ -3660,7 +3662,7 @@ def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
     # electrons, so the better one is kept. Measured, the self-consistent
     # determinant beats the block product at these sizes, 62 mHa above
     # exact against 147 at H4, and it costs no window at all.
-    det = _rdm2_determinant_upper(h, eri, n) + enuc
+    det = _rdm2_determinant_upper(h, eri, n)[0] + enuc
     up = min(win.value + win.err, det)
     upper_from = "determinant" if det < win.value + win.err else "window"
     c = rdm2_energy_bracket(h, eri, n, enuc, upper=up,
@@ -3673,6 +3675,97 @@ def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
                      + (f"intersect-lower binding={binding} "
                         f"upper={upper_from}",),
                      min(1.0, win.fail_p + c.fail_p))
+
+
+# ------------------------------------------------------- a real basis set.
+# STO-3G for the first-row elements this library needs, in the published
+# contracted form. The contraction coefficients are shared across
+# elements because the fit is to a Slater orbital of exponent 1 and only
+# the exponents are scaled, by zeta squared.
+#
+# Recalled constants are worth exactly what they are checked against, so
+# these are gated on molecular energies nobody here chose: RHF/STO-3G for
+# water, methane and ammonia, which between them exercise all four
+# elements. Measured -74.9631, -39.7268 and -55.4541 against literature
+# values of about -74.9659, -39.727 and -55.4554. A test pins all three.
+#
+# One thing did not resolve. N2 comes out at -106.766 where the value
+# recalled for it was -107.496. Ammonia constrains the nitrogen
+# exponents to about half a per cent, measured by perturbing them, and a
+# basis error large enough to move N2 by 0.73 hartree is far outside
+# that, so the recollection is the more likely wrong one. It is recorded
+# rather than resolved.
+
+_STO3G_1S = (0.15432897, 0.53532814, 0.44463454)
+_STO3G_2S = (-0.09996723, 0.39951283, 0.70011547)
+_STO3G_2P = (0.15591627, 0.60768372, 0.39195739)
+_STO3G_EXPONENTS = {
+    "H": {"1s": (3.42525091, 0.62391373, 0.16885540)},
+    "C": {"1s": (71.6168370, 13.0450960, 3.5305122),
+          "2sp": (2.9412494, 0.6834831, 0.2222899)},
+    "N": {"1s": (99.1061690, 18.0523120, 4.8856602),
+          "2sp": (3.7804559, 0.8784966, 0.2857144)},
+    "O": {"1s": (130.7093200, 23.8088610, 6.4436083),
+          "2sp": (5.0331513, 1.1695961, 0.3803890)},
+}
+_ELEMENT_Z = {"H": 1, "C": 6, "N": 7, "O": 8}
+BOHR_PER_ANGSTROM = 1.8897261254578281
+
+
+def sto3g(molecule, angstrom: bool = False):
+    """(atoms, shells, nelec) for a molecule given as [(element, xyz)].
+
+    Coordinates are bohr unless angstrom is set. Every element carries
+    its 1s, and the first-row ones also carry a 2s and the three 2p
+    components, which is what STO-3G means for them. Shells come back one
+    Cartesian AO each, which is what _md_integrals takes.
+
+    nelec is the neutral electron count, so a caller wanting an ion
+    should pass its own."""
+    atoms, shells, nelec = [], [], 0
+    for el, xyz in molecule:
+        if el not in _STO3G_EXPONENTS:
+            raise ValueError(f"no STO-3G data here for {el!r}; this "
+                             f"library carries "
+                             f"{sorted(_STO3G_EXPONENTS)}")
+        p = tuple(float(c) * (BOHR_PER_ANGSTROM if angstrom else 1.0)
+                  for c in xyz)
+        atoms.append((_ELEMENT_Z[el], p))
+        nelec += _ELEMENT_Z[el]
+        sets = _STO3G_EXPONENTS[el]
+        shells.append((p, (0, 0, 0), tuple(zip(sets["1s"], _STO3G_1S))))
+        if "2sp" in sets:
+            shells.append((p, (0, 0, 0),
+                           tuple(zip(sets["2sp"], _STO3G_2S))))
+            for l in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                shells.append((p, l, tuple(zip(sets["2sp"], _STO3G_2P))))
+    return atoms, shells, nelec
+
+
+def _rhf(h, eri, N, max_iters: int = 200, tol: float = 1e-10):
+    """Closed-shell self-consistent field in an orthonormal basis.
+
+    Returns (orbitals, iterations, converged). Convergence is not part of
+    any claim downstream, because the determinant built from ANY
+    orthonormal orbitals is variational, so a stopped iteration gives a
+    looser upper bound and never an invalid one. It is reported so a
+    reader can tell a converged bound from a stopped one."""
+    h = np.asarray(h, float)
+    eri = np.asarray(eri, float)
+    nocc = N // 2
+    _, C = np.linalg.eigh(h)
+    E = None
+    for it in range(max_iters):
+        Co = C[:, :nocc]
+        P = 2.0 * Co @ Co.T
+        F = h + np.einsum("rs,pqrs->pq", P, eri) \
+            - 0.5 * np.einsum("rs,prqs->pq", P, eri)
+        Enew = 0.5 * float(np.sum(P * (h + F)))
+        _, C = np.linalg.eigh(F)
+        if E is not None and abs(Enew - E) < tol:
+            return C, it + 1, True
+        E = Enew
+    return C, max_iters, False
 
 
 def molecular_integrals(atoms, shells):

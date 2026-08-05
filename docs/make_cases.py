@@ -4087,6 +4087,30 @@ the exact rewrite is not offered here</text>
                             f"predicted {pred:>12.0f}"
                             f"   measured {secs:7.2f}s   err {v}")
 
+    # ---- a real molecule, in a real basis
+    ang = 52.225
+    wmol = [("O", (0.0, 0.0, 0.0)),
+            ("H", (0.9584 * math.sin(math.radians(ang)), 0.0,
+                   0.9584 * math.cos(math.radians(ang)))),
+            ("H", (-0.9584 * math.sin(math.radians(ang)), 0.0,
+                   0.9584 * math.cos(math.radians(ang))))]
+    watoms, wshells, wn = sf.sto3g(wmol, angstrom=True)
+    wh, weri, wenuc = sf.molecular_integrals(watoms, wshells)
+    wdet, wnote = sf._rdm2_determinant_upper(wh, weri, wn)
+    wrhf = wdet + wenuc
+    wfci = sf.molecule_dense_bracket(watoms, wshells, wn)
+    wat = []
+    for cond in ("D", "DQ", "DQG"):
+        t0 = time.perf_counter()
+        c = sf.rdm2_energy_bracket(wh, weri, wn, wenuc, conditions=cond,
+                                   eps=1e-6)
+        wat.append((cond, c, time.perf_counter() - t0))
+    wtbl = "".join(
+        f"<tr><td>{cond}</td><td>{c.value - c.err:.6f}</td>"
+        f"<td>{wfci.value - (c.value - c.err):.4f}</td>"
+        f"<td>{secs:.1f} s</td></tr>" for cond, c, secs in wat)
+    wbest = wat[-1][1]
+
     big = next(r for r in rows if r["nao"] == 12)
     return page(
         "Case: a molecule too big to form",
@@ -4148,6 +4172,27 @@ the exact rewrite is not offered here</text>
             "exact rewrite is not offered at all, and the curves show why "
             "the cap is where it is rather than being a taste.</figcaption>"
             "</figure>",
+            "<h2>A real molecule, in a real basis</h2>"
+            "<p>Hydrogen clusters are a convenient laboratory and they "
+            "are not a molecule anyone asked about. STO-3G for the "
+            "first-row elements is a published basis, and water in it is "
+            "seven orbitals and ten electrons, so the sector is 1,001 "
+            "wide and the exact answer is still affordable. That makes it "
+            "the place where the relaxation can be checked against the "
+            "truth rather than only stated.</p>"
+            "<p>The basis data was written down from recollection, which "
+            "is worth exactly what it is checked against, so it is gated "
+            "on three closed-shell molecules whose energies nobody here "
+            "chose. Water, methane and ammonia between them exercise all "
+            "four elements carried, and a test pins all three.</p>"
+            f"<pre>{esc(chr(10).join(['RHF   ' + f'{wrhf:.9f}' + f'   [{wnote}]   published about -74.9659', 'FCI   ' + f'{wfci.value:.9f}' + '   published about -75.0129', 'corr  ' + f'{wfci.value - wrhf:.9f}']))}</pre>"
+            "<table><thead><tr><th>conditions</th><th>lower bound</th>"
+            "<th>below FCI</th><th>cost</th></tr></thead>"
+            f"<tbody>{wtbl}</tbody></table>"
+            "<p class='note'>The upper half of every one of those "
+            f"brackets is the same self-consistent determinant, "
+            f"{wrhf:.6f}, so the width is the correlation energy and not "
+            "a defect of the relaxation.</p>",
             "<h2>What the planner did</h2>"
             f"<pre>{esc(traces)}</pre>"
             "<p>and the receipts, predicted cost beside measured "
@@ -4174,6 +4219,12 @@ the exact rewrite is not offered here</text>
             f"{big['dim']:,}</strong>. The exact rewrite is not offered, "
             f"and the relaxation certifies at <strong>{big['chosen']}"
             f"</strong> in {big['secs']:.0f} s.</li>"
+            f"<li>A real molecule in a real basis: water at DQG is "
+            f"<strong>{wfci.value - (wbest.value - wbest.err):.4f}"
+            f"</strong> hartree below its own full CI, which is "
+            f"{(wfci.value - (wbest.value - wbest.err)) * 1000:.1f} mHa, "
+            f"and the basis reproduces published RHF energies for water, "
+            "methane and ammonia to better than 3 mHa.</li>"
             "<li>Two electrons make the cheapest rung complete, by "
             "Coleman's characterization of ensemble N-representability at "
             "N = 2, so the relaxation lands on the exact answer at D "

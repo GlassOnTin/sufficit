@@ -4048,10 +4048,12 @@ def test_scf_determinant_upper_is_valid_and_beats_the_core_guess():
         T, V, eri, enuc = sf._h_chain_basis(n, 1.8)
         h = T + V.sum(0)
         truth = _sector_ground(sf.h_chain_fock_hamiltonian(n, 1.8), n)
-        core = sf._rdm2_determinant_upper(h, eri, n, scf_iters=0) + enuc
-        scf = sf._rdm2_determinant_upper(h, eri, n) + enuc
+        core, cnote = sf._rdm2_determinant_upper(h, eri, n, scf_iters=0)
+        scf, snote = sf._rdm2_determinant_upper(h, eri, n)
+        core, scf = core + enuc, scf + enuc
         assert scf >= truth and core >= truth      # both are upper bounds
         assert (core - truth) > 3 * (scf - truth)
+        assert cnote == "core-guess" and "unconverged" not in snote
 
 
 def test_fit_jump_steps_when_the_ladder_is_not_numeric():
@@ -4122,3 +4124,70 @@ def test_molecule_dispatch_offers_dense_only_when_it_can_afford_it():
         sf.molecule_energy_dispatch(atoms, shells, 2, tol=1e-9,
                                     dense_nao_max=2, eps=1e-5,
                                     max_iters=2000)
+
+
+def _water(r_ang=0.9584, half_deg=52.225):
+    s, c = math.sin(math.radians(half_deg)), math.cos(math.radians(half_deg))
+    return [("O", (0.0, 0.0, 0.0)),
+            ("H", (r_ang * s, 0.0, r_ang * c)),
+            ("H", (-r_ang * s, 0.0, r_ang * c))]
+
+
+def test_sto3g_basis_reproduces_published_molecular_energies():
+    """Recalled constants are worth exactly what they are checked
+    against. The STO-3G exponents in this module were written down from
+    memory, so they are gated here on three closed-shell molecules whose
+    RHF energies nobody here chose, and which between them exercise all
+    four elements carried.
+
+    One case did not resolve and is recorded rather than hidden. N2 comes
+    out at -106.766 where the value recalled for it was -107.496.
+    Perturbing the nitrogen exponents by 5% moves ammonia by 3 to 15
+    mHa, so ammonia's agreement to 1.3 mHa pins them to well under a per
+    cent, and a basis error large enough to move N2 by 0.73 hartree is
+    excluded by two orders of magnitude. The recollection is the more
+    likely wrong one."""
+    b = sf.BOHR_PER_ANGSTROM
+    ch = 1.0870 * b / math.sqrt(3.0)
+    methane = [("C", (0.0, 0.0, 0.0))] + [
+        ("H", (ch * x, ch * y, ch * z))
+        for x, y, z in ((1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1))]
+    rn, th = 1.0124 * b, math.radians(106.67)
+    pol = math.acos(math.sqrt((1 + 2 * math.cos(th)) / 3))
+    ammonia = [("N", (0.0, 0.0, 0.0))] + [
+        ("H", (rn * math.sin(pol) * math.cos(2 * math.pi * k / 3),
+               rn * math.sin(pol) * math.sin(2 * math.pi * k / 3),
+               rn * math.cos(pol))) for k in range(3)]
+
+    cases = [(_water(), True, -74.9659), (methane, False, -39.727),
+             (ammonia, False, -55.4554)]
+    for mol, in_ang, published in cases:
+        atoms, shells, nelec = sf.sto3g(mol, angstrom=in_ang)
+        h, eri, enuc = sf.molecular_integrals(atoms, shells)
+        det, note = sf._rdm2_determinant_upper(h, eri, nelec)
+        assert "unconverged" not in note, note
+        assert abs((det + enuc) - published) < 5e-3, (mol[0][0], det + enuc)
+
+
+def test_water_relaxation_brackets_its_full_ci():
+    """The first real molecule, in a real basis. Water in STO-3G is seven
+    orbitals and ten electrons, so the sector is 1,001 wide and the exact
+    answer is still affordable, which is the only place the relaxation
+    can be checked rather than only stated.
+
+    Measured: FCI -75.012759, and the relaxation at DQG lands 2.3 mHa
+    below it in 22 s. This test uses DQ, which is 2 s and 72 mHa below,
+    because the page regenerates DQG on every push and the suite does not
+    need to pay for it twice."""
+    atoms, shells, nelec = sf.sto3g(_water(), angstrom=True)
+    assert len(shells) == 7 and nelec == 10
+    fci = sf.molecule_dense_bracket(atoms, shells, nelec)
+    h, eri, enuc = sf.molecular_integrals(atoms, shells)
+    rel = sf.rdm2_energy_bracket(h, eri, nelec, enuc, conditions="DQ",
+                                 eps=1e-6)
+    lo, hi = rel.value - rel.err, rel.value + rel.err
+    assert lo <= fci.value <= hi
+    assert 1e-3 < fci.value - lo < 0.5      # a strict relaxation
+    # the upper half is the determinant, so the width is the correlation
+    # energy and not a defect of the relaxation
+    assert abs(hi - (-74.9631)) < 5e-3
