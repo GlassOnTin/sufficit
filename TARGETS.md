@@ -75,6 +75,13 @@ within a basis*. Basis-set incompleteness is then handled at the asymptotic
 tier by extrapolation, or at the empirical tier by F12, and it is declared
 rather than hidden.
 
+The lower half of that pair now exists. The 2-positivity relaxation is
+solved and certified in `rdm2_energy_bracket`, and spin blocking carries it to
+H₁₄, which is 2²⁸ Fock states and well past the point where the Hamiltonian
+can be formed. It certifies the N-electron sector rather than the whole Fock space,
+which is a narrower claim than the bracket beside it, and the upper half is
+still a single determinant.
+
 The compiler's addition is replacing the folklore method ladder with
 per-system, per-query selection of thresholds and rewrites against a composed
 error budget. Certificate outlook: rigorous intervals where the sandwich

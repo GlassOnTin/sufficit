@@ -3895,25 +3895,55 @@ def test_rdm2_any_multiplier_gives_a_valid_bound():
     below the truth, which is the only property that was ever claimed
     for the solver."""
     h, eri, enuc, truth, good = _rdm2_h4()
-    mp = dict(sf._rdm2_maps(2 * len(h), 4))
-    mp["T"] = 6.0
+    mp = sf._rdm2_maps(2 * len(h), 4)
+    T = 6.0
     hs, g = sf._rdm2_spin_block(np.asarray(h), np.asarray(eri))
     W0 = sf._rdm2_energy_operator(mp, hs, g)
     rng = np.random.default_rng(0)
+    dsz = [m for _, m in mp["dl"]["sizes"] if m]
+    gsz = [m for _, m in mp["gl"]["sizes"] if m]
 
     def bound_from(YQ, YG):
-        YQ, _ = sf._rdm2_psd_shift(YQ)
-        YG, _ = sf._rdm2_psd_shift(YG)
-        W, padW, c0, padc = sf._rdm2_assemble(mp, W0, YQ, YG)
-        br = sf.eigen_bracket(W)
-        return (br.value - br.err - padW) * mp["T"] + c0 - padc + enuc
+        YQ = [sf._rdm2_psd_shift(Y)[0] for Y in YQ]
+        YG = [sf._rdm2_psd_shift(Y)[0] for Y in YG]
+        Wb, padW, c0, padc = sf._rdm2_assemble(mp, W0, YQ, YG)
+        mu = min(sf.eigen_bracket(B).value - sf.eigen_bracket(B).err
+                 for B in Wb)
+        return (mu - padW) * T + c0 - padc + enuc
 
-    zero = bound_from(np.zeros((mp["M"],) * 2), np.zeros((mp["n2"],) * 2))
+    zero = bound_from([np.zeros((m, m)) for m in dsz],
+                      [np.zeros((m, m)) for m in gsz])
 
-    def psd(n):
-        A = rng.standard_normal((n, n))
+    def psd(m):
+        A = rng.standard_normal((m, m))
         return A @ A.T
 
-    rand = bound_from(psd(mp["M"]), psd(mp["n2"]))
+    rand = bound_from([psd(m) for m in dsz], [psd(m) for m in gsz])
     assert zero <= truth and rand <= truth
     assert rand < zero < good.value - good.err <= truth
+
+
+def test_rdm2_spin_blocking_keeps_the_bound_and_cuts_the_cost():
+    """A geminal carries S_z = sigma_p + sigma_q and a particle-hole
+    operator carries sigma_p - sigma_q, so on a state of definite S_z
+    both matrices vanish between labels that differ. The Hamiltonian
+    commutes with S_z, so the ground energy of the sector is attained at
+    such a state and the true 2-RDM stays inside the blocked feasible
+    set. That is the whole argument, and it is the part that has to be
+    right: blocking a feasible set that did NOT contain the answer would
+    turn the bound into a number.
+
+    The check is that the answer does not move. Before blocking existed
+    the bound at H4 measured -2.177661152, and the blocked run must
+    reproduce it to solver tolerance while solving a smaller cone. The
+    same comparison held at H2, H6 and H8, and blocking took H10 from
+    not converging in twelve minutes to 141 seconds."""
+    h, eri, enuc, truth, c = _rdm2_h4()
+    mp = sf._rdm2_maps(8, 4)
+    assert [m for _, m in mp["dl"]["sizes"]] == [6, 16, 6]     # was 28
+    assert [m for _, m in mp["gl"]["sizes"]] == [16, 32, 16]   # was 64
+    assert mp["dl"]["total"] == 6 ** 2 + 16 ** 2 + 6 ** 2 < mp["M"] ** 2
+    lo = c.value - c.err
+    assert lo <= truth
+    assert abs(lo - (-2.177661152)) < 1e-5      # unblocked, to solver tol
+    assert "D-blocks=6+16+6" in c.provenance[0]

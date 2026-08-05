@@ -3133,7 +3133,8 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
 # --------------------------------------------- the 2-RDM lower bound. The
 # window ladder above prices a lower bound at 4^ell and stops where the
 # matrix stops being formable. This one is priced in orbitals instead of
-# in states, so it keeps answering past that wall.
+# in states, so its cost grows polynomially where the other grows
+# exponentially.
 #
 # The energy is a linear functional of the two-particle density matrix,
 # so minimizing it over a set that CONTAINS every N-representable 2-RDM
@@ -3161,6 +3162,15 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
 # make it wrong. Every positivity fact is then issued by eigen_bracket,
 # which already carries its own floating-point margins, so this rewrite
 # certifies by composition rather than by a new proof.
+#
+# Everything here is blocked by spin projection. A geminal a_q a_p
+# carries S_z = sigma_p + sigma_q, and a particle-hole operator
+# a_dag_q a_p carries S_z = sigma_p - sigma_q, so on a state of definite
+# S_z each matrix is zero between labels that differ. The Hamiltonian
+# commutes with S_z, so the ground energy of the N-electron sector is
+# attained at a state of definite S_z, which means the true 2-RDM stays
+# inside the blocked feasible set and the bound stays a bound. Blocking
+# can only tighten it, since it minimizes over less.
 
 
 def _rdm2_spin_block(h, eri):
@@ -3187,19 +3197,40 @@ def _rdm2_spin_block(h, eri):
     return hs, g
 
 
+def _rdm2_layout(labels):
+    """Group indices by symmetry label and lay the blocks out end to end
+    in one vector. Returns the block sizes, the offset of each block's
+    vec, the label of each index, its position inside its own block, and
+    the total length."""
+    order = sorted(set(labels))
+    pos, lab_of, sizes, off, total = {}, {}, [], {}, 0
+    for lab in order:
+        members = [i for i, x in enumerate(labels) if x == lab]
+        off[lab] = total
+        sizes.append((lab, len(members)))
+        for k, i in enumerate(members):
+            pos[i] = k
+            lab_of[i] = lab
+        total += len(members) ** 2
+    return dict(sizes=sizes, off=off, pos=pos, lab=lab_of, total=total,
+                width={lab: m for lab, m in sizes})
+
+
 @functools.lru_cache(maxsize=8)
 def _rdm2_maps(nso, N):
     """The exact affine maps from the 2-RDM to everything else, built
     once per (nso, N) and cached because they depend on no integral.
 
     D lives in the geminal basis: rows and columns are ordered pairs
-    p < q, so D is M x M with M = nso(nso-1)/2, and it is PSD because
-    D_IJ = <(a_q a_p)^dagger (a_s a_r)> is a Gram matrix. The maps are
-    stored as sparse operators on vec(D) in Fortran order.
+    p < q, and D_IJ = <(a_q a_p)^dagger (a_s a_r)> is a Gram matrix,
+    hence PSD. Spin projection splits it into three blocks, and Q with
+    it; G splits into three of its own. Each block is stored as its own
+    square matrix and the blocks are laid end to end in one vector, so
+    the maps below are sparse operators on that vector.
 
-    All three identities below were checked against exactly computed
-    RDMs before this code was written, at (nso, N) = (4, 2), (6, 3),
-    (6, 2) and (8, 4), and they agree to 1e-15:
+    All three identities were checked against exactly computed RDMs
+    before this code was written, at (nso, N) = (4, 2), (6, 3), (6, 2)
+    and (8, 4), and they agree to 1e-15:
 
         1D_pr        = sum_q 2D_pq,rq / (N - 1)
         2Q_pq,rs     = 2D_pq,rs + d_pr d_qs - d_ps d_qr
@@ -3210,19 +3241,42 @@ def _rdm2_maps(nso, N):
     import scipy.sparse as sp
     if N < 2:
         raise ValueError("the 2-RDM needs at least two particles")
+
+    def spin(p):
+        return p % 2
+
     pairs = [(p, q) for p in range(nso) for q in range(p + 1, nso)]
-    M = len(pairs)
     pidx = {}
     for k, (p, q) in enumerate(pairs):
         pidx[(p, q)] = (k, 1.0)
         pidx[(q, p)] = (k, -1.0)
+    dl = _rdm2_layout([spin(p) + spin(q) for p, q in pairs])
+
     ph = [(p, q) for p in range(nso) for q in range(nso)]
-    n2 = len(ph)
+    gl = _rdm2_layout([spin(p) - spin(q) for p, q in ph])
 
-    def col(i, j):
-        return i + M * j
+    def dcol(i, j):
+        """Column of D[i, j] in the blocked vector, or None when the two
+        geminals carry different S_z and the entry is structurally
+        zero."""
+        a, b = dl["lab"][i], dl["lab"][j]
+        if a != b:
+            return None
+        m = dl["width"][a]
+        return dl["off"][a] + dl["pos"][i] + m * dl["pos"][j]
 
-    one = {}                                    # 1D_pr as a row on vec(D)
+    def d2row(p, q, r, s):
+        a, b = pidx.get((p, q)), pidx.get((r, s))
+        if a is None or b is None:
+            return {}
+        c = dcol(a[0], b[0])
+        return {} if c is None else {c: a[1] * b[1]}
+
+    def add(dst, src, w):
+        for k, v in src.items():
+            dst[k] = dst.get(k, 0.0) + w * v
+
+    one = {}                          # 1D_pr as a row on the blocked vec
     f = 1.0 / (N - 1)
     for p in range(nso):
         for r in range(nso):
@@ -3231,21 +3285,17 @@ def _rdm2_maps(nso, N):
                 a, b = pidx.get((p, q)), pidx.get((r, q))
                 if a is None or b is None:
                     continue
-                c = col(a[0], b[0])
-                row[c] = row.get(c, 0.0) + f * a[1] * b[1]
+                c = dcol(a[0], b[0])
+                if c is not None:
+                    row[c] = row.get(c, 0.0) + f * a[1] * b[1]
             one[p * nso + r] = row
 
-    def d2row(p, q, r, s):
-        a, b = pidx.get((p, q)), pidx.get((r, s))
-        return {} if a is None or b is None else {col(a[0], b[0]): a[1] * b[1]}
-
-    def add(dst, src, w):
-        for k, v in src.items():
-            dst[k] = dst.get(k, 0.0) + w * v
-
-    qA, qc = {}, np.zeros(M * M)
+    qA, qc = {}, np.zeros(dl["total"])
     for I, (p, q) in enumerate(pairs):
         for J, (r, s) in enumerate(pairs):
+            rowcol = dcol(I, J)
+            if rowcol is None:
+                continue
             row = dict(d2row(p, q, r, s))
             if q == s:
                 add(row, one[r * nso + p], -1.0)
@@ -3255,18 +3305,28 @@ def _rdm2_maps(nso, N):
                 add(row, one[s * nso + p], +1.0)
             if p == r:
                 add(row, one[s * nso + q], -1.0)
-            qA[I + M * J] = row
-            qc[I + M * J] = (1.0 if (p == r and q == s) else 0.0) \
+            qA[rowcol] = row
+            qc[rowcol] = (1.0 if (p == r and q == s) else 0.0) \
                 - (1.0 if (p == s and q == r) else 0.0)
+
+    def gcol(i, j):
+        a, b = gl["lab"][i], gl["lab"][j]
+        if a != b:
+            return None
+        m = gl["width"][a]
+        return gl["off"][a] + gl["pos"][i] + m * gl["pos"][j]
 
     gA = {}
     for I, (p, q) in enumerate(ph):
         for J, (r, s) in enumerate(ph):
+            rowcol = gcol(I, J)
+            if rowcol is None:
+                continue
             row = {}
             if q == s:
                 add(row, one[p * nso + r], +1.0)
             add(row, d2row(p, s, r, q), -1.0)
-            gA[I + n2 * J] = row
+            gA[rowcol] = row
 
     def spmat(rows, nrows):
         r, c, v = [], [], []
@@ -3276,54 +3336,95 @@ def _rdm2_maps(nso, N):
                     r.append(i)
                     c.append(j)
                     v.append(val)
-        return sp.csr_matrix((v, (r, c)), shape=(nrows, M * M))
+        return sp.csr_matrix((v, (r, c)), shape=(nrows, dl["total"]))
 
-    return dict(pairs=pairs, M=M, n2=n2, nso=nso, one=one,
-                AQ=spmat(qA, M * M), AG=spmat(gA, n2 * n2), qc=qc)
+    return dict(pairs=pairs, ph=ph, nso=nso, dl=dl, gl=gl, one=one,
+                AQ=spmat(qA, dl["total"]), AG=spmat(gA, gl["total"]),
+                qc=qc, M=len(pairs), n2=len(ph))
+
+
+def _rdm2_blocks(mp, vec, which="dl"):
+    """Cut a blocked vector into its square matrices."""
+    lay = mp[which]
+    return [vec[lay["off"][lab]:lay["off"][lab] + m * m].reshape(
+        (m, m), order="F") for lab, m in lay["sizes"] if m]
 
 
 def _rdm2_energy_operator(mp, hs, g):
-    """W0 with E - enuc = <W0, D>. The one-body part rides in through the
-    contraction that makes 1D a functional of D, and the two-body part is
-    the antisymmetrized integral in the geminal basis."""
-    M, nso = mp["M"], mp["nso"]
-    W = np.zeros(M * M)
+    """W0 with E - enuc = <W0, D>, as a blocked vector. The one-body part
+    rides in through the contraction that makes 1D a functional of D, and
+    the two-body part is the antisymmetrized integral in the geminal
+    basis. Entries between different S_z labels are dropped because D is
+    zero there."""
+    nso, dl = mp["nso"], mp["dl"]
+    W = np.zeros(dl["total"])
     for p in range(nso):
         for r in range(nso):
             hv = hs[p, r]
             if hv:
                 for k, val in mp["one"][p * nso + r].items():
                     W[k] += hv * val
-    W = W.reshape((M, M), order="F")
     for I, (p, q) in enumerate(mp["pairs"]):
         for J, (r, s) in enumerate(mp["pairs"]):
-            W[I, J] += g[p, q, r, s] - g[p, q, s, r]
-    return 0.5 * (W + W.T)
+            if dl["lab"][I] != dl["lab"][J]:
+                continue
+            m = dl["width"][dl["lab"][I]]
+            k = dl["off"][dl["lab"][I]] + dl["pos"][I] + m * dl["pos"][J]
+            W[k] += g[p, q, r, s] - g[p, q, s, r]
+    # symmetrize each block
+    out = []
+    for B in _rdm2_blocks(mp, W):
+        out.append(0.5 * (B + B.T))
+    return out
 
 
-def _rdm2_propose(mp, W0, eps, max_iters):
-    """The untrusted half. SCS minimizes the energy over the 2-positivity
-    relaxation and its dual variables for the Q and G blocks are the
-    multipliers the certificate wants. Nothing here is believed: the
-    returned matrices are only a starting point, and the caller shifts
-    them until eigen_bracket says they are PSD."""
+def _rdm2_propose(mp, W0, T, eps, max_iters):
+    """The untrusted half. SCS minimizes the energy over the blocked
+    2-positivity relaxation, and its dual variables for the Q and G
+    blocks are the multipliers the certificate wants. Nothing here is
+    believed: the returned matrices are only a starting point, and the
+    caller shifts them until eigen_bracket says they are PSD."""
     import cvxpy as cp
-    M, n2 = mp["M"], mp["n2"]
-    D = cp.Variable((M, M), symmetric=True)
-    try:
-        dv = cp.vec(D, order="F")
-        Q = cp.reshape(mp["AQ"] @ dv + mp["qc"], (M, M), order="F")
-        G = cp.reshape(mp["AG"] @ dv, (n2, n2), order="F")
-    except TypeError:                            # cvxpy without order=
-        dv = cp.vec(D)
-        Q = cp.reshape(mp["AQ"] @ dv + mp["qc"], (M, M))
-        G = cp.reshape(mp["AG"] @ dv, (n2, n2))
-    cons = [D >> 0, Q >> 0, G >> 0, cp.trace(D) == mp["T"]]
-    prob = cp.Problem(cp.Minimize(cp.sum(cp.multiply(W0, D))), cons)
+    dl, gl = mp["dl"], mp["gl"]
+    dsz = [m for _, m in dl["sizes"] if m]
+    gsz = [m for _, m in gl["sizes"] if m]
+    blocks = [cp.Variable((m, m), symmetric=True) for m in dsz]
+
+    def vecF(X):
+        try:
+            return cp.vec(X, order="F")
+        except TypeError:                        # cvxpy without order=
+            return cp.vec(X)
+
+    def reshapeF(x, shape):
+        try:
+            return cp.reshape(x, shape, order="F")
+        except TypeError:
+            return cp.reshape(x, shape)
+
+    dv = cp.hstack([vecF(B) for B in blocks])
+    q = mp["AQ"] @ dv + mp["qc"]
+    gvec = mp["AG"] @ dv
+    cons = [B >> 0 for B in blocks]
+    for lab, m in dl["sizes"]:
+        if m:
+            cons.append(reshapeF(q[dl["off"][lab]:dl["off"][lab] + m * m],
+                                 (m, m)) >> 0)
+    for lab, m in gl["sizes"]:
+        if m:
+            cons.append(reshapeF(gvec[gl["off"][lab]:gl["off"][lab] + m * m],
+                                 (m, m)) >> 0)
+    cons.append(sum(cp.trace(B) for B in blocks) == T)
+    obj = sum(cp.sum(cp.multiply(W, B)) for W, B in zip(W0, blocks))
+    prob = cp.Problem(cp.Minimize(obj), cons)
     prob.solve(solver=cp.SCS, eps=eps, max_iters=max_iters)
-    if cons[1].dual_value is None or cons[2].dual_value is None:
+
+    nd, nq, ng = len(dsz), len(dsz), len(gsz)
+    YQ = [c.dual_value for c in cons[nd:nd + nq]]
+    YG = [c.dual_value for c in cons[nd + nq:nd + nq + ng]]
+    if any(y is None for y in YQ + YG):
         raise ValueError(f"SCS returned no dual ({prob.status})")
-    return (np.asarray(cons[1].dual_value), np.asarray(cons[2].dual_value),
+    return ([np.asarray(y) for y in YQ], [np.asarray(y) for y in YG],
             prob.status, float(prob.value))
 
 
@@ -3344,25 +3445,32 @@ def _rdm2_psd_shift(Y):
     raise ValueError("multiplier could not be certified PSD")
 
 
+def _rdm2_pack(mp, mats, which="dl"):
+    lay = mp[which]
+    out = np.zeros(lay["total"])
+    i = 0
+    for lab, m in lay["sizes"]:
+        if not m:
+            continue
+        out[lay["off"][lab]:lay["off"][lab] + m * m] = \
+            mats[i].reshape(-1, order="F")
+        i += 1
+    return out
+
+
 def _rdm2_assemble(mp, W0, YQ, YG):
     """W and c0 in floating point, with a Frobenius bound on their own
     rounding. The pad is carried rather than assumed away, because
     |<A, D>| <= ||A||_2 Tr(D) whenever D is PSD, so an error of ||E||_F
     in W costs at most ||E||_F * Tr(D) in the bound."""
-    M, n2 = mp["M"], mp["n2"]
     AQ, AG = mp["AQ"], mp["AG"]
-    yq = YQ.reshape(-1, order="F")
-    yg = YG.reshape(-1, order="F")
-    W = W0 - (AQ.T @ yq).reshape((M, M), order="F") \
-           - (AG.T @ yg).reshape((M, M), order="F")
-    W = 0.5 * (W + W.T)
-
-    S = np.abs(W0) \
-        + (abs(AQ).T @ np.abs(yq)).reshape((M, M), order="F") \
-        + (abs(AG).T @ np.abs(yg)).reshape((M, M), order="F")
-    kq = np.asarray(abs(AQ).sign().T @ np.ones(M * M)).ravel()
-    kg = np.asarray(abs(AG).sign().T @ np.ones(n2 * n2)).ravel()
-    K = 1.0 + kq.reshape((M, M), order="F") + kg.reshape((M, M), order="F")
+    yq = _rdm2_pack(mp, YQ, "dl")
+    yg = _rdm2_pack(mp, YG, "gl")
+    w0 = _rdm2_pack(mp, W0, "dl")
+    W = w0 - (AQ.T @ yq) - (AG.T @ yg)
+    S = np.abs(w0) + (abs(AQ).T @ np.abs(yq)) + (abs(AG).T @ np.abs(yg))
+    K = 1.0 + np.asarray(abs(AQ).sign().T @ np.ones(AQ.shape[0])).ravel() \
+        + np.asarray(abs(AG).sign().T @ np.ones(AG.shape[0])).ravel()
     u = float(np.finfo(np.float64).eps) / 2
     k = float(K.max()) + 2.0
     gam = k * u / (1.0 - k * u) if k * u < 0.5 else np.inf
@@ -3370,7 +3478,8 @@ def _rdm2_assemble(mp, W0, YQ, YG):
 
     c0 = -float(yq @ mp["qc"])
     padc = gam * float(np.abs(yq) @ np.abs(mp["qc"]))
-    return W, padW, c0, padc
+    blocks = [0.5 * (B + B.T) for B in _rdm2_blocks(mp, W)]
+    return blocks, padW, c0, padc
 
 
 def _rdm2_determinant_upper(h, eri, N):
@@ -3404,8 +3513,7 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
 
     Two things separate this from the window ladder, and both are worth
     stating. Its cost is polynomial in orbitals rather than exponential
-    in states, so it keeps answering where the Hamiltonian stops being
-    formable. And it certifies the N-electron sector rather than the
+    in states. And it certifies the N-electron sector rather than the
     whole Fock space, which is a narrower question, so the two rewrites
     do not bracket quite the same number. Where the global ground state
     is known to carry N electrons the two agree, and knowing that is a
@@ -3418,17 +3526,30 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
     eri = np.asarray(eri, float)
     hs, g = _rdm2_spin_block(h, eri)
     nso = len(hs)
-    mp = dict(_rdm2_maps(nso, N))
-    mp["T"] = N * (N - 1) / 2.0
+    mp = _rdm2_maps(nso, N)
+    T = N * (N - 1) / 2.0
     W0 = _rdm2_energy_operator(mp, hs, g)
 
-    YQ, YG, status, _ = _rdm2_propose(mp, W0, eps, max_iters)
-    YQ, dq = _rdm2_psd_shift(YQ)
-    YG, dg = _rdm2_psd_shift(YG)
-    W, padW, c0, padc = _rdm2_assemble(mp, W0, YQ, YG)
-    br = eigen_bracket(W)
-    mu = br.value - br.err
-    lower = (mu - padW) * mp["T"] + c0 - padc + enuc
+    YQ, YG, status, _ = _rdm2_propose(mp, W0, T, eps, max_iters)
+    shifts = []
+    certified = []
+    for group in (YQ, YG):
+        out = []
+        for Y in group:
+            Ys, d = _rdm2_psd_shift(Y)
+            out.append(Ys)
+            shifts.append(d)
+        certified.append(out)
+    Wb, padW, c0, padc = _rdm2_assemble(mp, W0, certified[0], certified[1])
+
+    # lambda_min of a block-diagonal matrix is the smallest over blocks,
+    # and each block gets its own certified bracket
+    mu = None
+    for B in Wb:
+        c = eigen_bracket(B)
+        lo = c.value - c.err
+        mu = lo if mu is None else min(mu, lo)
+    lower = (mu - padW) * T + c0 - padc + enuc
 
     up = _rdm2_determinant_upper(h, eri, N) + enuc if upper is None \
         else float(upper)
@@ -3436,13 +3557,13 @@ def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
         raise ValueError(
             f"2-RDM lower bound {lower:.9f} exceeds the upper bound "
             f"{up:.9f}; the upper bound is not variational for N={N}")
+    blocks = "+".join(str(m) for _, m in mp["dl"]["sizes"] if m)
     return Certified(0.5 * (up + lower), 0.5 * (up - lower), Tier.RIGOROUS,
-                     (f"rdm2-DQG N={N} nso={nso} M={mp['M']} "
-                      f"scs={status} shifts=({dq:.1e},{dg:.1e}) "
+                     (f"rdm2-DQG N={N} nso={nso} D-blocks={blocks} "
+                      f"scs={status} shift={max(shifts):.1e} "
                       f"pad=({padW:.1e},{padc:.1e}) "
                       f"{'determinant' if upper is None else 'given'}-upper "
                       "+fp",))
-
 
 # --------------------------------------------- certified reduced bases /
 # eigenvector continuation. For AFFINE operator families
