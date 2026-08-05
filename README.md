@@ -9,7 +9,7 @@ of the bound. The bound is the product.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 200 checks). Every claimed bound is
+([`test_sufficit.py`](test_sufficit.py), 204 checks). Every claimed bound is
 verified there against brute force, exact solutions, or independent
 constructions.
 
@@ -47,7 +47,8 @@ h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4572, -0.4221]
 There is no package yet. The library is the single file
 [`sufficit.py`](sufficit.py), so clone and import. Requirements: `numpy` and
 `scipy`; `mpmath` for the tests; `cvxpy-base` and `scs` only for the SOS
-search, whose result is re-proven exactly. Run the suite with
+search and the 2-RDM bound, both of which re-certify the solver's
+output on our side. Run the suite with
 `pytest test_sufficit.py`. It takes about four minutes, and the SPH ladders
 are the long pole.
 
@@ -74,6 +75,7 @@ are the long pole.
 | Reactor criticality (k_eff) | 1 pcm in 20 fission-source iterations, bracket floor ~10⁻⁶ pcm; a mesh ladder then certifies the continuum answer to 0.57 pcm | Perron-Frobenius rather than the variational theorem. The operator is not self-adjoint, so positivity brackets it instead. Four hypotheses machine-checked, and the continuum half degrades to EMPIRICAL and says so |
 | The same bracket on S_N transport | runs unaltered on a different equation, with no new proof and no new code | The certificate needs the operator to preserve a cone, not to be symmetric, and upwind differencing supplies that. Having both models measures the diffusion approximation itself: −9200 pcm at 5 mean free paths, −41 at 20 |
 | pn junction (drift-diffusion Poisson) | a proof that an exact solution exists within a stated radius, not just that the residual is small | Newton-Kantorovich, with ‖J⁻¹‖ priced by the reactor's M-matrix witness on completely different physics. The last refusing rung has residual 10⁻³. One step later, at 5·10⁻⁶, the certificate closes, and only to half a per cent |
+| The 2-RDM lower bound (chemistry) | 2.25 mHa below FCI at H₄, 7.57 mHa at H₆; H₈ solved in 375 s | The 2-positivity relaxation contains every N-representable 2-RDM, so its minimum lies below the true one. SCS proposes the multipliers and nothing trusts them: any PSD pair certifies, and a deliberately random pair still bounds, at −2550 against an exact −2.175. Positivity is issued by the library's own eigenvalue bracket, so the certificate itself costs 0.02 s. Scope is the N-electron sector, which is narrower than the all-sectors bracket above. Not yet past the formable wall: H₁₀ did not converge in 12 minutes |
 | The planner (first compiler slice) | one question at three tolerances gets three algorithms; a model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | Cost models order the attempts and certificates arbitrate. Every rung logs predicted cost, measured cost, and measured error, so the receipt audits the cost model |
 
 ## The search half

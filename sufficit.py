@@ -1536,9 +1536,10 @@ class ButterflyBlock:
 # certificate), bisected from a rigorous Gershgorin seed; a spurious FP
 # Cholesky failure only loosens the bracket, never invalidates it.
 # Exact-arithmetic tier (Cholesky success is FP-trusted, declared).
-# The 2-RDM SDP lower bound, the version that scales past formable
-# Hamiltonians, is the named next rung; so is a molecular-integrals
-# pipeline. This demonstrates the bracket structure itself.
+# The 2-RDM SDP lower bound now exists further down as
+# rdm2_energy_bracket, priced in orbitals rather than in states. A
+# molecular-integrals pipeline is still a named next rung. This
+# demonstrates the bracket structure itself.
 
 
 _GPU = {"on": False}
@@ -3127,6 +3128,320 @@ def h_chain_bracket(n: int, d: float = 1.8, ell: int = 3,
                      Tier.RIGOROUS,
                      (f"h-chain marginal-lower ell={ell} n={n} d={d:g} "
                       f"iters={correction_iters} block-product-upper",))
+
+
+# --------------------------------------------- the 2-RDM lower bound. The
+# window ladder above prices a lower bound at 4^ell and stops where the
+# matrix stops being formable. This one is priced in orbitals instead of
+# in states, so it keeps answering past that wall.
+#
+# The energy is a linear functional of the two-particle density matrix,
+# so minimizing it over a set that CONTAINS every N-representable 2-RDM
+# gives a lower bound on the ground energy. Deciding N-representability
+# is itself hard, so the containing set is the usual 2-positivity
+# relaxation: the particle-particle block D, the hole-hole block Q and
+# the particle-hole block G are each required to be PSD, since each is a
+# Gram matrix of operators acting on the state. Q and G are affine in D,
+# and the one-particle matrix is a contraction of D, so the whole thing
+# is one semidefinite program in D alone.
+#
+# The certificate does not come from the solver. For any Y_Q >= 0 and
+# Y_G >= 0 the identity
+#
+#     E(D) - enuc = <W, D> + <Y_Q, Q(D)> + <Y_G, G(D)> + c0
+#
+# holds with W = W0 - A_Q*(Y_Q) - A_G*(Y_G), and both inner products are
+# non-negative on the feasible set, so
+#
+#     E(D) - enuc >= <W, D> + c0 >= lambda_min(W) * Tr(D) + c0.
+#
+# Tr(D) is fixed at N(N-1)/2, so a lower bound on lambda_min(W) is a
+# lower bound on the energy. SCS proposes Y_Q and Y_G and is not
+# trusted: a bad proposal moves W and loosens the bound, and cannot
+# make it wrong. Every positivity fact is then issued by eigen_bracket,
+# which already carries its own floating-point margins, so this rewrite
+# certifies by composition rather than by a new proof.
+
+
+def _rdm2_spin_block(h, eri):
+    """Spatial orbitals to spin orbitals, p_so = 2*p + spin. Returns the
+    spin-orbital core matrix and the physicists' <PQ|RS>, which is the
+    chemists' (PR|QS) with the two spin deltas the Coulomb operator
+    carries."""
+    n = len(h)
+    nso = 2 * n
+    hs = np.zeros((nso, nso))
+    for p in range(n):
+        for q in range(n):
+            for s in range(2):
+                hs[2 * p + s, 2 * q + s] = h[p, q]
+    g = np.zeros((nso,) * 4)
+    for p in range(n):
+        for q in range(n):
+            for r in range(n):
+                for s in range(n):
+                    for sa in range(2):
+                        for sb in range(2):
+                            g[2 * p + sa, 2 * q + sb,
+                              2 * r + sa, 2 * s + sb] = eri[p, r, q, s]
+    return hs, g
+
+
+@functools.lru_cache(maxsize=8)
+def _rdm2_maps(nso, N):
+    """The exact affine maps from the 2-RDM to everything else, built
+    once per (nso, N) and cached because they depend on no integral.
+
+    D lives in the geminal basis: rows and columns are ordered pairs
+    p < q, so D is M x M with M = nso(nso-1)/2, and it is PSD because
+    D_IJ = <(a_q a_p)^dagger (a_s a_r)> is a Gram matrix. The maps are
+    stored as sparse operators on vec(D) in Fortran order.
+
+    All three identities below were checked against exactly computed
+    RDMs before this code was written, at (nso, N) = (4, 2), (6, 3),
+    (6, 2) and (8, 4), and they agree to 1e-15:
+
+        1D_pr        = sum_q 2D_pq,rq / (N - 1)
+        2Q_pq,rs     = 2D_pq,rs + d_pr d_qs - d_ps d_qr
+                       - d_qs 1D_rp + d_ps 1D_rq
+                       + d_qr 1D_sp - d_pr 1D_sq
+        2G_pq,rs     = d_qs 1D_pr - 2D_ps,rq
+    """
+    import scipy.sparse as sp
+    if N < 2:
+        raise ValueError("the 2-RDM needs at least two particles")
+    pairs = [(p, q) for p in range(nso) for q in range(p + 1, nso)]
+    M = len(pairs)
+    pidx = {}
+    for k, (p, q) in enumerate(pairs):
+        pidx[(p, q)] = (k, 1.0)
+        pidx[(q, p)] = (k, -1.0)
+    ph = [(p, q) for p in range(nso) for q in range(nso)]
+    n2 = len(ph)
+
+    def col(i, j):
+        return i + M * j
+
+    one = {}                                    # 1D_pr as a row on vec(D)
+    f = 1.0 / (N - 1)
+    for p in range(nso):
+        for r in range(nso):
+            row = {}
+            for q in range(nso):
+                a, b = pidx.get((p, q)), pidx.get((r, q))
+                if a is None or b is None:
+                    continue
+                c = col(a[0], b[0])
+                row[c] = row.get(c, 0.0) + f * a[1] * b[1]
+            one[p * nso + r] = row
+
+    def d2row(p, q, r, s):
+        a, b = pidx.get((p, q)), pidx.get((r, s))
+        return {} if a is None or b is None else {col(a[0], b[0]): a[1] * b[1]}
+
+    def add(dst, src, w):
+        for k, v in src.items():
+            dst[k] = dst.get(k, 0.0) + w * v
+
+    qA, qc = {}, np.zeros(M * M)
+    for I, (p, q) in enumerate(pairs):
+        for J, (r, s) in enumerate(pairs):
+            row = dict(d2row(p, q, r, s))
+            if q == s:
+                add(row, one[r * nso + p], -1.0)
+            if p == s:
+                add(row, one[r * nso + q], +1.0)
+            if q == r:
+                add(row, one[s * nso + p], +1.0)
+            if p == r:
+                add(row, one[s * nso + q], -1.0)
+            qA[I + M * J] = row
+            qc[I + M * J] = (1.0 if (p == r and q == s) else 0.0) \
+                - (1.0 if (p == s and q == r) else 0.0)
+
+    gA = {}
+    for I, (p, q) in enumerate(ph):
+        for J, (r, s) in enumerate(ph):
+            row = {}
+            if q == s:
+                add(row, one[p * nso + r], +1.0)
+            add(row, d2row(p, s, r, q), -1.0)
+            gA[I + n2 * J] = row
+
+    def spmat(rows, nrows):
+        r, c, v = [], [], []
+        for i, row in rows.items():
+            for j, val in row.items():
+                if val:
+                    r.append(i)
+                    c.append(j)
+                    v.append(val)
+        return sp.csr_matrix((v, (r, c)), shape=(nrows, M * M))
+
+    return dict(pairs=pairs, M=M, n2=n2, nso=nso, one=one,
+                AQ=spmat(qA, M * M), AG=spmat(gA, n2 * n2), qc=qc)
+
+
+def _rdm2_energy_operator(mp, hs, g):
+    """W0 with E - enuc = <W0, D>. The one-body part rides in through the
+    contraction that makes 1D a functional of D, and the two-body part is
+    the antisymmetrized integral in the geminal basis."""
+    M, nso = mp["M"], mp["nso"]
+    W = np.zeros(M * M)
+    for p in range(nso):
+        for r in range(nso):
+            hv = hs[p, r]
+            if hv:
+                for k, val in mp["one"][p * nso + r].items():
+                    W[k] += hv * val
+    W = W.reshape((M, M), order="F")
+    for I, (p, q) in enumerate(mp["pairs"]):
+        for J, (r, s) in enumerate(mp["pairs"]):
+            W[I, J] += g[p, q, r, s] - g[p, q, s, r]
+    return 0.5 * (W + W.T)
+
+
+def _rdm2_propose(mp, W0, eps, max_iters):
+    """The untrusted half. SCS minimizes the energy over the 2-positivity
+    relaxation and its dual variables for the Q and G blocks are the
+    multipliers the certificate wants. Nothing here is believed: the
+    returned matrices are only a starting point, and the caller shifts
+    them until eigen_bracket says they are PSD."""
+    import cvxpy as cp
+    M, n2 = mp["M"], mp["n2"]
+    D = cp.Variable((M, M), symmetric=True)
+    try:
+        dv = cp.vec(D, order="F")
+        Q = cp.reshape(mp["AQ"] @ dv + mp["qc"], (M, M), order="F")
+        G = cp.reshape(mp["AG"] @ dv, (n2, n2), order="F")
+    except TypeError:                            # cvxpy without order=
+        dv = cp.vec(D)
+        Q = cp.reshape(mp["AQ"] @ dv + mp["qc"], (M, M))
+        G = cp.reshape(mp["AG"] @ dv, (n2, n2))
+    cons = [D >> 0, Q >> 0, G >> 0, cp.trace(D) == mp["T"]]
+    prob = cp.Problem(cp.Minimize(cp.sum(cp.multiply(W0, D))), cons)
+    prob.solve(solver=cp.SCS, eps=eps, max_iters=max_iters)
+    if cons[1].dual_value is None or cons[2].dual_value is None:
+        raise ValueError(f"SCS returned no dual ({prob.status})")
+    return (np.asarray(cons[1].dual_value), np.asarray(cons[2].dual_value),
+            prob.status, float(prob.value))
+
+
+def _rdm2_psd_shift(Y):
+    """Return Y + delta*I with lambda_min certified non-negative, and the
+    shift it took. eigen_bracket is the arbiter, and it runs on the
+    matrix that is actually used rather than on the one proposed."""
+    Y = np.asarray(Y, float)
+    Y = 0.5 * (Y + Y.T)
+    delta = 0.0
+    for _ in range(60):
+        Ys = Y + delta * np.eye(len(Y))
+        c = eigen_bracket(Ys)
+        lo = c.value - c.err
+        if lo >= 0.0:
+            return Ys, delta
+        delta += max(-lo * 1.5, 1e-15 * (1.0 + abs(c.value)))
+    raise ValueError("multiplier could not be certified PSD")
+
+
+def _rdm2_assemble(mp, W0, YQ, YG):
+    """W and c0 in floating point, with a Frobenius bound on their own
+    rounding. The pad is carried rather than assumed away, because
+    |<A, D>| <= ||A||_2 Tr(D) whenever D is PSD, so an error of ||E||_F
+    in W costs at most ||E||_F * Tr(D) in the bound."""
+    M, n2 = mp["M"], mp["n2"]
+    AQ, AG = mp["AQ"], mp["AG"]
+    yq = YQ.reshape(-1, order="F")
+    yg = YG.reshape(-1, order="F")
+    W = W0 - (AQ.T @ yq).reshape((M, M), order="F") \
+           - (AG.T @ yg).reshape((M, M), order="F")
+    W = 0.5 * (W + W.T)
+
+    S = np.abs(W0) \
+        + (abs(AQ).T @ np.abs(yq)).reshape((M, M), order="F") \
+        + (abs(AG).T @ np.abs(yg)).reshape((M, M), order="F")
+    kq = np.asarray(abs(AQ).sign().T @ np.ones(M * M)).ravel()
+    kg = np.asarray(abs(AG).sign().T @ np.ones(n2 * n2)).ravel()
+    K = 1.0 + kq.reshape((M, M), order="F") + kg.reshape((M, M), order="F")
+    u = float(np.finfo(np.float64).eps) / 2
+    k = float(K.max()) + 2.0
+    gam = k * u / (1.0 - k * u) if k * u < 0.5 else np.inf
+    padW = float(np.sqrt(((gam * S) ** 2).sum()))
+
+    c0 = -float(yq @ mp["qc"])
+    padc = gam * float(np.abs(yq) @ np.abs(mp["qc"]))
+    return W, padW, c0, padc
+
+
+def _rdm2_determinant_upper(h, eri, N):
+    """A rigorous variational upper bound from one closed-shell
+    determinant, built on the core-Hamiltonian orbitals. It is loose,
+    and it is here so the rewrite can return a two-sided bracket without
+    borrowing machinery. A caller holding a better upper bound should
+    pass it in, and the bracket tightens on the side that needs it."""
+    if N % 2:
+        raise ValueError("the built-in upper bound is closed-shell only")
+    _, C = np.linalg.eigh(np.asarray(h, float))
+    occ = C[:, :N // 2]
+    hm = occ.T @ np.asarray(h, float) @ occ
+    e = np.einsum("pqrs,pi,qj,rk,sl->ijkl", np.asarray(eri, float),
+                  occ, occ, occ, occ)
+    d = np.arange(N // 2)
+    return float(2 * np.trace(hm)
+                 + 2 * e[d[:, None], d[:, None], d[None, :], d[None, :]].sum()
+                 - e[d[:, None], d[None, :], d[None, :], d[:, None]].sum())
+
+
+def rdm2_energy_bracket(h, eri, N: int, enuc: float = 0.0,
+                        upper: float = None, eps: float = 1e-8,
+                        max_iters: int = 100_000) -> Certified:
+    """Certified bracket on the ground energy of the N-electron sector,
+    with the lower half from the 2-positivity relaxation of the 2-RDM.
+
+    h and eri are spatial-orbital integrals in an ORTHONORMAL basis, eri
+    in chemists' (pq|rs). The claim is about those matrices exactly as
+    stored, which is the same declaration the eigenvalue brackets make.
+
+    Two things separate this from the window ladder, and both are worth
+    stating. Its cost is polynomial in orbitals rather than exponential
+    in states, so it keeps answering where the Hamiltonian stops being
+    formable. And it certifies the N-electron sector rather than the
+    whole Fock space, which is a narrower question, so the two rewrites
+    do not bracket quite the same number. Where the global ground state
+    is known to carry N electrons the two agree, and knowing that is a
+    separate claim this function does not make.
+
+    The upper half is a single determinant unless the caller supplies a
+    better one, and it is usually the loose side by a wide margin.
+    """
+    h = np.asarray(h, float)
+    eri = np.asarray(eri, float)
+    hs, g = _rdm2_spin_block(h, eri)
+    nso = len(hs)
+    mp = dict(_rdm2_maps(nso, N))
+    mp["T"] = N * (N - 1) / 2.0
+    W0 = _rdm2_energy_operator(mp, hs, g)
+
+    YQ, YG, status, _ = _rdm2_propose(mp, W0, eps, max_iters)
+    YQ, dq = _rdm2_psd_shift(YQ)
+    YG, dg = _rdm2_psd_shift(YG)
+    W, padW, c0, padc = _rdm2_assemble(mp, W0, YQ, YG)
+    br = eigen_bracket(W)
+    mu = br.value - br.err
+    lower = (mu - padW) * mp["T"] + c0 - padc + enuc
+
+    up = _rdm2_determinant_upper(h, eri, N) + enuc if upper is None \
+        else float(upper)
+    if up < lower:
+        raise ValueError(
+            f"2-RDM lower bound {lower:.9f} exceeds the upper bound "
+            f"{up:.9f}; the upper bound is not variational for N={N}")
+    return Certified(0.5 * (up + lower), 0.5 * (up - lower), Tier.RIGOROUS,
+                     (f"rdm2-DQG N={N} nso={nso} M={mp['M']} "
+                      f"scs={status} shifts=({dq:.1e},{dg:.1e}) "
+                      f"pad=({padW:.1e},{padc:.1e}) "
+                      f"{'determinant' if upper is None else 'given'}-upper "
+                      "+fp",))
 
 
 # --------------------------------------------- certified reduced bases /

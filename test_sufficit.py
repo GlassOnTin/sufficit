@@ -1,6 +1,7 @@
 """Phase 0 acceptance tests: every claimed bound must contain the actual error,
 measured against brute force. Bounds are exact-arithmetic; tests allow 1e-9
 relative slack for floating point, which the IR does not yet carry."""
+import functools
 import math
 import random
 import re
@@ -3746,3 +3747,173 @@ def test_the_memo_makes_nodes_linear():
     assert len(seen) == len(set(seen))     # nothing recomputed
     assert len(seen) == 8                  # two branches, four rungs each
     assert len(cert.receipt) == 16         # and twice as many assemblies
+
+def _jw_ladder(nso):
+    """Jordan-Wigner annihilators, the same convention
+    sto3g_h2_hamiltonian builds its own with."""
+    I2, Zm = np.eye(2), np.diag([1.0, -1.0])
+    low = np.array([[0.0, 1.0], [0.0, 0.0]])
+    ann = []
+    for p in range(nso):
+        mats = [Zm] * p + [low] + [I2] * (nso - 1 - p)
+        op = mats[0]
+        for m in mats[1:]:
+            op = np.kron(op, m)
+        ann.append(op)
+    return ann
+
+
+def _sector_ground(H, N):
+    """Ground energy of H restricted to the N-particle sector."""
+    occ = np.array([bin(i).count("1") for i in range(H.shape[0])])
+    idx = np.flatnonzero(occ == N)
+    return float(np.linalg.eigvalsh(H[np.ix_(idx, idx)])[0])
+
+
+def test_rdm2_maps_match_exactly_computed_rdms():
+    """The 2-RDM certificate rests on three identities relating Q and G
+    and the one-particle matrix to D. They are short enough to derive by
+    hand and easy enough to get wrong, so they are checked here against
+    RDMs computed by explicit expectation in the Fock space, on a random
+    state in the sector rather than on a ground state, because a ground
+    state can satisfy an identity a general state breaks.
+
+    This test was written before the SDP code existed. Every claim it
+    pins was measured first. It ran at nso=8 too while the identities
+    were being settled, and still agreed to 1e-15; that size is left out
+    here only because building 4096 expectation values over a
+    256-dimensional Fock space costs a minute and proves nothing the
+    smaller sizes do not."""
+    rng = np.random.default_rng(11)
+    for nso, N in ((4, 2), (6, 3)):
+        ann = _jw_ladder(nso)
+        ad = [a.T for a in ann]
+        nhat = sum(ad[p] @ ann[p] for p in range(nso))
+        idx = np.flatnonzero(np.round(np.real(np.diag(nhat))).astype(int) == N)
+        psi = np.zeros(2 ** nso)
+        psi[idx] = rng.standard_normal(len(idx))
+        psi /= np.linalg.norm(psi)
+
+        def ev(M):
+            return float(psi @ (M @ psi))
+
+        D1 = np.array([[ev(ad[p] @ ann[q]) for q in range(nso)]
+                       for p in range(nso)])
+        D2 = np.zeros((nso,) * 4)
+        Q2 = np.zeros((nso,) * 4)
+        G2 = np.zeros((nso,) * 4)
+        for p in range(nso):
+            for q in range(nso):
+                for r in range(nso):
+                    for s in range(nso):
+                        D2[p, q, r, s] = ev(ad[p] @ ad[q] @ ann[s] @ ann[r])
+                        Q2[p, q, r, s] = ev(ann[p] @ ann[q] @ ad[s] @ ad[r])
+                        G2[p, q, r, s] = ev(ad[p] @ ann[q] @ ad[s] @ ann[r])
+        d = np.eye(nso)
+
+        assert np.abs(np.einsum("pqrq->pr", D2)
+                      - (N - 1) * D1).max() < 1e-12
+        Qf = (D2 + np.einsum("pr,qs->pqrs", d, d)
+              - np.einsum("ps,qr->pqrs", d, d)
+              - np.einsum("qs,rp->pqrs", d, D1)
+              + np.einsum("ps,rq->pqrs", d, D1)
+              + np.einsum("qr,sp->pqrs", d, D1)
+              - np.einsum("pr,sq->pqrs", d, D1))
+        assert np.abs(Qf - Q2).max() < 1e-12
+        Gf = np.einsum("qs,pr->pqrs", d, D1) - np.transpose(D2, (0, 3, 2, 1))
+        assert np.abs(Gf - G2).max() < 1e-12
+
+        # and the three blocks really are PSD in the bases the SDP uses
+        pairs = [(p, q) for p in range(nso) for q in range(p + 1, nso)]
+        assert sum(D2[p, q, p, q] for p, q in pairs) \
+            == pytest.approx(N * (N - 1) / 2)
+        for T2, basis in ((D2, pairs), (Q2, pairs),
+                          (G2, [(p, q) for p in range(nso)
+                                for q in range(nso)])):
+            m = np.array([[T2[p, q, r, s] for (r, s) in basis]
+                          for (p, q) in basis])
+            assert np.linalg.eigvalsh(m)[0] > -1e-10
+
+
+def _h2_spatial(R=1.4):
+    S, h, eri, enuc = sf._h2_integrals(R)
+    w, U = np.linalg.eigh(S)
+    X = U @ np.diag(w ** -0.5) @ U.T
+    return (X @ h @ X,
+            np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, X, X, X, X), enuc)
+
+
+@functools.lru_cache(maxsize=2)
+def _rdm2_h4():
+    T, V, eri, enuc = sf._h_chain_basis(4, 1.8)
+    h = T + V.sum(0)
+    truth = _sector_ground(sf.h_chain_fock_hamiltonian(4, 1.8), 4)
+    return h, eri, enuc, truth, sf.rdm2_energy_bracket(h, eri, 4, enuc)
+
+
+def test_rdm2_bracket_contains_h2_and_is_tight_there():
+    """For two electrons the 2-positivity conditions are not a
+    relaxation at all: Coleman characterized ensemble N-representability
+    of the 2-RDM exactly for N=2, and D >= 0 with the right trace is the
+    whole of it. So the lower half of this bracket must land on FCI, not
+    merely below it, and that is what makes H2 the right first check on
+    an SDP nobody should trust yet."""
+    h, eri, enuc = _h2_spatial(1.4)
+    truth = _sector_ground(sf.sto3g_h2_hamiltonian(1.4), 2)
+    c = sf.rdm2_energy_bracket(h, eri, 2, enuc)
+    lo = c.value - c.err
+    assert lo <= truth <= c.value + c.err
+    assert c.tier == sf.Tier.RIGOROUS and c.fail_p == 0.0
+    assert truth - lo < 1e-8                 # exact for N=2, up to the pads
+    assert "rdm2-DQG" in c.provenance[0]
+
+
+def test_rdm2_bracket_contains_h4_and_is_strictly_below():
+    """Past two electrons the conditions really are a relaxation, so the
+    bound must sit strictly below FCI and by an amount worth reporting.
+    Measured on H4 at d=1.8 it is 2.25 mHa, which is 0.56 mHa per atom,
+    against a window ladder that needs ell=4, the whole chain, to do
+    better. The point of this rewrite is not that it wins here. It is
+    that its cost is polynomial in orbitals, so it still answers where
+    the 256-dimensional matrix this test diagonalizes stops being
+    formable."""
+    _, _, _, truth, c = _rdm2_h4()
+    lo = c.value - c.err
+    assert lo <= truth <= c.value + c.err
+    assert 1e-4 < truth - lo < 1e-2          # a strict relaxation, 2.25 mHa
+    assert c.tier == sf.Tier.RIGOROUS
+
+
+def test_rdm2_any_multiplier_gives_a_valid_bound():
+    """The whole certificate rests on the multipliers being PSD and on
+    nothing else about them, so a deliberately terrible pair must still
+    produce a true lower bound and only a looser one. Zero multipliers
+    reduce the bound to lambda_min of the bare two-electron operator
+    times the trace, and a random PSD pair is worse still. Measured on
+    H4: SCS's own choice gives -2.1777, zero gives -2.900, and a random
+    pair gives about -2550, against an exact -2.1754. All three are
+    below the truth, which is the only property that was ever claimed
+    for the solver."""
+    h, eri, enuc, truth, good = _rdm2_h4()
+    mp = dict(sf._rdm2_maps(2 * len(h), 4))
+    mp["T"] = 6.0
+    hs, g = sf._rdm2_spin_block(np.asarray(h), np.asarray(eri))
+    W0 = sf._rdm2_energy_operator(mp, hs, g)
+    rng = np.random.default_rng(0)
+
+    def bound_from(YQ, YG):
+        YQ, _ = sf._rdm2_psd_shift(YQ)
+        YG, _ = sf._rdm2_psd_shift(YG)
+        W, padW, c0, padc = sf._rdm2_assemble(mp, W0, YQ, YG)
+        br = sf.eigen_bracket(W)
+        return (br.value - br.err - padW) * mp["T"] + c0 - padc + enuc
+
+    zero = bound_from(np.zeros((mp["M"],) * 2), np.zeros((mp["n2"],) * 2))
+
+    def psd(n):
+        A = rng.standard_normal((n, n))
+        return A @ A.T
+
+    rand = bound_from(psd(mp["M"]), psd(mp["n2"]))
+    assert zero <= truth and rand <= truth
+    assert rand < zero < good.value - good.err <= truth
