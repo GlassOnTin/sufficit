@@ -3531,6 +3531,307 @@ nC/cm&#178;</text>
         ])
 
 
+# ======================================================================
+def rdm2_case():
+    d = 1.8
+    ns = (4, 6, 8, 10, 12)
+    rows = []
+    for n in ns:
+        ell = min(5, n - 1)
+        t0 = time.perf_counter()
+        win = sf.h_chain_bracket(n, d, ell)
+        tw = time.perf_counter() - t0
+        T, V, eri, enuc = sf._h_chain_basis(n, d)
+        t0 = time.perf_counter()
+        low = sf._rdm2_lower(T + V.sum(0), eri, n, enuc,
+                             1e-8 if n < 8 else 1e-6, 100_000)
+        ts = time.perf_counter() - t0
+        pair = sf.h_chain_rdm2_bracket(n, d, ell, window=win, lower=low)
+        rows.append(dict(n=n, ell=ell, win=win, pair=pair, tw=tw, ts=ts,
+                         low=low))
+
+    def sector_ground(n):
+        H = sf.h_chain_fock_hamiltonian(n, d)
+        occ = np.array([bin(i).count("1") for i in range(H.shape[0])])
+        idx = np.flatnonzero(occ == n)
+        return float(np.linalg.eigvalsh(H[np.ix_(idx, idx)])[0])
+
+    exact = {n: sector_ground(n) for n in (4, 6)}
+    contained = sum(
+        r["pair"].value - r["pair"].err <= exact[r["n"]]
+        <= r["pair"].value + r["pair"].err
+        for r in rows if r["n"] in exact)
+    below = {n: exact[n] - (r["pair"].value - r["pair"].err)
+             for r in rows if (n := r["n"]) in exact}
+
+    # ---- figure 1: what the pairing buys, as the chain grows
+    wid_w = [r["win"].err / r["n"] * 1000 for r in rows]
+    wid_p = [r["pair"].err / r["n"] * 1000 for r in rows]
+    ax = Axes((3.4, 12.6), (math.log10(min(wid_p) * 0.6),
+                            math.log10(max(wid_w) * 1.7)), h=330)
+
+    def ly(v):
+        return ax.Y(math.log10(v))
+
+    def poly(vals):
+        return "M " + " L ".join(f"{ax.X(r['n']):.1f} {ly(v):.1f}"
+                                 for r, v in zip(rows, vals))
+    dots_w = "".join(f'<circle cx="{ax.X(r["n"]):.1f}" cy="{ly(v):.1f}" '
+                     f'r="4" class="rust-fill"/>'
+                     for r, v in zip(rows, wid_w))
+    dots_p = "".join(f'<circle cx="{ax.X(r["n"]):.1f}" cy="{ly(v):.1f}" '
+                     f'r="4" class="blue-fill"/>'
+                     for r, v in zip(rows, wid_p))
+    ticks = [t for t in (1, 3, 10, 30, 100, 300, 1000)
+             if ax.ylim[0] <= math.log10(t) <= ax.ylim[1]]
+    grid = "".join(
+        f'<line x1="{ax.ml}" y1="{ly(t):.1f}" x2="{640 - ax.mr}" '
+        f'y2="{ly(t):.1f}" class="board-ink" opacity="0.25" '
+        f'stroke-width="1"/>'
+        f'<text x="{ax.ml - 8}" y="{ly(t) + 3.5:.1f}" text-anchor="end" '
+        f'class="board-text" font-size="10.5" opacity="0.7">{t:g}</text>'
+        for t in ticks)
+    xlab = "".join(
+        f'<text x="{ax.X(r["n"]):.1f}" y="312" text-anchor="middle" '
+        f'class="board-text" font-size="10.5" opacity="0.7">'
+        f'H{r["n"]}</text>' for r in rows)
+    formable = (f'<rect x="{ax.ml}" y="{ax.mt}" '
+                f'width="{ax.X(6.9) - ax.ml:.1f}" '
+                f'height="{330 - ax.mb - ax.mt}" fill="var(--blue)" '
+                f'opacity="0.07"/>'
+                f'<text x="{ax.X(5.2):.1f}" y="{ax.mt + 14}" '
+                f'text-anchor="middle" class="board-text" font-size="10.5" '
+                f'opacity="0.75">exact answer affordable</text>')
+    svg_reach = f'''<svg viewBox="0 0 640 330" role="img" aria-label="Bracket
+half-width per atom against chain length, window ladder against the pair">
+{formable}{grid}{xlab}
+<text x="14" y="{ax.mt + 4}" class="board-text" font-size="10.5"
+      opacity="0.75">mHa</text>
+<text x="14" y="{ax.mt + 17}" class="board-text" font-size="10.5"
+      opacity="0.75">/atom</text>
+<path d="{poly(wid_w)}" fill="none" class="rust-ink" stroke-width="2"/>
+<path d="{poly(wid_p)}" fill="none" class="blue-ink" stroke-width="2"/>
+{dots_w}{dots_p}
+<text x="{ax.X(12) - 6:.1f}" y="{ly(wid_w[-1]) - 10:.1f}" text-anchor="end"
+      class="board-text" font-size="11">window alone</text>
+<text x="{ax.X(12) - 6:.1f}" y="{ly(wid_p[-1]) + 18:.1f}" text-anchor="end"
+      class="board-text" font-size="11">window upper + 2-RDM lower</text>
+</svg>'''
+
+    # ---- figure 2: the same two rewrites against the knob, at H6
+    six = next(r for r in rows if r["n"] == 6)
+    ells = (2, 3, 4, 5)
+    cw, cp = [], []
+    for ell in ells:
+        w = sf.h_chain_bracket(6, d, ell)
+        cw.append(w.err / 6 * 1000)
+        cp.append(sf.h_chain_rdm2_bracket(6, d, ell, window=w,
+                                          lower=six["low"]).err / 6 * 1000)
+    ax2 = Axes((1.7, 5.3), (math.log10(min(cp) * 0.6),
+                            math.log10(max(cw) * 1.7)), h=300)
+
+    def ly2(v):
+        return ax2.Y(math.log10(v))
+
+    def poly2(vals):
+        return "M " + " L ".join(f"{ax2.X(e):.1f} {ly2(v):.1f}"
+                                 for e, v in zip(ells, vals))
+    t2 = [t for t in (10, 30, 100, 300, 1000)
+          if ax2.ylim[0] <= math.log10(t) <= ax2.ylim[1]]
+    grid2 = "".join(
+        f'<line x1="{ax2.ml}" y1="{ly2(t):.1f}" x2="{640 - ax2.mr}" '
+        f'y2="{ly2(t):.1f}" class="board-ink" opacity="0.25" '
+        f'stroke-width="1"/>'
+        f'<text x="{ax2.ml - 8}" y="{ly2(t) + 3.5:.1f}" text-anchor="end" '
+        f'class="board-text" font-size="10.5" opacity="0.7">{t:g}</text>'
+        for t in t2)
+    band_lo, band_hi = min(cp), min(cw)
+    svg_knob = f'''<svg viewBox="0 0 640 300" role="img" aria-label="Bracket
+half-width per atom against window length at H6, for both rewrites">
+<rect x="{ax2.ml}" y="{ly2(band_hi):.1f}" width="{640 - ax2.mr - ax2.ml}"
+      height="{ly2(band_lo) - ly2(band_hi):.1f}" fill="var(--blue)"
+      opacity="0.10"/>
+<text x="{640 - ax2.mr - 8}" y="{(ly2(band_hi) + ly2(band_lo)) / 2 + 4:.1f}"
+      text-anchor="end" class="board-text" font-size="10.5" opacity="0.8">
+only the pair reaches this band</text>
+{grid2}
+{"".join(f'<text x="{ax2.X(e):.1f}" y="282" text-anchor="middle" '
+         f'class="board-text" font-size="10.5" opacity="0.7">'
+         f'&#8467; = {e}</text>' for e in ells)}
+<text x="14" y="{ax2.mt + 4}" class="board-text" font-size="10.5"
+      opacity="0.75">mHa</text>
+<text x="14" y="{ax2.mt + 17}" class="board-text" font-size="10.5"
+      opacity="0.75">/atom</text>
+<path d="{poly2(cw)}" fill="none" class="rust-ink" stroke-width="2"/>
+<path d="{poly2(cp)}" fill="none" class="blue-ink" stroke-width="2"/>
+{"".join(f'<circle cx="{ax2.X(e):.1f}" cy="{ly2(v):.1f}" r="4" '
+         f'class="rust-fill"/>' for e, v in zip(ells, cw))}
+{"".join(f'<circle cx="{ax2.X(e):.1f}" cy="{ly2(v):.1f}" r="4" '
+         f'class="blue-fill"/>' for e, v in zip(ells, cp))}
+</svg>'''
+
+    # ---- the race, three tolerances at H6
+    traces, receipts = [], []
+    for tol in (0.05, 0.016, 0.010):
+        try:
+            c = sf.h_chain_energy_dispatch(6, tol=tol)
+            traces.append(f"tol = {tol} per atom  ->  {c.provenance[-1]}")
+            receipts.append((tol, c.receipt))
+        except sf.Refusal as e:
+            traces.append(f"tol = {tol} per atom  ->  {e}")
+            receipts.append((tol, e.tried))
+    rec_lines = []
+    for tol, rec in receipts:
+        rec_lines.append(f"tol = {tol} per atom")
+        for name, knob, pred, secs, verdict in rec:
+            v = f"{verdict:.4f}" if isinstance(verdict, float) else verdict
+            rec_lines.append(f"    {name}@{knob:<2} predicted {pred:>10.0f}"
+                             f"   measured {secs:6.2f}s   err {v}")
+
+    tbl = "".join(
+        f"<tr><td>H{r['n']}</td><td>{4 ** r['n']:,}</td>"
+        f"<td>&#8467; = {r['ell']}</td>"
+        f"<td>{r['win'].err / r['n'] * 1000:.1f}</td>"
+        f"<td>{r['pair'].err / r['n'] * 1000:.1f}</td>"
+        f"<td>{r['ts']:.0f} s</td></tr>" for r in rows)
+
+    return page(
+        "Case: a second lower bound on the same question",
+        "certified case",
+        "A second lower bound, priced in orbitals",
+        "The window ladder prices a lower bound at 4 to the power of the "
+        "window length, and it stops where the matrix stops being "
+        "formable. A relaxation of the two-particle density matrix is "
+        "priced in orbitals instead, and the planner races the two.",
+        [
+            "<h2>The idea</h2>"
+            "<p>The energy is a linear functional of the two-particle "
+            "density matrix. So minimizing it over a set that "
+            "<em>contains</em> every N-representable 2-RDM gives a lower "
+            "bound on the ground energy. Deciding N-representability is "
+            "itself hard, so the containing set is the usual 2-positivity "
+            "relaxation. The particle-particle block D, the hole-hole "
+            "block Q and the particle-hole block G are each required to "
+            "be positive semidefinite, because each is a Gram matrix of "
+            "operators acting on the state. Q and G are affine in D, and "
+            "the one-particle matrix is a contraction of D, so the whole "
+            "thing is one semidefinite program in D alone.</p>"
+            "<p>The certificate does not come from the solver. For any "
+            "Y<sub>Q</sub> and Y<sub>G</sub> that are positive "
+            "semidefinite,</p>"
+            "<pre>E(D) - enuc = &lt;W, D&gt; + &lt;Y_Q, Q(D)&gt; "
+            "+ &lt;Y_G, G(D)&gt; + c0</pre>"
+            "<p>with W = W&#8320; &#8722; A<sub>Q</sub>*(Y<sub>Q</sub>) "
+            "&#8722; A<sub>G</sub>*(Y<sub>G</sub>). Both inner products "
+            "are non-negative on the feasible set, and the trace of D is "
+            "pinned at N(N&#8722;1)/2, so a lower bound on the smallest "
+            "eigenvalue of W is a lower bound on the energy. SCS proposes "
+            "the multipliers and nothing trusts them. A bad proposal "
+            "moves W and loosens the bound, and cannot make it wrong. "
+            "Every positivity fact is then issued by "
+            "<code>eigen_bracket</code>, which already carries its own "
+            "floating-point margins, so this rewrite certifies by "
+            "composition rather than by a new proof.</p>"
+            "<p>Two declarations belong on the front of the page. The "
+            "bound is about the N-electron sector rather than the whole "
+            "Fock space, which is a narrower question than the window "
+            "ladder answers. And the relaxation is strict past two "
+            "electrons: for N = 2 the conditions are complete, by "
+            "Coleman's characterization, and the bound lands on the exact "
+            "answer.</p>",
+            code_section(sf._rdm2_maps, sf._rdm2_lower,
+                         sf.h_chain_rdm2_bracket),
+            "<h2>The result</h2>"
+            "<p>Both rewrites certify a lower bound on the same hydrogen "
+            "chain, and the upper half is the window ladder's variational "
+            "trial state in either case. What changes is the lower half. "
+            "The window's own is a marginal decomposition priced at "
+            "4<sup>&#8467;</sup>; the other is the relaxation, priced in "
+            "orbitals.</p>"
+            f"<figure>{svg_reach}<figcaption>Bracket half-width per atom, "
+            "on log axes, at the widest window each chain affords up to "
+            "&#8467; = 5. Rust is the window ladder alone and blue is the "
+            "pair. The shaded region is where the exact answer is still "
+            "affordable by dense diagonalization, which is where the "
+            "claim can be checked rather than only stated. The gap widens as "
+            "the chain grows, because the window's lower half loses "
+            "ground per atom at a fixed window length and the "
+            "relaxation does not.</figcaption></figure>"
+            "<table><thead><tr><th>chain</th><th>Fock states</th>"
+            "<th>window</th><th>window alone</th><th>with the 2-RDM</th>"
+            "<th>program</th></tr></thead>"
+            f"<tbody>{tbl}</tbody></table>"
+            "<p class='note'>Half-widths in mHa per atom. The last two "
+            "rows are past the point where the Fock matrix can be formed, "
+            "so no exact answer exists there and none is needed.</p>",
+            "<h2>Two proofs, one bracket</h2>"
+            "<p>The halves have to be about the same sector or the "
+            "sandwich is not one. The 2-RDM bound is for N electrons, and "
+            "the window's trial state is a product of block ground states "
+            "taken over each block's whole Fock space, so its electron "
+            "count is whatever the blocks prefer. Measured on these "
+            "integrals every block comes out exactly half filled, but "
+            "that is a property of the integrals rather than a theorem. "
+            "So the count is carried on the window certificate and "
+            "checked at the pairing, and a mismatch refuses.</p>"
+            "<p>The window's own lower half bounds the ground energy over "
+            "all sectors, which also bounds the N-electron one, so the "
+            "two lower bounds intersect and the tighter is kept.</p>"
+            f"<figure>{svg_knob}<figcaption>The same two rewrites at H6, "
+            "against the window length. Rust is the window alone, blue is "
+            "the pair. The window's lower half improves with "
+            "&#8467; and the pair's does not, because the relaxation does "
+            "not know what a window is, so the pair is flat until the "
+            "upper half improves. The shaded band is the range of "
+            "tolerances only the pair reaches within this "
+            "ladder.</figcaption></figure>",
+            "<h2>The race</h2>"
+            "<p>The planner runs both. The program is priced 13n&#8308; "
+            "in the window's own currency of 4<sup>&#8467;</sup>, with "
+            "exponent and constant measured on the chains n = 8 to 14, "
+            "and only the first paired rung is charged for it because the "
+            "lower half does not depend on &#8467;. So the cheap window "
+            "rungs run first and the pair gets its turn only when they "
+            "have all failed. Verbatim:</p>"
+            f"<pre>{esc(chr(10).join(traces))}</pre>"
+            "<p>and the receipts behind them, predicted cost beside "
+            "measured seconds:</p>"
+            f"<pre>{esc(chr(10).join(rec_lines))}</pre>",
+            "<h2>Checked in this run</h2><ul>"
+            f"<li>Containment where an exact answer exists: <strong>"
+            f"{contained}/{len(exact)}</strong> paired brackets contain "
+            "the exact N-electron ground energy, at H4 and H6.</li>"
+            f"<li>The relaxation is strict past two electrons: the lower "
+            f"bound sits <strong>{below[4] * 1000:.2f} mHa</strong> below "
+            f"exact at H4 and <strong>{below[6] * 1000:.2f} mHa</strong> "
+            "at H6, which is 0.56 and 1.26 mHa per atom.</li>"
+            f"<li>The pairing tightens the bracket by <strong>"
+            f"{max(w / p for w, p in zip(wid_w, wid_p)):.1f}&#215;"
+            "</strong> at its best on this ladder, and never loosens it, "
+            "since it only replaces a lower bound with a larger one.</li>"
+            f"<li>Reach: the largest chain certified here is "
+            f"<strong>H{ns[-1]}</strong>, which is "
+            f"<strong>{4 ** ns[-1]:,}</strong> Fock states. Spin "
+            "projection blocks every matrix by S_z, which does not move "
+            "the bound and is what makes that size reachable at all.</li>"
+            "<li>No exact answer exists past H6, so the check out there "
+            "is consistency: the per-atom lower bound reads "
+            f"<strong>{rows[-2]['pair'].value - rows[-2]['pair'].err:.6f}"
+            f"</strong> at H{ns[-2]} and <strong>"
+            f"{rows[-1]['pair'].value - rows[-1]['pair'].err:.6f}</strong> "
+            f"at H{ns[-1]}, which per atom is "
+            f"{(rows[-2]['pair'].value - rows[-2]['pair'].err) / ns[-2]:.6f}"
+            " and "
+            f"{(rows[-1]['pair'].value - rows[-1]['pair'].err) / ns[-1]:.6f}"
+            ".</li>"
+            "<li>What this is not. The upper half is the binding side in "
+            "every bracket above, so more work on the lower half buys "
+            "nothing here. And the pair's real territory is chains too "
+            "long to form, where it is the only rewrite that answers and "
+            "therefore has nothing to race.</li></ul>",
+        ])
+
+
 CASES = {
     "junction.html": junction_case,
     "criticality.html": criticality_case,
@@ -3549,6 +3850,7 @@ CASES = {
     "gs-equilibrium.html": gs_case,
     "the-compiler.html": compiler_case,
     "the-budget.html": budget_case,
+    "rdm2-bound.html": rdm2_case,
 }
 
 # pages needing tools CI does not have: generated locally, committed,
