@@ -3534,7 +3534,10 @@ nC/cm&#178;</text>
 # ======================================================================
 def rdm2_case():
     d = 1.8
-    ns = (4, 6, 8, 10, 12)
+    # H10 is left out of the ladder deliberately. It cost 119 s and sat
+    # between two points that already make the case, and this page is
+    # the most expensive on the site.
+    ns = (4, 6, 8, 12)
     rows = []
     for n in ns:
         ell = min(5, n - 1)
