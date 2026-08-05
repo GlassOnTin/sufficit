@@ -1389,6 +1389,96 @@ def timeseries_mean(x, tol: float = None, alpha: float = 0.05,
 
 
 
+def argmax_bracket(points, unimodal: bool = True) -> Certified:
+    """Certified bracket on WHERE a unimodal function peaks, from
+    certified values at sampled abscissae.
+
+    points is a sequence of (x, Certified) pairs. The result brackets
+    the location of the maximum, not its height. For a minimum, negate
+    the values first.
+
+    Sampled values say nothing about what happens between the samples,
+    so one assumption has to be declared and this is it: on the sampled
+    range the function rises to a single interior maximum and then
+    falls. Under that assumption a certified strict inequality is a
+    one-sided bound on the peak. If f(a) < f(b) with a < b and the two
+    intervals are disjoint, the peak cannot be at or below a, because
+    then f would already be falling at a and f(a) would exceed f(b). The
+    mirror argument bounds it from above. So the bracket is
+
+        x* > the largest a that is certifiably below something to its
+             right, and
+        x* < the smallest d that is certifiably below something to its
+             left.
+
+    Only disjoint intervals count, which is the whole point: overlapping
+    error bars establish no ordering and buy no bracket. The failure
+    probabilities of every interval consulted add by union bound, and
+    the tier is the weakest among them.
+
+    Refuses when one side is never established, and says which side and
+    by how much the intervals would have to shrink. That is the usual
+    outcome and it is the useful one, because the alternative is a
+    number that quietly assumed its own ordering.
+
+    A contradiction, meaning a lower bound at or above the upper one, is
+    raised rather than reported: it is evidence that the unimodality
+    declaration is false or that an interval is wrong, and either way
+    the answer is not a bracket.
+    """
+    if not unimodal:
+        raise NotImplementedError(
+            "argmax_bracket only knows the unimodal argument; without it "
+            "sampled values bound nothing between the samples")
+    pts = sorted(((float(x), c) for x, c in points), key=lambda p: p[0])
+    if len(pts) < 3:
+        raise ValueError(
+            f"argmax_bracket: {len(pts)} points cannot bracket an "
+            "interior maximum; at least 3 are needed")
+    xs = [x for x, _ in pts]
+    lo = [c.value - c.err for _, c in pts]
+    hi = [c.value + c.err for _, c in pts]
+
+    left = None                      # largest x certifiably left of x*
+    right = None                     # smallest x certifiably right of x*
+    for i in range(len(pts)):
+        if any(hi[i] < lo[j] for j in range(i + 1, len(pts))):
+            left = xs[i] if left is None else max(left, xs[i])
+        if any(lo[j] > hi[i] for j in range(i)):
+            right = xs[i] if right is None else min(right, xs[i])
+
+    if left is None or right is None:
+        widest = max(c.err for _, c in pts)
+        spread = max(max(lo) - min(lo), 1e-300)
+        missing = ("neither bound on" if left is None and right is None
+                   else "no lower bound on" if left is None
+                   else "no upper bound on")
+        raise ValueError(
+            f"argmax_bracket: {missing} the peak location could be "
+            f"established. No pair of points has disjoint intervals in "
+            f"the needed direction, so the ordering that would bound the "
+            f"peak is not certified. The widest half-width is {widest:.4g} "
+            f"against a spread of {spread:.4g} across the sampled "
+            f"values, so the intervals would have to shrink by about "
+            f"{max(2 * widest / spread, 1.0):.1f}x, which costs that "
+            f"factor squared in samples")
+
+    if left >= right:
+        raise ValueError(
+            f"argmax_bracket: the certified orderings put the peak both "
+            f"above {left:g} and below {right:g}, which is impossible. "
+            "Either the function is not unimodal on this range or one of "
+            "the intervals is wrong")
+
+    tier = min(c.tier for _, c in pts)
+    fail = min(1.0, sum(c.fail_p for _, c in pts))
+    return Certified(0.5 * (left + right), 0.5 * (right - left), tier,
+                     (f"argmax-bracket points={len(pts)} "
+                      f"[{left:g}, {right:g}] unimodal-declared "
+                      f"union-bound",), fail_p=fail)
+
+
+
 def mz_search_slow(A: np.ndarray, x0: np.ndarray, T: float,
                    targets=(), tol: float = None):
     """Phase 4 rewrite: automatic slow-variable identification. Greedy

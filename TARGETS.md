@@ -212,9 +212,36 @@ involved.
    that a batch be at least ten correlation times long. That refuses the whole
    under-covering regime, 300 out of 300. A drifting series, which is what an
    unequilibrated trajectory looks like, is refused for the same reason.
-2. **A certified stationary point.** The ordering argument above, composed from
-   three certified means. Gate: a synthetic rho(T) with a maximum put in by
-   hand.
+2. **A certified stationary point. DONE**, as `argmax_bracket`. The ordering
+   argument above. Under a declared unimodality a pair of disjoint intervals
+   with the lower one on the left puts the peak to the right of it, and the
+   mirror argument bounds it from above, so the bracket runs from the largest
+   abscissa certifiably left of the peak to the smallest certifiably right of
+   it. Overlapping error bars establish nothing and buy no bracket. Failure
+   probabilities add by union bound and the tier is the weakest consulted. A
+   lower bound at or above the upper one is raised rather than reported, since
+   it is evidence that the unimodality declaration is false.
+
+   Gated on a synthetic curve with the maximum put in by hand, sampled through
+   correlated series so blocks 1 and 2 compose the way they will have to for a
+   real trajectory. It brackets the known peak 60 times out of 60 at a noise
+   level where the orderings separate, and refuses 52 times out of 60 where
+   they do not.
+
+   The cost of the query is now measured rather than guessed, and it is
+   steep. Near a stationary point the function is flat, so the orderings are
+   hardest exactly where they are wanted, and resolving the peak to within
+   delta needs a precision going as delta squared. On a 0.25 K grid, 20,000
+   samples per temperature give a density half-width of 7.2e-5 and a 3.94 K
+   bracket, while 1,280,000 give 8.6e-6 and 1.90 K. Sixty-four times the
+   sampling bought a bracket two times narrower. Anyone planning this should
+   see that number before buying the compute rather than after.
+
+   One bug is worth recording because the gate is what caught it. The upper
+   comparison was inverted, which put the bracket on the wrong side while
+   still returning something plausible, and it showed up as coverage of zero
+   and, oddly, tighter noise refusing MORE often. Reading the docstring would
+   never have found it, because the docstring described the correct rule.
 3. **A finite-size ladder.** `continuum_limit` already does this shape.
 4. **An untrusted molecular-dynamics engine.** OpenMM proposes, we certify, on
    the same line every other engine here sits on.

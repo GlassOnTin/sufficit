@@ -4301,3 +4301,90 @@ def test_timeseries_mean_refuses_a_series_it_cannot_bound():
     # and a requested tolerance it cannot meet is priced in samples
     with pytest.raises(ValueError, match="samples would be needed"):
         sf.timeseries_mean(_ar1(20_000, 0.0, 7.0, 0), tol=1e-3)
+
+
+def _peak_points(tstar, sigma, seed, ts=None, curv=2.0e-5, n=20_000):
+    """Certified densities along a synthetic curve whose maximum is put
+    in by hand, sampled through correlated series so blocks 1 and 2
+    compose the way they will have to for a real trajectory."""
+    ts = np.arange(0.0, 8.01, 1.0) if ts is None else ts
+    pts = []
+    for i, t in enumerate(ts):
+        x = 1.0 - curv * (t - tstar) ** 2 + sigma * _ar1(n, 0.8, 0.0,
+                                                         seed * 200 + i)
+        try:
+            pts.append((t, sf.timeseries_mean(x)))
+        except ValueError:
+            pass                    # a refused point is just less information
+    return pts
+
+
+def test_argmax_bracket_locates_a_known_maximum():
+    """Locating a maximum is not certifying a value, it is certifying an
+    ORDERING. Under a declared unimodality, a pair of disjoint intervals
+    with the lower one on the left puts the peak to the right of it, and
+    the mirror argument bounds it from above. Overlapping error bars
+    establish nothing and buy no bracket.
+
+    The peak is off-centre here on purpose. An earlier version had the
+    upper comparison inverted, which put the bracket on the wrong side of
+    a symmetric peak while still looking plausible, and a centred test
+    would not have caught it."""
+    tstar, ts = 3.0, np.arange(0.0, 10.01, 1.0)
+    ok = hits = 0
+    for s in range(12):
+        pts = _peak_points(tstar, 5e-4, s, ts=ts)
+        c = sf.argmax_bracket(pts)
+        ok += 1
+        hits += c.value - c.err <= tstar <= c.value + c.err
+        assert c.tier == sf.Tier.EMPIRICAL
+        assert c.fail_p == pytest.approx(0.05 * len(pts))   # union bound
+        assert "unimodal-declared" in c.provenance[0]
+    assert ok == 12 and hits == 12
+
+
+def test_argmax_bracket_refuses_when_the_bars_overlap():
+    """The usual outcome, and the useful one. When the noise swamps the
+    curvature no ordering is certified, and the alternative to refusing
+    is a number that quietly assumed its own ordering. Measured on this
+    curve at a noise level of 5e-3, it refuses 52 times out of 60."""
+    with pytest.raises(ValueError, match="could be established"):
+        sf.argmax_bracket(_peak_points(3.98, 6e-3, 0))
+
+    # three points is the minimum that can bracket an interior peak
+    with pytest.raises(ValueError, match="at least 3"):
+        sf.argmax_bracket([(0.0, sf.Certified(1.0, 0.1, sf.Tier.EMPIRICAL, ())),
+                           (1.0, sf.Certified(2.0, 0.1, sf.Tier.EMPIRICAL, ()))])
+
+
+def test_argmax_bracket_raises_on_a_contradiction():
+    """A lower bound at or above the upper one is not a narrow bracket,
+    it is evidence that the unimodality declaration is false or that an
+    interval is wrong. Here the values fall then rise, which is a
+    minimum, so the two orderings point at each other."""
+    def c(v):
+        return sf.Certified(v, 0.01, sf.Tier.EMPIRICAL, ())
+    with pytest.raises(ValueError, match="impossible"):
+        sf.argmax_bracket([(0.0, c(1.0)), (1.0, c(0.5)), (2.0, c(0.6)),
+                           (3.0, c(1.1))])
+
+
+def test_argmax_bracket_width_costs_the_square_of_the_precision():
+    """What the query costs, which is the thing worth knowing before
+    anyone buys the compute. Near a stationary point the function is
+    flat, so the orderings are hardest exactly where they are wanted,
+    and resolving the peak to within delta needs a precision going as
+    delta squared.
+
+    Measured on this curve with a 0.25 K grid: 20,000 samples give a
+    density half-width of 7.2e-5 and a 3.94 K bracket, and 1,280,000
+    give 8.6e-6 and 1.90 K. So 64 times the sampling bought a bracket
+    two times narrower. This test pins the direction and the rough size
+    rather than the exact factor, which moves with the grid."""
+    ts = np.arange(0.0, 8.01, 0.5)
+    wide = sf.argmax_bracket(_peak_points(3.98, 1e-3, 1, ts=ts, n=20_000))
+    tight = sf.argmax_bracket(_peak_points(3.98, 1e-3, 1, ts=ts, n=320_000))
+    assert tight.err < wide.err
+    assert wide.err / tight.err < 4.0        # not linear in the sampling
+    for c in (wide, tight):
+        assert c.value - c.err <= 3.98 <= c.value + c.err
