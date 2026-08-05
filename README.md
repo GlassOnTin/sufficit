@@ -9,7 +9,7 @@ of the bound. The bound is the product.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 215 checks). Every claimed bound is
+([`test_sufficit.py`](test_sufficit.py), 216 checks). Every claimed bound is
 verified there against brute force, exact solutions, or independent
 constructions.
 
@@ -49,8 +49,9 @@ There is no package yet. The library is the single file
 `scipy`; `mpmath` for the tests; `cvxpy-base` and `scs` only for the SOS
 search and the 2-RDM bound, both of which re-certify the solver's
 output on our side. Run the suite with
-`pytest test_sufficit.py`. It takes about four minutes, and the SPH ladders
-are the long pole.
+`pytest test_sufficit.py`. It takes about six minutes on an idle machine and
+noticeably longer on a busy one, measured between five and ten. The SPH
+ladders and the planner's receipt test are the long poles.
 
 ## Measured results
 

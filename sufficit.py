@@ -3689,12 +3689,18 @@ def h_chain_rdm2_bracket(n: int, d: float = 1.8, ell: int = 3,
 # elements. Measured -74.9631, -39.7268 and -55.4541 against literature
 # values of about -74.9659, -39.727 and -55.4554. A test pins all three.
 #
-# One thing did not resolve. N2 comes out at -106.766 where the value
-# recalled for it was -107.496. Ammonia constrains the nitrogen
-# exponents to about half a per cent, measured by perturbing them, and a
-# basis error large enough to move N2 by 0.73 hartree is far outside
-# that, so the recollection is the more likely wrong one. It is recorded
-# rather than resolved.
+# One case took a while to resolve and the chase is worth keeping. N2
+# first came out at -106.766 against a recalled -107.496, and the basis
+# was the suspect, because every anchor above has exactly one heavy atom
+# and so a p function on one centre had never met a p function on
+# another in anything with a reference. It was not the basis. The
+# integrals pass structural checks exactly, the nitrogen atom's own full
+# CI is right, and the fault was plain Roothaan iteration landing on a
+# stationary point 0.73 hartree above the lowest one, which describes an
+# unbound molecule. A restart finds -107.496 and the recollection was
+# correct all along. See _rhf, and the reasoning that briefly pointed
+# the wrong way: ammonia does constrain the nitrogen exponents tightly,
+# which was true and did not bear on the question.
 
 _STO3G_1S = (0.15432897, 0.53532814, 0.44463454)
 _STO3G_2S = (-0.09996723, 0.39951283, 0.70011547)
@@ -3742,30 +3748,61 @@ def sto3g(molecule, angstrom: bool = False):
     return atoms, shells, nelec
 
 
-def _rhf(h, eri, N, max_iters: int = 200, tol: float = 1e-10):
-    """Closed-shell self-consistent field in an orthonormal basis.
+def _rhf(h, eri, N, max_iters: int = 200, tol: float = 1e-10,
+         restarts: int = 6, damp: float = 0.5, seed: int = 0):
+    """Closed-shell self-consistent field in an orthonormal basis, run
+    several times from different starts, keeping the lowest.
 
     Returns (orbitals, iterations, converged). Convergence is not part of
     any claim downstream, because the determinant built from ANY
     orthonormal orbitals is variational, so a stopped iteration gives a
-    looser upper bound and never an invalid one. It is reported so a
-    reader can tell a converged bound from a stopped one."""
+    looser upper bound and never an invalid one.
+
+    The restarts are not decoration. Plain Roothaan iteration from the
+    core-Hamiltonian guess converges to a stationary point, not
+    necessarily the lowest one, and on N2 it lands 0.73 hartree above the
+    solution a random start finds: -106.766 against -107.496, which is
+    above two separated nitrogen atoms and therefore describes an unbound
+    molecule. Nothing was ever wrong, because a worse determinant is
+    still an upper bound, but the bracket it fed was needlessly loose.
+    Since every attempt is variational, taking the lowest over several is
+    free and can only tighten."""
     h = np.asarray(h, float)
     eri = np.asarray(eri, float)
     nocc = N // 2
-    _, C = np.linalg.eigh(h)
-    E = None
-    for it in range(max_iters):
+    rng = np.random.default_rng(seed)
+    best = None
+
+    def one(C0):
+        C, P, E = C0, None, None
+        for it in range(max_iters):
+            Co = C[:, :nocc]
+            Pn = 2.0 * Co @ Co.T
+            P = Pn if P is None else (1.0 - damp) * Pn + damp * P
+            F = h + np.einsum("rs,pqrs->pq", P, eri) \
+                - 0.5 * np.einsum("rs,prqs->pq", P, eri)
+            Enew = 0.5 * float(np.sum(P * (h + F)))
+            _, C = np.linalg.eigh(F)
+            if E is not None and abs(Enew - E) < tol:
+                return C, Enew, it + 1, True
+            E = Enew
+        return C, E, max_iters, False
+
+    _, start = np.linalg.eigh(h)
+    for k in range(max(1, restarts)):
+        C0 = start if k == 0 else np.linalg.qr(
+            rng.standard_normal((len(h), len(h))))[0]
+        C, E, its, conv = one(C0)
+        # the energy of the determinant these orbitals define, which is
+        # the quantity being bounded, so selecting on it is safe
         Co = C[:, :nocc]
         P = 2.0 * Co @ Co.T
         F = h + np.einsum("rs,pqrs->pq", P, eri) \
             - 0.5 * np.einsum("rs,prqs->pq", P, eri)
-        Enew = 0.5 * float(np.sum(P * (h + F)))
-        _, C = np.linalg.eigh(F)
-        if E is not None and abs(Enew - E) < tol:
-            return C, it + 1, True
-        E = Enew
-    return C, max_iters, False
+        Efin = 0.5 * float(np.sum(P * (h + F)))
+        if best is None or Efin < best[1]:
+            best = (C, Efin, its, conv)
+    return best[0], best[2], best[3]
 
 
 def molecular_integrals(atoms, shells):

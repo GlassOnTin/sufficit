@@ -4140,13 +4140,12 @@ def test_sto3g_basis_reproduces_published_molecular_energies():
     RHF energies nobody here chose, and which between them exercise all
     four elements carried.
 
-    One case did not resolve and is recorded rather than hidden. N2 comes
-    out at -106.766 where the value recalled for it was -107.496.
-    Perturbing the nitrogen exponents by 5% moves ammonia by 3 to 15
-    mHa, so ammonia's agreement to 1.3 mHa pins them to well under a per
-    cent, and a basis error large enough to move N2 by 0.73 hartree is
-    excluded by two orders of magnitude. The recollection is the more
-    likely wrong one."""
+    N2 is the one that matters most and it is here last for a reason.
+    Every other case has exactly one heavy atom, so a p function on one
+    centre never meets a p function on another, and the two-centre path
+    goes unchecked. N2 checks it. It also caught a real fault, though not
+    the one first suspected: the basis was fine and the SCF was landing
+    on a stationary point 0.73 hartree too high."""
     b = sf.BOHR_PER_ANGSTROM
     ch = 1.0870 * b / math.sqrt(3.0)
     methane = [("C", (0.0, 0.0, 0.0))] + [
@@ -4159,8 +4158,9 @@ def test_sto3g_basis_reproduces_published_molecular_energies():
                rn * math.sin(pol) * math.sin(2 * math.pi * k / 3),
                rn * math.cos(pol))) for k in range(3)]
 
+    nitrogen = [("N", (0.0, 0.0, 0.0)), ("N", (0.0, 0.0, 1.0977 * b))]
     cases = [(_water(), True, -74.9659), (methane, False, -39.727),
-             (ammonia, False, -55.4554)]
+             (ammonia, False, -55.4554), (nitrogen, False, -107.496)]
     for mol, in_ang, published in cases:
         atoms, shells, nelec = sf.sto3g(mol, angstrom=in_ang)
         h, eri, enuc = sf.molecular_integrals(atoms, shells)
@@ -4191,3 +4191,44 @@ def test_water_relaxation_brackets_its_full_ci():
     # the upper half is the determinant, so the width is the correlation
     # energy and not a defect of the relaxation
     assert abs(hi - (-74.9631)) < 5e-3
+
+
+def test_rhf_restarts_because_the_core_guess_is_not_enough():
+    """Plain Roothaan iteration converges to a stationary point, not
+    necessarily the lowest one. On N2 from the core-Hamiltonian guess it
+    lands at -106.766, which is above two separated nitrogen atoms at
+    -107.438 and therefore describes an unbound molecule. A restart finds
+    -107.496.
+
+    Nothing was ever invalid, because a worse determinant is still a
+    variational upper bound, and that is why this failed quietly: the
+    bracket it fed was loose rather than wrong. Since every attempt is
+    variational, taking the lowest over several is free.
+
+    The nitrogen atom energy below is this library's own full CI of the
+    120-dimensional seven-electron sector, so the comparison needs no
+    outside number at all."""
+    b = sf.BOHR_PER_ANGSTROM
+    atoms, shells, nelec = sf.sto3g(
+        [("N", (0.0, 0.0, 0.0)), ("N", (0.0, 0.0, 1.0977 * b))])
+    h, eri, enuc = sf.molecular_integrals(atoms, shells)
+
+    C, _, _ = sf._rhf(h, eri, nelec, restarts=1, damp=0.0)
+    Co = C[:, :nelec // 2]
+    P = 2.0 * Co @ Co.T
+    F = h + np.einsum("rs,pqrs->pq", P, eri) \
+        - 0.5 * np.einsum("rs,prqs->pq", P, eri)
+    core_only = 0.5 * float(np.sum(P * (h + F))) + enuc
+
+    best, note = sf._rdm2_determinant_upper(h, eri, nelec)
+    best += enuc
+
+    a_atoms, a_shells, a_n = sf.sto3g([("N", (0.0, 0.0, 0.0))])
+    two_atoms = 2 * _sector_ground(
+        sf._fock_hamiltonian(*sf._md_integrals(a_atoms, a_shells),
+                             dense=True), a_n)
+
+    assert core_only > two_atoms          # the bad one is unbound
+    assert best < two_atoms               # the good one is bound
+    assert best < core_only - 0.5         # by a lot
+    assert abs(best - (-107.496)) < 5e-3
