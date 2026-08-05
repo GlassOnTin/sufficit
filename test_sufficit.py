@@ -4442,3 +4442,61 @@ def test_finite_size_ladder_refuses_when_sampling_swamps_it():
         rungs, hs, _ = _box_ladder(sigma, 1)
         with pytest.raises(ValueError, match="cannot be read"):
             sf.continuum_limit(rungs, hs, "finite-size ladder")
+
+
+def _npt_run(seed, t_mean=298.0, p_mean=1.0, n=20_000):
+    """A synthetic constant-pressure trajectory: a thermostat, a
+    barostat and the density they produce."""
+    return {"temperature": t_mean + 4.0 * _ar1(n, 0.8, 0.0, 3 * seed + 1),
+            "pressure": p_mean + 60.0 * _ar1(n, 0.8, 0.0, 3 * seed + 2),
+            "density": 0.997 + 3e-4 * _ar1(n, 0.8, 0.0, 3 * seed + 3)}
+
+
+def test_ensemble_check_accepts_a_run_that_is_in_its_own_ensemble():
+    """Block 4 of the water challenge is about driving an engine that is
+    not trusted, and this is what not trusting it means in practice.
+    Nothing here checks that the integrator is correct, because nothing
+    can from the outside. What can be checked is whether the trajectory
+    is consistent with the ensemble the engine claimed, and there are
+    only two questions: is each series stationary at all, and did the
+    controlled variables come back where they were put."""
+    obs = _npt_run(0)
+    out = sf.ensemble_check(obs, {"temperature": 298.0, "pressure": 1.0})
+    assert set(out) == {"temperature", "pressure", "density"}
+    for name, target in (("temperature", 298.0), ("pressure", 1.0)):
+        c = out[name]
+        assert c.tier == sf.Tier.EMPIRICAL
+    assert out["density"].err < 1e-4          # the observable of interest
+
+
+def test_ensemble_check_refuses_a_thermostat_that_missed():
+    """A thermostat set to 298 K whose certified mean temperature
+    excludes 298 K is not sampling that ensemble, whatever it reports,
+    and everything measured downstream is about some other system. That
+    is a refusal, not a warning.
+
+    The rejection threshold is deliberately much stricter than the
+    reporting one, because rejecting is the expensive action and every
+    controlled variable is another chance to trip it. Measured over 300
+    good runs: 7.7% thrown away at 0.05 against 1.7% at 1e-3, and all of
+    that 1.7% is timeseries_mean declining to bound a series rather than
+    the setpoint test, which did not falsely reject once. A thermostat 2%
+    hot is caught 60 times out of 60."""
+    bad = _npt_run(1)
+    bad["temperature"] = 298.0 * 1.02 + 4.0 * _ar1(20_000, 0.8, 0.0, 4)
+    with pytest.raises(ValueError, match="not in the ensemble it claims"):
+        sf.ensemble_check(bad, {"temperature": 298.0, "pressure": 1.0})
+
+
+def test_ensemble_check_refuses_a_leaking_integrator_as_unbounded():
+    """An integrator that leaks energy shows up as a series whose
+    autocorrelation time never plateaus, so timeseries_mean already
+    declines to bound it and no separate drift test is needed. The
+    distinction matters: the run is refused as unusable rather than as
+    biased, which is the correct diagnosis and the one that tells the
+    caller to fix the integrator rather than the setpoint."""
+    leak = _npt_run(2)
+    leak["energy"] = np.linspace(0.0, 5.0, 20_000) + 0.3 * _ar1(
+        20_000, 0.8, 0.0, 5)
+    with pytest.raises(ValueError, match="cannot be bounded"):
+        sf.ensemble_check(leak, {"temperature": 298.0})

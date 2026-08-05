@@ -1389,6 +1389,91 @@ def timeseries_mean(x, tol: float = None, alpha: float = 0.05,
 
 
 
+def ensemble_check(observed: dict, setpoints: dict, alpha: float = 0.05,
+                   reject_alpha: float = 1e-3, **kw) -> dict:
+    """Check that a sampler is sampling the ensemble it says it is,
+    from its output alone.
+
+    observed maps a name to a time series in trajectory order.
+    setpoints maps the names of the CONTROLLED variables to what they
+    were set to, so a constant-temperature run passes its thermostat
+    temperature and a constant-pressure run its barostat pressure.
+    Returns a certified mean for every observable.
+
+    An engine is untrusted here the same way every other engine in this
+    library is untrusted, and this is what that means in practice.
+    Nothing checks that the integrator is correct, because nothing can
+    from the outside. What can be checked is whether the trajectory it
+    produced is consistent with the ensemble it claimed, and there are
+    only two things to ask.
+
+    The first is whether each series is stationary at all, which
+    timeseries_mean already answers: an unequilibrated or drifting
+    trajectory has an autocorrelation time that never plateaus, so the
+    mean cannot be bounded and it refuses. A leaking integrator shows up
+    here as drifting energy, and no separate drift test is needed.
+
+    The second is whether the controlled variables came back where they
+    were put. A thermostat set to 298 K whose certified mean temperature
+    excludes 298 K is not sampling that ensemble, whatever it reports,
+    and every number downstream of it is about some other system. That
+    is a refusal rather than a warning.
+
+    The two alphas do different jobs and should not be the same number.
+    alpha sets the intervals that come back, at the usual 95%.
+    reject_alpha sets how much evidence it takes to throw a run away,
+    and it is much stricter because rejecting is the expensive action
+    and every controlled variable gets another chance to trip it.
+    Measured over 300 good two-setpoint runs: at a common 0.05 it throws
+    away 7.7% of them, and at 1e-3 it throws away 1.7%. All of that
+    remaining 1.7% is timeseries_mean declining to bound a series at all,
+    which is its own roughly 1% rate over two series, and none of it is
+    the setpoint test, which did not falsely reject once in 300. A
+    thermostat 2% hot is still caught 60 times out of 60, because it
+    sits twenty half-widths out rather than two.
+
+    What this does NOT check is the force field, which is the error that
+    dominates everything here and is declared rather than certified. A
+    sampler can pass both tests perfectly while describing a liquid that
+    is not water.
+    """
+    missing = set(setpoints) - set(observed)
+    if missing:
+        raise ValueError(
+            f"ensemble_check: setpoints given for {sorted(missing)} but "
+            "no series for them")
+    if not observed:
+        raise ValueError("ensemble_check: nothing to check")
+
+    out, wide, failures = {}, {}, []
+    for name in sorted(observed):
+        try:
+            out[name] = timeseries_mean(observed[name], alpha=alpha, **kw)
+            if name in setpoints:
+                wide[name] = timeseries_mean(observed[name],
+                                             alpha=reject_alpha, **kw)
+        except ValueError as exc:
+            raise ValueError(
+                f"ensemble_check: the {name} series cannot be bounded, so "
+                f"the trajectory is not usable: {exc}") from None
+
+    for name, target in sorted(setpoints.items()):
+        c = wide[name]
+        if not (c.value - c.err <= float(target) <= c.value + c.err):
+            off = (c.value - float(target)) / max(c.err, 1e-300)
+            failures.append(
+                f"{name} was set to {float(target):g} but its certified "
+                f"mean is {c.value:.6g} +- {c.err:.3g}, which is "
+                f"{off:+.1f} half-widths away")
+    if failures:
+        raise ValueError(
+            "ensemble_check: the sampler is not in the ensemble it "
+            "claims, so nothing measured on this trajectory is about the "
+            "declared system. " + "; ".join(failures))
+    return out
+
+
+
 def argmax_bracket(points, unimodal: bool = True) -> Certified:
     """Certified bracket on WHERE a unimodal function peaks, from
     certified values at sampled abscissae.

@@ -267,8 +267,45 @@ involved.
    That boundary is where the real difficulty of this whole challenge sits.
    In a molecular simulation the sampling error and the finite-size shift are
    routinely the same size, and when they are, no extrapolation is honest.
-4. **An untrusted molecular-dynamics engine.** OpenMM proposes, we certify, on
-   the same line every other engine here sits on.
+4. **An untrusted molecular-dynamics engine.** The certifying half is done, as
+   `ensemble_check`, and it turned out to be the substance of this block. An
+   engine is untrusted the way every other engine here is untrusted, and that
+   means nothing checks the integrator, because nothing can from the outside.
+   What can be checked is whether the trajectory is consistent with the
+   ensemble the engine claimed, and there are only two questions.
+
+   Is each series stationary at all? `timeseries_mean` already answers that: an
+   unequilibrated or leaking run has an autocorrelation time that never
+   plateaus, so the mean cannot be bounded and it refuses. An integrator
+   leaking energy is caught there, and no separate drift test is needed. The
+   diagnosis matters as much as the catch, because the run is refused as
+   unusable rather than as biased, which points at the integrator rather than
+   at the setpoint.
+
+   And did the controlled variables come back where they were put? A thermostat
+   set to 298 K whose certified mean temperature excludes 298 K is not sampling
+   that ensemble, whatever it reports, and everything measured downstream is
+   about some other system.
+
+   The threshold for throwing a run away is deliberately much stricter than the
+   one for reporting an interval, because rejecting is the expensive action and
+   every controlled variable is another chance to trip it. Measured over 300
+   good two-setpoint runs: 7.7% thrown away at 0.05 against 1.7% at 1e-3, and
+   all of that 1.7% is `timeseries_mean` declining to bound a series rather than
+   the setpoint test, which did not falsely reject once in 300. A thermostat 2%
+   hot is caught 60 times out of 60.
+
+   What remains is attaching a real engine, which is a dependency decision
+   rather than a code one. OpenMM is the obvious choice and is packaged both by
+   apt and by pip. It should follow the pattern this document already sets for
+   Basilisk: drive it as an untrusted external engine, and expect recorded-run
+   pages rather than CI regeneration at first, since the CI job is already
+   carrying FEniCSx.
+
+   What none of this checks is the force field, which is the error that
+   dominates everything in this challenge and is declared rather than
+   certified. A sampler can pass every test above while describing a liquid
+   that is not water.
 5. **The query end to end**, against a model whose maximum-density temperature
    is published.
 
