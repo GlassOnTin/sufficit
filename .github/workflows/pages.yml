@@ -29,17 +29,28 @@ jobs:
       # its own archive from 25.04 onward, which is where the dev machine
       # gets it, but ubuntu-latest is still 24.04 and does not.
       #
-      # It is also where the time goes. Measured on one run, this install
-      # took 48 minutes against 15 for the whole test suite and 30 for
-      # the pages, because the PPA mirror is not Azure-local while the
-      # cache is. So the .deb files are kept and cached between runs.
-      # apt deletes them by default and has to be told not to.
+      # The caching below was added on a misreading and is kept on its
+      # merits, which is worth saying plainly. One run showed this
+      # install taking 48 minutes and it was read as the dominant cost.
+      # It is not. Across seven runs the install is normally under a
+      # minute, and that 48 was a single bad day on the PPA mirror. The
+      # cache costs seconds and covers those days, so it stays, but it
+      # did not buy the improvement it was written for.
+      #
+      # What the split steps did buy is the real distribution, which is
+      # the durable part of that change:
+      #
+      #     add the PPA                   0.2 min
+      #     install FEniCSx               0.9 min
+      #     test suite                   16.1 min
+      #     regenerate every page        32.0 min
+      #
+      # So the pages dominate, and run length has tracked them: 29
+      # minutes before the 2-RDM and molecule pages existed, 50 after.
+      # That is the number to look at if this ever needs to be shorter.
       #
       # The key rolls, so the cache is rewritten every run and picks up a
-      # new PPA build the first time one appears. Saving costs seconds
-      # because it stays inside Azure. The steps below are split so a run
-      # attributes its own time instead of hiding it in one block, which
-      # is how the 48 minutes went unnoticed in the first place.
+      # new PPA build the first time one appears.
       - name: Restore the apt download cache
         uses: actions/cache@v6
         with:
