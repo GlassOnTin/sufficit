@@ -22,23 +22,63 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # FEniCSx has no PyPI wheels; install the same Debian-family
-      # packages the dev machine uses, via the FEniCS PPA, and run on
-      # the system python so apt packages are importable
-      - run: |
+
+      # FEniCSx has no PyPI wheels, so it comes from apt and the job runs
+      # on the system python where those packages are importable. The PPA
+      # is needed rather than chosen: Ubuntu carries python3-dolfinx in
+      # its own archive from 25.04 onward, which is where the dev machine
+      # gets it, but ubuntu-latest is still 24.04 and does not.
+      #
+      # It is also where the time goes. Measured on one run, this install
+      # took 48 minutes against 15 for the whole test suite and 30 for
+      # the pages, because the PPA mirror is not Azure-local while the
+      # cache is. So the .deb files are kept and cached between runs.
+      # apt deletes them by default and has to be told not to.
+      #
+      # The key rolls, so the cache is rewritten every run and picks up a
+      # new PPA build the first time one appears. Saving costs seconds
+      # because it stays inside Azure. The steps below are split so a run
+      # attributes its own time instead of hiding it in one block, which
+      # is how the 48 minutes went unnoticed in the first place.
+      - name: Restore the apt download cache
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-debs
+          key: apt-fenics-noble-${{ github.run_id }}
+          restore-keys: apt-fenics-noble-
+
+      - name: Add the FEniCS PPA
+        run: |
           sudo add-apt-repository -y ppa:fenics-packages/fenics
           sudo apt-get update
+
+      - name: Install FEniCSx and the rest of the apt half
+        run: |
+          echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
+            | sudo tee /etc/apt/apt.conf.d/99keep-debs
+          mkdir -p ~/apt-debs
+          sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
           sudo apt-get install -y --no-install-recommends \
             python3-dolfinx python3-numpy python3-scipy \
             python3-matplotlib python3-mpmath python3-pytest python3-pip
-      # --no-deps: the solver wheels must NOT drag in a pip numpy —
-      # apt-built petsc4py breaks against it (measured: dtype size 96
-      # vs 88 ABI error). numpy and scipy stay apt's. cvxpy is pinned
-      # below 1.7: newer releases import numpy.lib.array_utils, which
+          sudo cp -u /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true
+          sudo chown -R "$USER" ~/apt-debs
+          echo "cached debs: $(ls ~/apt-debs/*.deb 2>/dev/null | wc -l) files, $(du -sh ~/apt-debs 2>/dev/null | cut -f1)"
+
+      # --no-deps: the solver wheels must NOT drag in a pip numpy, since
+      # apt-built petsc4py breaks against it (measured: dtype size 96 vs
+      # 88 ABI error). numpy and scipy stay apt's. cvxpy is pinned below
+      # 1.7 because newer releases import numpy.lib.array_utils, which
       # exists only in numpy >= 2, and apt numpy is 1.26.
-      - run: pip install --break-system-packages --no-deps 'cvxpy-base<1.7' scs qdldl
-      - run: python3 -m pytest test_sufficit.py -q
-      - run: python3 docs/make_cases.py
+      - name: Install the solver wheels
+        run: pip install --break-system-packages --no-deps 'cvxpy-base<1.7' scs qdldl
+
+      - name: Run the test suite
+        run: python3 -m pytest test_sufficit.py -q
+
+      - name: Regenerate every case page from a fresh run
+        run: python3 docs/make_cases.py
+
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
