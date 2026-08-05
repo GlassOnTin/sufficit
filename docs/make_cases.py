@@ -3534,10 +3534,12 @@ nC/cm&#178;</text>
 # ======================================================================
 def rdm2_case():
     d = 1.8
-    # H10 is left out of the ladder deliberately. It cost 119 s and sat
-    # between two points that already make the case, and this page is
-    # the most expensive on the site.
-    ns = (4, 6, 8, 12)
+    # This ladder ran without H10 for one commit, dropped on an estimate
+    # that CI cost about ninety minutes. Measured, CI runs in twenty-nine
+    # and this page adds nine and a half, so the rung is affordable and
+    # the consistency check at the end is a factor of four sharper with
+    # it, because H8 is a short enough chain for edge effects to show.
+    ns = (4, 6, 8, 10, 12)
     rows = []
     for n in ns:
         ell = min(5, n - 1)
