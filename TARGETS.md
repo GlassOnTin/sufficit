@@ -496,12 +496,42 @@ involved.
    At 216 it is stationary, halves agreeing to 3.6e-4, and refused purely for
    run length: the plateau test wants 32 batches of at least ten correlation
    times and 2 ns gives 625-sample batches against a correlation time near 62.
-   That is a budget, not a physics wall, and the gap it would have to clear is
-   large, since rho(230) near 0.9991 against rho(250) at 1.00480 is 5.7e-3
-   against half-widths near 9e-4. A long 230 K rung is running to close it. If
-   it lands the bracket becomes [230, 270] K, which is 250 +- 20 and would be
-   the first version of this query with margin enough to survive the correction
-   that killed the 64-molecule one. That is not claimed until it is measured.
+   That is a budget, not a physics wall, so the budget was spent: 8 ns at 230 K
+   instead of 2. It bounds, at 1.00105 +- 0.00075, with halves at 1.00161 and
+   1.00049. It is also 1.9e-3 above what the refused 2 ns run was averaging,
+   which is worth noting on its own. The refusal was not conservatism. That run
+   really was still equilibrating, and had the plateau test been slightly more
+   permissive the ladder would have been handed a number nearly two
+   half-widths wrong, in the rung that carries the whole lower bound.
+
+   With it, the 216-molecule query closes, and closes better than the
+   64-molecule one did:
+
+       230 K   1.00105 +- 0.00075        270 K   1.00253 +- 0.00085
+       250 K   1.00480 +- 0.00089        290 K   1.00003 +- 0.00087
+
+       argmax_bracket: [230, 270] K = 250 +- 20 K
+
+   The published mW maximum is not merely inside this one, it is the centre of
+   it. And unlike the 64-molecule bracket, this one survives the honest
+   accounting: at 0.05/4 per rung, giving a family-wise 0.05 rather than a
+   union bound of 0.20, the bracket is unchanged at [230, 270] K. That is the
+   first result in this challenge with a confidence level worth quoting without
+   an apology attached.
+
+   The margins say where it is solid and where it is not. The lower bound is
+   comfortable, the 230-against-250 ordering clearing by 1.62e-3 in density
+   after the correction. The upper bound is on a knife edge: 250 against 270
+   clears by 1e-5, which is one part in a hundred thousand. Anything that moved
+   it would push the upper bound back to 290 K and the answer to 260 +- 30 K,
+   which still contains 250. So the honest reading is a solid lower bound, a
+   solid but wider upper bound at 290 K, and a tighter upper bound at 270 K
+   that is real but should not be leaned on.
+
+   What made the difference was the box rather than the sampling. The larger
+   box tightened the intervals by about a factor of two AND strengthened the
+   anomaly by a third, and the ordering that failed at 64 molecules needed
+   both.
 
 The rigid-model temperatures quoted at the top of this section are recollection
 and are not gated. mW's 250 K is not: it was checked against the literature
