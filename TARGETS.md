@@ -470,14 +470,38 @@ involved.
    burying. Reporting 260 +- 30 K without reporting that it evaporates under
    the correction would be reporting the half that worked.
 
-   The 64-molecule box is the other unquantified term, and it is the one to fix
-   next. The density at 298 K needs 216 molecules to match the published value,
-   so the ladder above is certified about a box, not about the model. A
-   216-molecule ladder is running and its first rung is in, 290 K at 1.00003 +-
-   0.00087, which is a half-width 1.7x tighter than the 64-molecule rung at
-   nearly ten times the cost per nanosecond. Whether that tightening is enough
-   to survive the Bonferroni correction, and whether the peak moves, is not yet
-   measured and is not claimed here.
+   The 64-molecule box is the other unquantified term, and it has now been
+   measured rather than left as a caveat. A 216-molecule ladder, same protocol:
+
+       250 K   1.00480 +- 0.00089
+       270 K   1.00253 +- 0.00085
+       290 K   1.00003 +- 0.00087
+       230 K   refused, halves 0.99926 / 0.99890
+       210 K   refused, halves 0.98695 / 0.99055
+
+   Three things came out of it. The half-widths tighten by 1.7x to 2.2x, close
+   to the sqrt(216/64) = 1.84 that sigma going as 1/sqrt(N) predicts, at about
+   7.6x the cost per step. The upper bound on the peak tightens from 290 K to
+   270 K, because the 250 against 270 ordering fails by 1.14e-3 at 64 molecules
+   and clears by 5.3e-4 at 216. And the finite-size shift is not a constant
+   offset: +0.00184 at 250 K, +0.00218 at 270 K, +0.00062 at 290 K, so the
+   density anomaly rho(250) - rho(290) grows from 0.00354 to 0.00477, a third
+   stronger in the larger box. Sixty-four molecules under-represent the
+   tetrahedral network the anomaly is made of, which means the box size can
+   move the peak and not merely the density. The bracket above is certified
+   about a box.
+
+   The cold rungs failed differently at the two sizes, and the difference is
+   the diagnosis. At 64 molecules 230 K drifted, so it was still equilibrating.
+   At 216 it is stationary, halves agreeing to 3.6e-4, and refused purely for
+   run length: the plateau test wants 32 batches of at least ten correlation
+   times and 2 ns gives 625-sample batches against a correlation time near 62.
+   That is a budget, not a physics wall, and the gap it would have to clear is
+   large, since rho(230) near 0.9991 against rho(250) at 1.00480 is 5.7e-3
+   against half-widths near 9e-4. A long 230 K rung is running to close it. If
+   it lands the bracket becomes [230, 270] K, which is 250 +- 20 and would be
+   the first version of this query with margin enough to survive the correction
+   that killed the 64-molecule one. That is not claimed until it is measured.
 
 The rigid-model temperatures quoted at the top of this section are recollection
 and are not gated. mW's 250 K is not: it was checked against the literature
@@ -596,6 +620,92 @@ quantity that is not exponentially amplified: the crossover limit separating
 ignition from no ignition, which is an eigenvalue sign condition on a Metzler
 matrix and therefore a cone-preserving bracket.
 
+**Shear-flow stability** was probed next and looks like the strongest unclaimed
+entry, for a reason that has little to do with the field and everything to do
+with the archetype it needs. The prompt was a photograph: the Inouye Solar
+Telescope resolving Kelvin-Helmholtz billows on the Sun at city scale, an
+instability described since the 1870s and only recently caught there directly.
+
+The query is the one that field actually asks. Given a velocity profile, is
+this layer unstable, and if so how fast does it grow? That is the complex phase
+speed c of the Rayleigh equation,
+
+    (U - c)(phi'' - k^2 phi) - U'' phi = 0,
+
+whose operator is neither self-adjoint nor cone-preserving, so archetypes two
+and five both miss it. What reaches it is a family of classical integral
+identities that confine the answer without discretising anything:
+
+  - **Rayleigh's inflection-point criterion.** No inflection point in U, no
+    instability. One pass over U''. A rigorous no.
+  - **Fjortoft's criterion.** Strictly stronger, still one pass.
+  - **Miles-Howard.** In a stratified layer, a Richardson number at or above
+    1/4 everywhere implies stability. A rigorous no, on a quantity the solar
+    and oceanographic communities already state tolerances in.
+  - **Howard's semicircle theorem.** Every unstable c lies in the upper half of
+    the circle centred on the median velocity with radius half the velocity
+    range. A rigorous enclosure of a non-self-adjoint eigenvalue, free.
+
+The probe asked the only question that decides whether that is worth having:
+how loose is the free bound against what a solver reports. Gating the solver
+came first, since a probe that cannot be trusted decides nothing, and it needed
+two analytic answers rather than remembered ones. The tanh layer's neutral mode
+falls out of substituting phi = sech(z) and c = 0, which leaves
+sech^2(z)(1 - k^2) and so is neutral at k = 1 and nowhere else on that branch.
+The Bickley jet sech^2(z) has a second, from phi = sech^2(z) with c = 2/3,
+where the two coefficients left over vanish together only at k = 2. Against
+those, and against Michalke's 1964 numerical integration of the same equation:
+
+    tanh, k=0.445      solver 0.189696, converging as h^2 through
+                       0.189610 and 0.189679. Michalke: 0.095|dU|/l_u = 0.19
+    Bickley, k->2      solver c_r walks 0.578, 0.632, 0.660 and goes
+                       neutral at k=2. Analytic c_r = 2/3
+    tanh, k->1         solver loses the mode between k=0.95 and k=0.99,
+                       just below the analytic boundary at k=1
+
+That third line is the useful failure. Near the neutral curve the growth rate
+falls below what the discretisation resolves, so the eigensolve is weakest
+exactly where the question is sharpest, which is the case for having a
+criterion that does not discretise at all.
+
+With the solver gated, the bound measured against it:
+
+    tanh, at its most unstable k=0.445          2.3x loose
+    Bickley jet, near its peak                  2.5x loose
+    Gaussian jet, near its peak                 2.2x loose
+    tanh at k=0.8, approaching neutral          7.4x loose
+    Bickley at k=1.95, approaching neutral       85x loose
+
+So the free rigorous bound is a factor of about two where the physics lives and
+worthless near the neutral curve, and every unstable mode found sat inside the
+semicircle. That is the right shape for a dispatch rather than a
+disappointment: the identity answers cheaply and coarsely, the eigensolve
+answers expensively and precisely, and the certificate records which. It is
+also a one-sided bracket and not a sandwich, since nothing here gives a
+rigorous lower bound on a growth rate, and that should be said rather than
+papered over.
+
+Two limits are real and are not the probe's fault. The semicircle theorem is
+proven for inviscid flow and does not survive viscosity, so the certified
+object is the Rayleigh problem and the reduction to it is a declared modelling
+step. And none of this is yet the MHD problem the solar image poses, where a
+field-aligned magnetic field stabilises the layer above a critical Alfven
+speed. That extension is the point of entering and it is not measured here.
+
+Criterion four is unusually well satisfied. Dedalus and eigentools already do
+spectral linear-stability eigenvalue solves with a resolution-convergence
+criterion for rejecting spurious modes, which is this project's proposer and
+checker split, already built and already Python.
+
+None of this is in `sufficit.py`. It is a probe, recorded so the decision to
+enter is made against numbers. Two of its own bugs are worth recording with it,
+because both were caught by gates rather than by reading. The Bickley jet's
+U'' had a sign error and reported a famously unstable jet as stable. And the
+tanh growth rate was first checked against a remembered k(1-k), which is not
+the answer to anything here; the solver was right and the reference was wrong,
+which is the N2 episode inverted and the same lesson either way. An ungated
+number is not a gate.
+
 ## Recurring certificate archetypes
 
 Six patterns cover nearly everything above, and the rewrite library should be
@@ -705,6 +815,30 @@ were written for. Step differencing keeps it inside the cone, which is the only
 hypothesis either function cares about. Still unclaimed, and expected to go the
 same way: Markov-state relaxation rates and transfer-operator spectra in
 molecular kinetics.
+
+### A candidate seventh
+
+The shear-flow probe above found a pattern none of the six covers, and it is
+worth naming before it is built rather than after. Where an operator is neither
+self-adjoint nor cone-preserving, an integral identity can still confine its
+eigenvalues to a region of the complex plane, from the coefficients alone and
+with no discretisation anywhere. Howard's semicircle is the instance measured;
+Gershgorin and Bendixson-Hirsch are the same shape on a matrix, and Bauer-Fike
+is its perturbation cousin.
+
+What distinguishes it from the variational archetype is not just the missing
+symmetry. A variational sandwich gets tighter as the trial space improves and
+converges on the answer. This does not converge on anything, because it never
+looked at a trial function: it is a fixed region, correct at zero cost, and
+about a factor of two too large where it matters. That makes it a first rung
+rather than a ladder, and the natural composition is with an untrusted
+eigensolve on top of it, which is a shape this library already has.
+
+Unclaimed siblings, in the same order of confidence as the fifth archetype's
+were: growth rates in any linear stability problem, resonance widths in
+scattering, and the spectra of the non-normal Jacobians that made the
+combustion probe expensive, where a region in the complex plane is exactly what
+a Gronwall bound throws away.
 
 ## Engines, and the guess and check line
 
