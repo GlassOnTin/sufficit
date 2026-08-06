@@ -90,6 +90,15 @@ jobs:
       - name: Regenerate every case page from a fresh run
         run: python3 docs/make_cases.py
 
+      # The whole of docs/ is uploaded, so anything left lying in it gets
+      # published. That is the generator itself, its bytecode cache, and
+      # whatever pytest dropped there. None of it is the site: the source
+      # is already on GitHub and nothing on the site links to it.
+      - name: Keep the build tooling out of the published site
+        run: |
+          rm -rf docs/__pycache__ docs/.pytest_cache docs/make_cases.py
+          echo "publishing:"; find docs -type f | sort
+
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
