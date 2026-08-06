@@ -470,6 +470,30 @@ involved.
    burying. Reporting 260 +- 30 K without reporting that it evaporates under
    the correction would be reporting the half that worked.
 
+   The next rung up was out of reach when this was written and is not any
+   more, which is worth recording because the reason was algorithmic rather
+   than hardware. mW's cutoff holds about eleven neighbours whatever the box,
+   so the all-pairs distance matrix the engine started with was almost
+   entirely a list of pairs that are not neighbours, and it was 85% of the
+   work at 512 sites. Dividing the box into cells a cutoff wide gives, at this
+   density, a candidate list of about 189 whatever N is, so the speedup is
+   about N/189 and the engine goes from quadratic to linear:
+
+       N=  64   dense   1.02x        N=1000   cell   6.03x
+       N= 216   dense   1.00x        N=1728   cell   8.01x
+       N= 512   cell    2.65x
+
+   The route is chosen by that arithmetic and not by a rule about box sizes,
+   and the factor of two in the guard was earned rather than picked. At 216
+   sites the candidate list is already smaller than N, 189 against 216, and
+   the cell list was still 12% SLOWER, because a 13% cut in pairs does not pay
+   for the sort, the bucket table and the gather. Written the obvious way, the
+   optimisation was a 28% regression at exactly the box size the production
+   ladders had been using. It now declines itself there.
+
+   That moves a 512-molecule ladder from about 20 hours to about 7, which is
+   the difference between a target and an overnight run.
+
    The 64-molecule box is the other unquantified term, and it has now been
    measured rather than left as a caveat. A 216-molecule ladder, same protocol:
 

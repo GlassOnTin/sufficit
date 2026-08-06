@@ -4558,6 +4558,54 @@ def test_mw_forces_are_the_gradient_of_its_energy():
     assert worst < 1e-6, f"worst force error {worst:.3g} kcal/mol/A"
 
 
+def test_mw_cell_list_agrees_with_all_pairs():
+    """mW's cutoff holds about eleven neighbours whatever the box, so an
+    N-by-N distance matrix is almost all non-neighbours. Dividing the box
+    into cells a cutoff wide and looking only at the twenty-seven around
+    each site is a pure optimisation, so the only thing to check is that
+    it changes nothing.
+
+    Cells are padded to the fullest one, so the candidate list is about
+    27 times the occupancy however empty the rest are, which at this
+    density is roughly 189 whatever N is. The speedup is therefore about
+    N/189, and the route is chosen by that arithmetic rather than by a
+    rule about box sizes. Measured:
+
+        N=  64   dense   1.02x    N=1000   cell   6.03x
+        N= 216   dense   1.00x    N=1728   cell   8.01x
+        N= 512   cell    2.65x
+
+    The guard earned its factor of two the hard way. At 216 sites the
+    candidate list is already smaller than N, 189 against 216, and the
+    cell list was still 12% SLOWER, because a 13% cut in pairs does not
+    pay for the sort, the bucket table and the gather. Both small boxes
+    now take the dense route and lose nothing."""
+    rng = np.random.default_rng(0)
+    rc = sf._MW["a"] * sf._MW["sig"]
+    x, L = sf.mw_lattice(4, 1.0)                    # 512 sites
+    x = x + rng.normal(0.0, 0.25, x.shape)          # off the lattice
+
+    nc = int(L // rc)
+    cell = np.minimum(((x - L * np.floor(x / L)) / (L / nc)).astype(int),
+                      nc - 1)
+    cid = (cell[:, 0] * nc + cell[:, 1]) * nc + cell[:, 2]
+    occ = int(np.bincount(cid, minlength=nc ** 3).max())
+    assert 54 * occ < len(x), "this box should take the cell-list route"
+
+    e_cell, F_cell = sf._mw_energy_forces(x, L)
+    e_dense, F_dense = sf._mw_energy_forces(x, L, dense=True)
+    assert abs(e_cell - e_dense) < 1e-9 * abs(e_dense)
+    assert np.abs(F_cell - F_dense).max() < 1e-9
+
+    # and the small box must decline it rather than pay for it
+    xs, Ls = sf.mw_lattice(3, 1.0)                  # 216 sites
+    ncs = int(Ls // rc)
+    cs = np.minimum(((xs - Ls * np.floor(xs / Ls)) / (Ls / ncs)).astype(int),
+                    ncs - 1)
+    cids = (cs[:, 0] * ncs + cs[:, 1]) * ncs + cs[:, 2]
+    assert 54 * int(np.bincount(cids, minlength=ncs ** 3).max()) >= len(xs)
+
+
 def _fake_water(tstar, sigma, seed=0, curv=3.0e-6, n=20_000, hot=1.0,
                 drifting=()):
     """An engine that is not molecular dynamics: a density curve with its

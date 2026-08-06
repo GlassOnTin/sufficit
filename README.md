@@ -9,7 +9,7 @@ of the bound. The bound is the product.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 235 checks). Every claimed bound is
+([`test_sufficit.py`](test_sufficit.py), 236 checks). Every claimed bound is
 verified there against brute force, exact solutions, or independent
 constructions.
 

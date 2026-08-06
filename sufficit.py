@@ -1604,7 +1604,85 @@ _FCONV = 418.4                  # kcal/mol/A / amu -> A/ps^2
 _ATM_A3 = 1.45839e-5            # one atmosphere times one A^3, in kcal/mol
 
 
-def _mw_energy_forces(x, L):
+def _mw_pack(ok, cand, uv, ru):
+    """Squeeze a candidate list down to the widest true neighbour count."""
+    M = int(ok.sum(1).max())
+    if M == 0:
+        return None
+    idx = np.argsort(~ok, axis=1, kind="stable")[:, :M]
+    return (np.take_along_axis(cand, idx, axis=1),
+            np.take_along_axis(ok, idx, axis=1),
+            np.take_along_axis(uv, idx[:, :, None].repeat(3, 2), axis=1),
+            np.take_along_axis(ru, idx, axis=1))
+
+
+def _mw_neighbours(x, L, rc, dense: bool = False):
+    """Padded neighbour lists: indices, validity, displacements x_j - x_i,
+    and distances. dense forces the all-pairs route, which exists to be
+    compared against rather than to be used.
+
+    mW's cutoff holds about eleven neighbours whatever the box, so an
+    N-by-N distance matrix is almost entirely a list of pairs that are
+    not neighbours. It is also, measured, 85% of the work at 512 sites
+    and 95% at 1728, because the three-body half is already linear in N.
+
+    So the box is divided into cells at least a cutoff wide and each site
+    looks only in its own cell and the twenty-six around it. That needs
+    at least three cells per side to be both correct and worth doing, and
+    small boxes fall back to the dense path rather than pretend.
+    """
+    N = len(x)
+    nc = int(L // rc)
+
+    def all_pairs():
+        d = x[None, :, :] - x[:, None, :]
+        d -= L * np.rint(d / L)
+        r = np.sqrt((d * d).sum(-1))
+        np.fill_diagonal(r, 1e9)
+        return _mw_pack(r < rc, np.tile(np.arange(N), (N, 1)), d, r)
+
+    if dense or nc < 3:                     # too small to divide
+        return all_pairs()
+
+    cs = L / nc
+    xw = x - L * np.floor(x / L)            # into the primary cell
+    cell = np.minimum((xw / cs).astype(int), nc - 1)
+    cid = (cell[:, 0] * nc + cell[:, 1]) * nc + cell[:, 2]
+    counts = np.bincount(cid, minlength=nc ** 3)
+
+    # Cells are padded to the fullest one, so the candidate list is 27
+    # times that however empty the rest are, and below about five cells
+    # per side that product approaches N. The factor of two is measured
+    # rather than chosen: at 216 sites the candidate list is already
+    # smaller than N, 189 against 216, and the cell list is still 12%
+    # SLOWER, because a 13% cut in pairs does not pay for the sort, the
+    # bucket table and the gather. It has to be about twice smaller
+    # before the bookkeeping is worth it.
+    if 54 * int(counts.max()) >= N:
+        return all_pairs()
+
+    # bucket the sites by cell, padded to the fullest cell
+    order = np.argsort(cid, kind="stable")
+    slot = np.arange(N) - (np.cumsum(counts) - counts)[cid[order]]
+    table = np.full((nc ** 3, int(counts.max())), -1, dtype=int)
+    table[cid[order], slot] = order
+
+    off = np.array([(i, j, k) for i in (-1, 0, 1)
+                    for j in (-1, 0, 1) for k in (-1, 0, 1)])
+    nbc = (cell[:, None, :] + off[None, :, :]) % nc
+    ncid = (nbc[..., 0] * nc + nbc[..., 1]) * nc + nbc[..., 2]
+    cand = table[ncid].reshape(N, -1)
+    live = cand >= 0
+    cand = np.where(live, cand, 0)
+
+    uv = xw[cand] - xw[:, None, :]
+    uv -= L * np.rint(uv / L)
+    ru = np.sqrt((uv * uv).sum(-1))
+    ok = live & (ru < rc) & (cand != np.arange(N)[:, None])
+    return _mw_pack(ok, cand, uv, np.where(ok, ru, 1e9))
+
+
+def _mw_energy_forces(x, L, dense: bool = False):
     """Total mW energy and forces for N sites in a cubic box of side L.
 
     Stillinger-Weber: a pair term over neighbours inside the cutoff, plus
@@ -1614,40 +1692,35 @@ def _mw_energy_forces(x, L):
     smoothly to zero at the cutoff, so there is nothing to shift or
     taper and no tail correction to get wrong.
 
-    Gated against a numerical gradient rather than argued for.
+    Gated against a numerical gradient rather than argued for, and the
+    cell-list path gated against the dense one to machine precision.
     """
     sig, eps, aa = _MW["sig"], _MW["eps"], _MW["a"]
     rc = aa * sig
     N = len(x)
-    d = x[None, :, :] - x[:, None, :]              # d[i, j] = x_j - x_i
-    d -= L * np.rint(d / L)
-    r = np.sqrt((d * d).sum(-1))
-    np.fill_diagonal(r, 1e9)
-    near = r < rc
     F = np.zeros_like(x)
+    packed = _mw_neighbours(x, L, rc, dense=dense)
+    if packed is None:                      # nothing inside the cutoff
+        return 0.0, F
+    nb, ok, uv, ru = packed
+    M = nb.shape[1]
 
     # pair term. Distances outside the cutoff are parked at a safe value
     # before the exponential sees them, then masked out, since the
     # exponent diverges at the cutoff itself.
-    rs = np.where(near, r, 0.5 * rc)
+    rs = np.where(ok, ru, 0.5 * rc)
     e = np.exp(sig / (rs - rc))
     br = _MW["B"] * (sig / rs) ** _MW["p"]
     u2 = _MW["A"] * eps * (br - 1.0) * e
     du2 = _MW["A"] * eps * e * (-_MW["p"] * br / rs
                                 + (br - 1.0) * (-sig / (rs - rc) ** 2))
-    e2 = 0.5 * np.where(near, u2, 0.0).sum()
-    F += ((np.where(near, du2, 0.0) / rs)[:, :, None] * d).sum(axis=1)
+    e2 = 0.5 * np.where(ok, u2, 0.0).sum()
+    F += ((np.where(ok, du2, 0.0) / rs)[:, :, None] * uv).sum(axis=1)
 
-    # three-body term. Neighbour lists are padded to the largest count so
-    # the triplet loop is one array operation; the padding is masked.
-    M = int(near.sum(1).max())
+    # three-body term over every pair of a site's neighbours. The padding
+    # is masked; the triplet enumeration is one array operation.
     if M < 2:
         return e2, F
-    nb = np.argsort(~near, axis=1, kind="stable")[:, :M]
-    ok = np.take_along_axis(near, nb, axis=1)
-    uv = np.take_along_axis(d, nb[:, :, None].repeat(3, 2), axis=1)
-    ru = np.take_along_axis(r, nb, axis=1)
-
     ia, ib = np.triu_indices(M, 1)
     m = ok[:, ia] & ok[:, ib]
     u, v = uv[:, ia], uv[:, ib]
