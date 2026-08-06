@@ -110,5 +110,17 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Thirty minutes rather than the ten this action defaults to. Not a
+      # guess: on 6 August four consecutive deployments failed here, three
+      # of them reaching deployment_in_progress and then being cancelled
+      # when the action gave up. The build was green every time and the
+      # artifact is under a megabyte, so nothing was wrong on this side.
+      # The last success that day took 4.3 minutes against a usual 0.1,
+      # which is the same slowness not quite crossing the line.
+      #
+      # This buys patience, not correctness. If a deployment ever fails
+      # for a real reason it will now take half an hour to say so.
       - id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          timeout: 1800000
