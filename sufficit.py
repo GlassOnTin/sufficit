@@ -1389,6 +1389,20 @@ def timeseries_mean(x, tol: float = None, alpha: float = 0.05,
 
 
 
+class EnsembleMismatch(ValueError):
+    """The sampler is not in the ensemble it claims.
+
+    Separate from an unbounded series because the two say different
+    things and deserve different handling. A series that cannot be
+    bounded means this run did not sample enough, which is a statement
+    about one run and can be answered by running longer or by dropping
+    that point. A missed setpoint means the engine is answering a
+    different question than the one asked, which is a statement about
+    the engine, and dropping the point would hide it.
+
+    Subclasses ValueError so every existing caller keeps working."""
+
+
 def ensemble_check(observed: dict, setpoints: dict, alpha: float = 0.05,
                    reject_alpha: float = 1e-3, **kw) -> dict:
     """Check that a sampler is sampling the ensemble it says it is,
@@ -1466,7 +1480,7 @@ def ensemble_check(observed: dict, setpoints: dict, alpha: float = 0.05,
                 f"mean is {c.value:.6g} +- {c.err:.3g}, which is "
                 f"{off:+.1f} half-widths away")
     if failures:
-        raise ValueError(
+        raise EnsembleMismatch(
             "ensemble_check: the sampler is not in the ensemble it "
             "claims, so nothing measured on this trajectory is about the "
             "declared system. " + "; ".join(failures))
@@ -1561,6 +1575,355 @@ def argmax_bracket(points, unimodal: bool = True) -> Certified:
                      (f"argmax-bracket points={len(pts)} "
                       f"[{left:g}, {right:g}] unimodal-declared "
                       f"union-bound",), fail_p=fail)
+
+
+# ------------------------------------------------ an engine to distrust.
+# The blocks above certify what comes out of a molecular simulation. They
+# need something to come out of one, and the cheapest honest source is
+# mW: Molinero and Moore's monatomic water, a Stillinger-Weber solid
+# potential reparameterised so that one site per molecule, with no
+# charges and no hydrogen, reproduces water's tetrahedral network through
+# the three-body term alone. No electrostatics means no Ewald sum, and no
+# hydrogens means no rigid-body constraints, so the whole engine is a
+# page of numpy rather than a dependency.
+#
+# It is chosen because it is REAL and PUBLISHED, not because it is
+# convenient. mW has a density maximum at 250 K in the literature, which
+# is what makes it a gate rather than a demonstration: the bracket either
+# contains that number or the code is wrong. A model invented here would
+# have proved nothing.
+#
+# The engine is untrusted in exactly the sense the rest of this library
+# means it. It is not certified, it issues no certificates, and nothing
+# downstream trusts its integrator. It is a proposer.
+
+_MW = dict(eps=6.189, sig=2.3925, A=7.049556277, B=0.6022245584, p=4,
+           a=1.8, lam=23.15, gam=1.2, cos0=-1.0 / 3.0, mass=18.015)
+KB_KCAL = 0.0019872041          # kcal/mol/K
+_FCONV = 418.4                  # kcal/mol/A / amu -> A/ps^2
+_ATM_A3 = 1.45839e-5            # one atmosphere times one A^3, in kcal/mol
+
+
+def _mw_energy_forces(x, L):
+    """Total mW energy and forces for N sites in a cubic box of side L.
+
+    Stillinger-Weber: a pair term over neighbours inside the cutoff, plus
+    a three-body term over every pair of neighbours of a common centre
+    that penalises departure from the tetrahedral angle. Both terms carry
+    an exponential factor that takes the energy and every derivative
+    smoothly to zero at the cutoff, so there is nothing to shift or
+    taper and no tail correction to get wrong.
+
+    Gated against a numerical gradient rather than argued for.
+    """
+    sig, eps, aa = _MW["sig"], _MW["eps"], _MW["a"]
+    rc = aa * sig
+    N = len(x)
+    d = x[None, :, :] - x[:, None, :]              # d[i, j] = x_j - x_i
+    d -= L * np.rint(d / L)
+    r = np.sqrt((d * d).sum(-1))
+    np.fill_diagonal(r, 1e9)
+    near = r < rc
+    F = np.zeros_like(x)
+
+    # pair term. Distances outside the cutoff are parked at a safe value
+    # before the exponential sees them, then masked out, since the
+    # exponent diverges at the cutoff itself.
+    rs = np.where(near, r, 0.5 * rc)
+    e = np.exp(sig / (rs - rc))
+    br = _MW["B"] * (sig / rs) ** _MW["p"]
+    u2 = _MW["A"] * eps * (br - 1.0) * e
+    du2 = _MW["A"] * eps * e * (-_MW["p"] * br / rs
+                                + (br - 1.0) * (-sig / (rs - rc) ** 2))
+    e2 = 0.5 * np.where(near, u2, 0.0).sum()
+    F += ((np.where(near, du2, 0.0) / rs)[:, :, None] * d).sum(axis=1)
+
+    # three-body term. Neighbour lists are padded to the largest count so
+    # the triplet loop is one array operation; the padding is masked.
+    M = int(near.sum(1).max())
+    if M < 2:
+        return e2, F
+    nb = np.argsort(~near, axis=1, kind="stable")[:, :M]
+    ok = np.take_along_axis(near, nb, axis=1)
+    uv = np.take_along_axis(d, nb[:, :, None].repeat(3, 2), axis=1)
+    ru = np.take_along_axis(r, nb, axis=1)
+
+    ia, ib = np.triu_indices(M, 1)
+    m = ok[:, ia] & ok[:, ib]
+    u, v = uv[:, ia], uv[:, ib]
+    r1 = np.where(m, ru[:, ia], 0.5 * rc)
+    r2 = np.where(m, ru[:, ib], 0.5 * rc)
+
+    cos = (u * v).sum(-1) / (r1 * r2)
+    dl = cos - _MW["cos0"]
+    g1 = np.exp(_MW["gam"] * sig / (r1 - rc))
+    g2 = np.exp(_MW["gam"] * sig / (r2 - rc))
+    h = np.where(m, _MW["lam"] * eps * dl * dl * g1 * g2, 0.0)
+
+    dh_dr1 = h * (-_MW["gam"] * sig / (r1 - rc) ** 2)
+    dh_dr2 = h * (-_MW["gam"] * sig / (r2 - rc) ** 2)
+    dh_dc = np.where(m, 2.0 * _MW["lam"] * eps * dl * g1 * g2, 0.0)
+
+    uh, vh = u / r1[..., None], v / r2[..., None]
+    Fj = -(dh_dr1[..., None] * uh
+           + dh_dc[..., None] * (vh - cos[..., None] * uh) / r1[..., None])
+    Fk = -(dh_dr2[..., None] * vh
+           + dh_dc[..., None] * (uh - cos[..., None] * vh) / r2[..., None])
+
+    F += (-(Fj + Fk)).sum(axis=1)
+    jj, kk = nb[:, ia][m], nb[:, ib][m]
+    for c in range(3):
+        F[:, c] += np.bincount(jj, weights=Fj[..., c][m], minlength=N)
+        F[:, c] += np.bincount(kk, weights=Fk[..., c][m], minlength=N)
+    return e2 + h.sum(), F
+
+
+def mw_lattice(cells: int = 2, density: float = 1.0):
+    """8 * cells**3 mW sites on a diamond lattice at a given g/cm^3."""
+    N = 8 * cells ** 3
+    L = (N * _MW["mass"] / (0.602214076 * density)) ** (1 / 3)
+    if L < 2 * _MW["a"] * _MW["sig"]:
+        raise ValueError(
+            f"mw_lattice: a box of {L:.2f} A is smaller than twice the "
+            f"{_MW['a'] * _MW['sig']:.2f} A cutoff, so the minimum image "
+            "convention does not hold; use more cells")
+    base = np.array([[0, 0, 0], [.5, .5, 0], [.5, 0, .5], [0, .5, .5],
+                     [.25, .25, .25], [.75, .75, .25],
+                     [.75, .25, .75], [.25, .75, .75]])
+    grid = np.indices((cells,) * 3).reshape(3, -1).T
+    x = ((grid[:, None, :] + base[None, :, :]) * (L / cells)).reshape(-1, 3)
+    return x, L
+
+
+def mw_water_npt(temperature: float, pressure: float = 1.0, cells: int = 2,
+                 steps: int = 40000, dt: float = 0.005,
+                 friction: float = 1.0, baro_every: int = 10,
+                 baro_scale: float = None, sample_every: int = 10,
+                 equil_frac: float = 0.5, seed: int = 0, start=None,
+                 density0: float = 0.97, melt: float = 600.0,
+                 melt_steps: int = 20000) -> dict:
+    """Sample mW water at constant temperature and pressure. Untrusted.
+
+    Returns the time series a certificate can be built from: density in
+    g/cm^3, instantaneous kinetic temperature in K, and potential energy.
+    Temperature in K, pressure in atm, and the first equil_frac of the
+    run is dropped.
+
+    Two knobs were set by measurement rather than by folklore and it is
+    worth saying which way each went.
+
+    The timestep is 5 fs, not the 10 fs mW is usually run at. At 10 fs
+    the kinetic temperature comes out 294.7 K when 298 K was asked for,
+    at both frictions tried, so it is discretisation and not thermostat
+    coupling. That is a 1.1% miss and ensemble_check refuses it. BAOAB's
+    configurational sampling is accurate enough at 10 fs that the density
+    would have been fine, which is exactly why this needed measuring: the
+    run would have looked healthy while failing the only test that asks.
+
+    The barostat is Monte Carlo on the logarithm of the volume, which
+    needs no virial and therefore no pressure estimator, so the pressure
+    is imposed exactly rather than measured and controlled. Its default
+    move size targets about half acceptance, scaled as 1/sqrt(N) because
+    that is how the natural volume fluctuation scales. Getting this wrong
+    is quiet: at 95% acceptance the volume barely moves, the lag-one
+    correlation of the density series is 0.994, and the run looks
+    converged while sampling almost nothing.
+
+    The run is melted at melt K before being brought to temperature,
+    which is not optional and cost a measurement to learn. The starting
+    diamond lattice IS mW's ice structure, and a defect-free crystal
+    under periodic boundaries has no interface to melt from, so it
+    superheats indefinitely. Started cold at 298 K, 23 K above the
+    model's 274.6 K melting point, it stayed crystalline: density 0.9764
+    at 64 molecules and 0.9768 at 216, so not a finite-size artefact,
+    and a potential energy of -11.39 kcal/mol per molecule. Melting
+    first gives 0.9908 and -10.071 instead.
+
+    That energy is the gate on the whole engine, because it is fixed
+    independently. mW is fitted to an enthalpy of vaporisation of 10.65
+    kcal/mol, which puts the liquid at RT - 10.65 = -10.06 kcal/mol per
+    molecule. The melted run gives -10.071. The unmelted one is off by
+    1.3, which is the heat of fusion, because it is ice.
+
+    That gate is needed because ensemble_check cannot do it. Run long
+    enough to bound its own series, 15,000 samples, the crystal PASSES:
+    density 0.97640 +- 0.00055 with its halves agreeing at 0.9765 and
+    0.9763, an autocorrelation time of 4.31 samples plateauing at 1.09,
+    and a kinetic temperature of 295.79 +- 2.35 K that contains the 298 K
+    it was set to. Every question block 4 knows how to ask gets the right
+    answer. It is a perfectly stationary, perfectly well-sampled
+    trajectory of the wrong phase.
+
+    That is the honest limit of checking an engine from its output.
+    Consistency with the declared ensemble is not ergodicity, and nothing
+    visible in a trajectory reveals a basin it never left. The check that
+    caught this came from outside: a number the model was fitted to.
+
+    Nothing here is certified. This is a proposer.
+    """
+    if start is None and melt is not None:
+        pre = mw_water_npt(melt, pressure=pressure, cells=cells,
+                           steps=melt_steps, dt=dt, friction=friction,
+                           baro_every=baro_every, baro_scale=baro_scale,
+                           equil_frac=1.0, seed=seed + 9973, melt=None,
+                           density0=density0)
+        start = pre["state"]
+    x, L = mw_lattice(cells, density0) if start is None else start
+    x = np.array(x, float, copy=True)
+    N = len(x)
+    if baro_scale is None:
+        baro_scale = 0.24 / math.sqrt(N)
+    rng = np.random.default_rng(seed)
+    kT = KB_KCAL * temperature
+    m = _MW["mass"]
+    sigv = math.sqrt(kT * _FCONV / m)
+    v = rng.normal(0.0, sigv, x.shape)
+    c1 = math.exp(-friction * dt)
+    c2 = math.sqrt(1.0 - c1 * c1) * sigv
+    e, F = _mw_energy_forces(x, L)
+    equil = int(equil_frac * steps)
+    acc = att = 0
+    out = {"density": [], "temperature": [], "potential": []}
+
+    for s in range(steps):
+        v += 0.5 * dt * F * _FCONV / m           # B
+        x += 0.5 * dt * v                        # A
+        v = c1 * v + c2 * rng.normal(0.0, 1.0, v.shape)      # O
+        x += 0.5 * dt * v                        # A
+        e, F = _mw_energy_forces(x, L)
+        v += 0.5 * dt * F * _FCONV / m           # B
+
+        if (s + 1) % baro_every == 0:
+            att += 1
+            V = L ** 3
+            Vn = V * math.exp(baro_scale * rng.normal())
+            sc = (Vn / V) ** (1 / 3)
+            en, Fn = _mw_energy_forces(x * sc, L * sc)
+            # log-volume proposal, so the Jacobian contributes N+1
+            dH = (en - e + pressure * _ATM_A3 * (Vn - V)
+                  - (N + 1) * kT * math.log(Vn / V))
+            if dH <= 0.0 or rng.random() < math.exp(-dH / kT):
+                x, L, e, F = x * sc, L * sc, en, Fn
+                acc += 1
+
+        if s >= equil and (s + 1) % sample_every == 0:
+            ke = 0.5 * m * float((v * v).sum()) / _FCONV
+            out["density"].append(N * _MW["mass"] / (0.602214076 * L ** 3))
+            out["temperature"].append(2.0 * ke / (3.0 * N * KB_KCAL))
+            out["potential"].append(e / N)
+
+    res = {k: np.array(val) for k, val in out.items()}
+    res["accept"] = acc / max(att, 1)
+    res["state"] = (x, L)
+    return res
+
+
+def water_tmd_bracket(temps, engine, alpha: float = 0.05,
+                      unimodal: bool = True, setpoints: dict = None
+                      ) -> Certified:
+    """Certified bracket on the temperature of maximum density.
+
+    temps is the ladder of temperatures to sample. engine is a callable
+    taking one temperature and returning a dict of time series in
+    trajectory order, which must carry "density" and "temperature". It is
+    untrusted: nothing here checks that its integrator is right, only
+    that what came out is consistent with the ensemble it claimed.
+
+    The thermostat setting is always checked, since it is the variable
+    the ladder moves. setpoints adds any others the engine reports a
+    series for, so an engine that estimates its own pressure can be held
+    to {"pressure": 1.0} as well. mw_water_npt reports none, because its
+    Monte Carlo barostat imposes the pressure exactly rather than
+    measuring it, and a setpoint with no series is an error rather than a
+    silent pass.
+
+    There is no new machinery in this function, which is the point of
+    it. Every part is a block already gated on its own:
+
+        ensemble_check    is this trajectory usable at all, and did the
+                          thermostat land where it was set
+        timeseries_mean   what is the density, with correlation paid for
+        argmax_bracket    where is the peak, from certified orderings
+
+    The composition is the deliverable. A density maximum is a stationary
+    point rather than a value, so no amount of precision at any single
+    temperature answers it, and the query closes only when a pair of
+    temperatures on each side have intervals that do not overlap. That
+    makes it expensive in a specific way: near the peak the function is
+    flat, so resolving the location to within some width costs the square
+    of that width in precision and the fourth power in samples.
+
+    A rung whose density cannot be bounded is DROPPED and named in the
+    provenance, not fatal: it is one temperature that sampled too little,
+    and the remaining rungs still carry orderings. A missed setpoint is
+    fatal, because that is the engine answering a different question
+    rather than one run being short. Below three usable rungs there is
+    nothing to bracket and it refuses, listing what was dropped and why.
+
+    This matters more than it looks. The cheapest rung to lose is the
+    coldest one, since that is where the liquid is most viscous and
+    slowest to equilibrate, and it is also the rung that would have
+    bounded the peak from below.
+
+    Refuses when either side is unestablished, and says which.
+
+    alpha is PER RUNG, as it is everywhere else in this library, and the
+    reported fail_p is the union bound over them. Read the fail_p, not
+    the alpha: nine rungs at 0.05 is a bracket that fails 45% of the
+    time, which is a weak certificate however good the picture looks.
+    Asking for an honest family-wise 5% means passing 0.05 divided by the
+    number of rungs, and on the mW ladder that is the difference between
+    a bracket and a refusal. The ordering carrying the whole lower bound
+    cleared by 1.42e-4 in density at 0.05 per rung and failed by 1.64e-3
+    at 0.0056. The knob is not offered here because the correction is one
+    division and hiding it inside would hide which rungs paid for it.
+
+    The reported fail_p is the union bound over the density intervals
+    alone. The setpoint check does not add to it, and that is deliberate
+    rather than an oversight: its failure mode is accepting a run whose
+    thermostat really did miss, which is a question of power and not of
+    the confidence level on the bracket. What it can cost is a bracket
+    for a slightly different liquid, not a bracket that is wrong about
+    the liquid it sampled.
+    """
+    ts = sorted(float(t) for t in temps)
+    if len(ts) < 3:
+        raise ValueError(
+            f"water_tmd_bracket: {len(ts)} temperatures cannot bracket an "
+            "interior maximum; at least 3 are needed")
+    pts, dropped = [], []
+    for t in ts:
+        series = engine(t)
+        if "density" not in series:
+            raise ValueError(
+                f"water_tmd_bracket: the engine returned no density "
+                f"series at {t:g} K, only {sorted(series)}")
+        want = {"temperature": t, **(setpoints or {})}
+        try:
+            certs = ensemble_check({k: v for k, v in series.items()
+                                    if isinstance(v, np.ndarray)},
+                                   want, alpha=alpha)
+        except EnsembleMismatch:
+            raise                    # the engine is wrong, not the rung
+        except ValueError as exc:
+            dropped.append((t, str(exc)))
+            continue                 # this rung sampled too little
+        pts.append((t, certs["density"]))
+
+    if len(pts) < 3:
+        raise ValueError(
+            f"water_tmd_bracket: only {len(pts)} of {len(ts)} rungs could "
+            f"be bounded, and 3 are needed to bracket an interior "
+            f"maximum. Dropped: "
+            + "; ".join(f"{t:g} K ({m.split(': ', 2)[-1][:90]})"
+                        for t, m in dropped))
+    c = argmax_bracket(pts, unimodal=unimodal)
+    if dropped:
+        note = ("dropped-unbounded="
+                + ",".join(f"{t:g}K" for t, _ in dropped))
+        c = Certified(c.value, c.err, c.tier, c.provenance + (note,),
+                      fail_p=c.fail_p)
+    return c
 
 
 

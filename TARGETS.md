@@ -306,14 +306,193 @@ involved.
    dominates everything in this challenge and is declared rather than
    certified. A sampler can pass every test above while describing a liquid
    that is not water.
-5. **The query end to end**, against a model whose maximum-density temperature
-   is published.
+5. **The query end to end. DONE**, as `water_tmd_bracket`, against a model
+   whose maximum-density temperature is published. The engine is mW, Molinero
+   and Moore's monatomic water: a
+   Stillinger-Weber solid potential reparameterised so that one site per
+   molecule, with no charges and no hydrogen, builds water's tetrahedral
+   network out of the three-body term alone. No electrostatics means no Ewald
+   sum and no hydrogens means no rigid-body constraints, so it is a page of
+   numpy rather than a dependency, which is why it is here and not OpenMM.
 
-The model temperatures quoted above are recollection and are not gated. This
-project has been bitten both ways in one sitting: the STO-3G exponents were
-recalled correctly and passed their gate, and the N2 energy was recalled
-correctly while the code around it was wrong. Nothing here should be repeated
-as measured until it has been run.
+   It was chosen because it is published, not because it is cheap. mW has a
+   density maximum at 250 K in the literature, so the bracket either contains
+   that number or the code is wrong. A model invented here would have proved
+   nothing.
+
+   The front door, `water_tmd_bracket`, contains no new machinery, and that is
+   the point of it. `ensemble_check` asks whether each trajectory is usable and
+   landed on its thermostat, `timeseries_mean` bounds each density paying for
+   correlation, and `argmax_bracket` turns the certified orderings into a
+   bracket. Blocks 1, 2 and 4 compose and nothing else is needed.
+
+   Four gates on the engine before it was allowed to answer anything, two of
+   them independent of any run:
+
+   - Analytic forces against a central difference of the energy, worst
+     component 7e-9 kcal/mol/A. The three-body force has four terms that are
+     easy to get subtly wrong and a wrong one still integrates plausibly.
+   - On a perfect diamond lattice every angle is exactly tetrahedral, so the
+     three-body term must vanish identically. It does, to 1e-13, and the total
+     energy equals the pair sum to ten digits with no net force. That is a
+     deterministic gate on the fiddliest code in the engine: the padded
+     neighbour lists, the mask that keeps padding out of an exponential which
+     diverges at the cutoff, the triplet enumeration and the sign convention on
+     the angle. The lattice does the rest, since the first shell sits at 2.6884
+     A with exactly four neighbours and the second at 4.3901 A, just outside
+     the 4.3065 A cutoff.
+   - Energy conservation without a thermostat: 8e-4 kcal/mol per molecule of
+     drift over 10 ps at a 5 fs step.
+   - The cohesive energy of the liquid, which is fixed independently. mW is
+     fitted to an enthalpy of vaporisation of 10.65 kcal/mol, putting the
+     liquid at RT - 10.65 = -10.06 kcal/mol per molecule. The run gives -10.071
+     at 64 molecules and -10.080 at 216.
+
+   The density at 298 K is the fourth gate and it needs a caveat the others do
+   not. At 216 molecules the run gives 0.9987 g/cm^3 against a published 0.997,
+   which is a match. At 64 it gives 0.9908, which is not. The cohesive energy
+   is insensitive to size and the density is not, and that 0.8% shift is about
+   the size of the whole density change across the temperature range this
+   challenge is about. So the cheap box is cheap for a reason.
+
+   Three things had to be measured rather than assumed, and all three were
+   quiet failures rather than loud ones.
+
+   The timestep is 5 fs, not the 10 fs mW is usually run at. At 10 fs the
+   kinetic temperature comes out 294.73 K when 298 was asked for, and 294.62 at
+   a friction five times larger, so it is discretisation and not thermostat
+   coupling. At 5 fs it is 298.06 and 298.33. That 1.1% miss is what
+   `ensemble_check` refuses, and it matters that the density was the same at
+   both timesteps: BAOAB's configurational sampling is accurate enough at 10 fs
+   that the answer would have looked fine. The certificate chose the timestep,
+   not the folklore.
+
+   The barostat is Monte Carlo on the logarithm of the volume, which needs no
+   virial and therefore no pressure estimator, so the pressure is imposed
+   exactly rather than measured and controlled. Its move size has to be scaled
+   as 1/sqrt(N) to track the natural volume fluctuation. Getting it wrong is
+   silent: at 95% acceptance the lag-one correlation of the density series is
+   0.994, the volume barely moves, and the run looks converged while sampling
+   almost nothing. At 53% acceptance it is 0.648.
+
+   And the run has to be melted first. The starting diamond lattice IS mW's ice
+   structure, and a defect-free crystal under periodic boundaries has no
+   interface to melt from, so it superheats indefinitely. Started cold at 298
+   K, 23 K above the model's 274.6 K melting point, it stayed crystalline:
+   density 0.9764 at 64 molecules and 0.9768 at 216, so not a finite-size
+   artefact, at a potential energy of -11.39 kcal/mol per molecule. Melting
+   first gives 0.9908 and -10.071. The 1.3 kcal/mol difference is the heat of
+   fusion, and without the independent enthalpy-of-vaporisation gate above
+   there would have been no way to tell which number was the liquid.
+
+   That last one is the sharpest result of this block, because it marks the
+   boundary of what block 4 can do. Run long enough to bound its own series,
+   15,000 samples, the crystal PASSES `ensemble_check`: density 0.97640 +-
+   0.00055 with its halves at 0.9765 and 0.9763, an autocorrelation time of
+   4.31 samples plateauing at 1.09, and a kinetic temperature of 295.79 +- 2.35
+   K containing the 298 K it was set to. Every question block 4 knows how to
+   ask gets the right answer, on a perfectly stationary and perfectly
+   well-sampled trajectory of the wrong phase.
+
+   Consistency with the declared ensemble is not ergodicity. Nothing visible in
+   a trajectory reveals a basin it never left, and the check that caught this
+   had to come from outside: a number the model was fitted to. That is a
+   general limit and not an mW one. It is the same shape as the force-field
+   caveat, which no amount of sampling reaches either.
+
+   One design decision came out of the first production rung rather than out of
+   argument. At 210 K the density series is still drifting after 3 ns, halves
+   at 0.98789 and 0.98293, and `timeseries_mean` refuses it: the
+   autocorrelation time is still growing by 2.70x against a 1.80 tolerance.
+   That is correct, since deeply supercooled mW is viscous and slow to forget
+   the configuration it was quenched from, and it is also the coldest rung,
+   which is the one that would have bounded the peak from below.
+
+   As first written, that one refusal killed the whole query. It should not. A
+   series that cannot be bounded is a statement about one run and can be
+   answered by dropping that temperature; a missed setpoint is a statement
+   about the engine and dropping it would hide the problem. So the two are now
+   separate exceptions, an unbounded rung is dropped and named in the
+   provenance, a missed setpoint is still fatal, and below three surviving
+   rungs it refuses and lists what was lost.
+
+   Quenching each temperature straight off the melt was also wrong, and the
+   ladder is now annealed downward from a single melt so each rung starts from
+   an equilibrated liquid 20 K warmer. That fixed the warm half outright. At 64
+   molecules and 2 ns per rung:
+
+       290 K   rho = 0.99941 +- 0.00148
+       270 K   rho = 1.00035 +- 0.00185
+       250 K   rho = 1.00296 +- 0.00189
+       230 K   refused, halves 1.00086 / 0.99526
+       210 K   refused, halves 0.99017 / 0.97233
+       370 K   rho = 0.97933 +- 0.00179
+
+   The 210 K refusal is not a numerical failure, it is the answer. The density
+   falls through the run from 0.990 towards 0.972, which is this model's ice
+   density, so the trajectory is crystallising and there is no stationary
+   liquid mean to report. That is where the sampling problem this challenge is
+   about turns into a phase-transition problem, and the refusal says so instead
+   of averaging across it.
+
+   At 230 K the drift was equilibration rather than freezing, and it went away
+   when the run was made long enough: refused at 2 ns, bounded at 7.5 ns with
+   its halves agreeing at 0.99900 and 0.99891. The lower bound on the peak is
+   the expensive side of this query, and it is expensive for a physical reason
+   rather than a statistical one. Spending the budget where it was needed
+   rather than evenly across the ladder is what closed it.
+
+   The certified ladder, mW at 64 molecules and 1 atm, over three separately
+   annealed chains, each state point equilibrated and checked on its own:
+
+       230 K   0.99896 +- 0.00197        290 K   0.99941 +- 0.00148
+       240 K   1.00042 +- 0.00168        310 K   0.99561 +- 0.00156
+       250 K   1.00296 +- 0.00189        330 K   0.98966 +- 0.00195
+       270 K   1.00035 +- 0.00185        350 K   0.98383 +- 0.00154
+                                         370 K   0.97933 +- 0.00179
+
+       argmax_bracket: [230, 290] K = 260 +- 30 K, EMPIRICAL, fail_p 0.45
+
+   The published mW maximum, 250 K, is inside it. The point estimates peak at
+   250 K exactly, which is pleasing and is not the claim; the bracket is.
+
+   Now the part that matters more than the bracket. That fail_p of 0.45 is a
+   union bound over nine rungs at 0.05 each, and it is not a strong
+   certificate. Asked for an honest overall 5%, meaning 0.0056 per rung, the
+   SAME data refuses: the ordering that carries the whole lower bound is the
+   one between 230 and 250 K, and it clears by 1.42e-4 in density at 0.05 per
+   rung and fails by 1.64e-3 at 0.0056. One part in seven thousand is the
+   entire margin. Getting the Bonferroni-honest version needs the two rungs
+   either side of that gap tightened by about 1.4x, which is roughly twice the
+   sampling, and only at those two.
+
+   So the query closes, at a confidence level worth naming out loud rather than
+   burying. Reporting 260 +- 30 K without reporting that it evaporates under
+   the correction would be reporting the half that worked.
+
+   The 64-molecule box is the other unquantified term, and it is the one to fix
+   next. The density at 298 K needs 216 molecules to match the published value,
+   so the ladder above is certified about a box, not about the model. A
+   216-molecule ladder is running and its first rung is in, 290 K at 1.00003 +-
+   0.00087, which is a half-width 1.7x tighter than the 64-molecule rung at
+   nearly ten times the cost per nanosecond. Whether that tightening is enough
+   to survive the Bonferroni correction, and whether the peak moves, is not yet
+   measured and is not claimed here.
+
+The rigid-model temperatures quoted at the top of this section are recollection
+and are not gated. mW's 250 K is not: it was checked against the literature
+before being used as a target, precisely because the whole point of the block
+was to have an answer fixed by someone else. This project has been bitten both
+ways in one sitting: the STO-3G exponents were recalled correctly and passed
+their gate, and the N2 energy was recalled correctly while the code around it
+was wrong. Nothing here should be repeated as measured until it has been run.
+
+What the whole ladder does NOT touch, and no part of it ever will, is whether
+mW is water. It is a single site with no charge and no hydrogen, fitted to a
+melting point, a density and an enthalpy of vaporisation, and it reproduces the
+density maximum because it was built to. Every certificate above is about the
+model, and the model is declared. That is the same wall the force-field caveat
+in block 4 runs into, and it is the one that actually dominates this problem.
 
 ## Quantum dynamics and near-term quantum hardware
 

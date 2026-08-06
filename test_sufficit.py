@@ -4500,3 +4500,174 @@ def test_ensemble_check_refuses_a_leaking_integrator_as_unbounded():
         20_000, 0.8, 0.0, 5)
     with pytest.raises(ValueError, match="cannot be bounded"):
         sf.ensemble_check(leak, {"temperature": 298.0})
+
+
+def test_mw_three_body_term_vanishes_on_a_perfect_tetrahedral_lattice():
+    """The three-body term penalises departure from the tetrahedral
+    angle, so on a lattice where every angle IS tetrahedral it has to be
+    exactly zero and the energy has to be the pair sum alone.
+
+    That makes a deterministic gate out of what is otherwise the fiddliest
+    code in the engine. The padded neighbour lists, the mask that keeps
+    the padding out of an exponential that diverges at the cutoff, the
+    triplet enumeration and the sign convention on the angle are all
+    exercised, and any of them being wrong moves the answer off a number
+    written down independently here.
+
+    The lattice spacing does the rest: the first shell sits at 2.6884 A
+    with exactly four neighbours and the second at 4.3901 A, just outside
+    the 4.3065 A cutoff, so no non-tetrahedral angle enters at all."""
+    x, L = sf.mw_lattice(2, 1.0)
+    e, F = sf._mw_energy_forces(x, L)
+
+    sig, aa = sf._MW["sig"], sf._MW["a"]
+    rc = aa * sig
+    d = x[None, :, :] - x[:, None, :]
+    d -= L * np.rint(d / L)
+    r = np.sqrt((d * d).sum(-1))
+    np.fill_diagonal(r, 1e9)
+    assert (r < rc).sum(1).tolist() == [4] * 64      # four neighbours each
+    r0 = r.min()
+
+    # the pair term, written out here rather than taken from the engine
+    pair = (sf._MW["A"] * sf._MW["eps"]
+            * (sf._MW["B"] * (sig / r0) ** sf._MW["p"] - 1.0)
+            * math.exp(sig / (r0 - rc)))
+    assert e == pytest.approx(64 * 4 / 2 * pair, abs=1e-9)
+    assert np.abs(F).max() < 1e-10                   # and no net force
+
+
+def test_mw_forces_are_the_gradient_of_its_energy():
+    """Analytic forces against a central difference of the energy. The
+    three-body force has four terms that are easy to get subtly wrong,
+    and a wrong one still produces a plausible-looking trajectory."""
+    rng = np.random.default_rng(0)
+    x, L = sf.mw_lattice(2, 1.0)
+    x = x + rng.normal(0.0, 0.15, x.shape)           # off the lattice
+    e, F = sf._mw_energy_forces(x, L)
+    h = 1e-5
+    worst = 0.0
+    for i in rng.choice(len(x), 6, replace=False):
+        for c in range(3):
+            xp, xm = x.copy(), x.copy()
+            xp[i, c] += h
+            xm[i, c] -= h
+            num = -(sf._mw_energy_forces(xp, L)[0]
+                    - sf._mw_energy_forces(xm, L)[0]) / (2 * h)
+            worst = max(worst, abs(num - F[i, c]))
+    assert worst < 1e-6, f"worst force error {worst:.3g} kcal/mol/A"
+
+
+def _fake_water(tstar, sigma, seed=0, curv=3.0e-6, n=20_000, hot=1.0,
+                drifting=()):
+    """An engine that is not molecular dynamics: a density curve with its
+    maximum put in by hand, delivered through the same interface a real
+    one uses. Blocks 1, 2 and 4 compose over it exactly as they will over
+    a trajectory, and the answer is known.
+
+    drifting names temperatures where the density has not equilibrated,
+    which is what the coldest rung of a real run looks like."""
+    def engine(T):
+        i = int(round(T))
+        rho = 1.0 - curv * (T - tstar) ** 2
+        d = rho + sigma * _ar1(n, 0.8, 0.0, seed * 1000 + i)
+        if T in drifting:
+            d = d + np.linspace(0.0, 40.0 * sigma, n)
+        return {
+            "density": d,
+            "temperature": T * hot + 30.0 * _ar1(n, 0.8, 0.0,
+                                                 seed * 1000 + i + 7),
+        }
+    return engine
+
+
+def test_water_tmd_bracket_locates_a_planted_density_maximum():
+    """The whole query, end to end, over an engine whose answer is known.
+
+    There is no new machinery in water_tmd_bracket, which is the point of
+    it: ensemble_check asks whether each trajectory is usable and landed
+    on its thermostat, timeseries_mean bounds each density paying for
+    correlation, and argmax_bracket turns the certified orderings into a
+    bracket. The composition is the deliverable.
+
+    The peak is off the centre of the ladder on purpose, since a centred
+    one would not catch a bracket built on the wrong side."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    c = sf.water_tmd_bracket(temps, _fake_water(244.0, 0.005))
+    assert c.value - c.err <= 244.0 <= c.value + c.err
+    assert c.err <= 21.0                     # no tighter than the grid
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert c.fail_p == pytest.approx(5 * 0.05)   # union bound over rungs
+
+
+def test_water_tmd_bracket_refuses_when_no_ordering_separates():
+    """Near a stationary point the function is flat, so the orderings are
+    hardest exactly where they are wanted. When the intervals overlap
+    there is no bracket, and the refusal prices what it would take: the
+    width goes as the square root of the precision, so a bracket twice as
+    narrow costs sixteen times the samples."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    with pytest.raises(ValueError, match="would have to shrink"):
+        sf.water_tmd_bracket(temps, _fake_water(244.0, 0.1))
+
+
+def test_water_tmd_bracket_drops_an_unequilibrated_rung_but_keeps_going():
+    """A rung whose density cannot be bounded is one temperature that
+    sampled too little, not a broken engine, so it is dropped and named
+    rather than being fatal. The remaining rungs still carry orderings.
+
+    The coldest rung is the one that drifts here because that is what a
+    real run does: the colder the liquid the more viscous it is and the
+    longer it takes to forget the configuration it was quenched from.
+    Losing it costs the lower bound on the peak, so the bracket that
+    survives is wider on that side, which is exactly what should
+    happen."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    eng = _fake_water(244.0, 0.005, drifting=(210.0,))
+    c = sf.water_tmd_bracket(temps, eng)
+    assert c.value - c.err <= 244.0 <= c.value + c.err
+    assert any("dropped-unbounded=210K" in p for p in c.provenance)
+    assert c.fail_p == pytest.approx(4 * 0.05)   # four rungs survived
+
+
+def test_water_tmd_bracket_alpha_is_per_rung_not_family_wise():
+    """alpha is per rung and fail_p is the union over them, so a ladder
+    long enough to be interesting reports a failure probability far
+    larger than the alpha it was called with. That is not a bug, but it
+    is a trap, and the measured mW ladder walked into it: nine rungs at
+    0.05 gave a bracket at fail_p 0.45, and the same data at 0.05/9
+    refused, because the one ordering carrying the lower bound cleared by
+    1.42e-4 in density and needed 1.64e-3 more.
+
+    A ladder tight enough to survive the correction is the honest
+    version, and this checks both halves of that statement."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    eng = _fake_water(244.0, 0.005)
+
+    loose = sf.water_tmd_bracket(temps, eng, alpha=0.05)
+    assert loose.fail_p == pytest.approx(0.25)     # 5 rungs, not 0.05
+
+    tight = sf.water_tmd_bracket(temps, eng, alpha=0.05 / 5)
+    assert tight.fail_p == pytest.approx(0.05)     # family-wise 5%
+    assert tight.err >= loose.err                  # and never narrower
+
+
+def test_water_tmd_bracket_refuses_when_too_few_rungs_survive():
+    """Below three usable rungs there is no interior maximum to bracket,
+    and the refusal has to say which temperatures were lost, since a
+    query that quietly answered from two points would be answering a
+    different question."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    eng = _fake_water(244.0, 0.005, drifting=(210.0, 230.0, 290.0))
+    with pytest.raises(ValueError, match="only 2 of 5 rungs"):
+        sf.water_tmd_bracket(temps, eng)
+
+
+def test_water_tmd_bracket_refuses_an_engine_that_missed_its_thermostat():
+    """The temperature is the variable the ladder moves, so it is the one
+    setpoint always checked. An engine running 2% hot is answering a
+    different question at every rung, and the bracket it would produce is
+    for some other liquid."""
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    with pytest.raises(ValueError, match="not in the ensemble it claims"):
+        sf.water_tmd_bracket(temps, _fake_water(244.0, 0.005, hot=1.02))
