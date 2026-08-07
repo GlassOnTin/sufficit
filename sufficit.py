@@ -1658,6 +1658,17 @@ def spectral_abscissa_bracket(A, balance: bool = True) -> Certified:
     growing without limit as the resonance narrows. And where the
     operator preserves a cone the fifth archetype is exact and this is
     merely valid.
+
+    The second clause is about which eigenvalue. This bounds the EXTREMES
+    of the spectrum as a set, so a query about a subdominant or interior
+    eigenvalue is outside it however non-normal the operator, because a
+    region containing the whole spectrum cannot separate one eigenvalue
+    from another. A transfer operator makes that concrete: for a
+    row-stochastic matrix the disc of row i has centre T_ii and radius
+    1 - T_ii, so its right edge is exactly 1 and every disc touches the
+    Perron root. The bound returns 1.000000 whether the spectral gap is
+    2e-1 or 2e-4. Metastability wants lambda_2, and it has to come from
+    the variational archetype instead.
     """
     A = np.asarray(A)
     if A.ndim != 2 or A.shape[0] != A.shape[1]:

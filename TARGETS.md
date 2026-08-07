@@ -1027,11 +1027,53 @@ That rule is the durable product of both failed transfers, and it is why no
 imaginary-axis version of the enclosure was built. The measurement says there
 is nothing to point it at.
 
-One sibling remains: transfer-operator spectra in molecular kinetics. Check it
-for a cone first, and then check whether the relaxation rates sought are
-comparable to the generator's non-normality or exponentially below it. A
-Markov generator is Metzler off the diagonal, so the first check will probably
-end it the way combustion ended.
+### The transfer-operator sibling, closed, and a second clause
+
+The last sibling fails too, and for a third distinct reason that is provable
+rather than merely measured, which makes it the most useful of the three.
+
+The cone check passes trivially: a transfer operator is a stochastic matrix,
+non-negative with unit row sums, so Perron-Frobenius is at home there. But the
+query is not the dominant eigenvalue. Metastability is a spectral GAP, so what
+molecular kinetics wants is lambda_2, and Collatz-Wielandt bounds lambda_1,
+which for a stochastic matrix is 1 by construction and carries no information.
+
+The enclosure cannot supply lambda_2 either, and the reason is an identity. For
+a row-stochastic matrix the Gershgorin disc of row i has centre T_ii and radius
+1 - T_ii, so its right edge is exactly 1 and its distance to the point 1 is
+exactly zero. Every disc touches the Perron root. Measured, the distance came
+out 0.00e+00 for every row, and the enclosure's upper bound is 1.000000 while
+the true gap runs from 2e-1 down to 2e-4:
+
+    eps      lambda_1   lambda_2    gap        enclosure upper
+    1e-1     1.000000   0.800000    2.0e-01    1.000000
+    1e-2     1.000000   0.980000    2.0e-02    1.000000
+    1e-3     1.000000   0.998000    2.0e-03    1.000000
+    1e-4     1.000000   0.999800    2.0e-04    1.000000
+
+The bound never moves, because it cannot. The same holds for the continuous
+generator, where every disc's right edge is exactly 0.
+
+What does reach it is the SECOND archetype, which is what this document already
+said the field uses: a reversible chain is self-adjoint in the stationary inner
+product, so lambda_2 has a variational characterisation and any trial vector
+orthogonal to the stationary one gives a rigorous lower bound. Measured on the
+same chains from random trial vectors alone, 0.781, 0.932, 0.985 and 0.988
+against true values of 0.800, 0.980, 0.998 and 0.9998, certifying a gap in
+every case. VAC and VAMP are that argument, industrialised.
+
+**The second clause of the scope rule.** The archetype bounds the EXTREMES of
+the spectrum as a set. Any query about a subdominant or interior eigenvalue is
+outside it, however non-normal the operator, because a region containing the
+whole spectrum cannot separate one eigenvalue from another.
+
+So all three siblings named for the seventh archetype are now closed, and none
+transferred: combustion because a cone exists and is exact, resonance widths
+because the sought quantity is exponentially smaller than the non-normal part,
+transfer operators because the sought eigenvalue is not an extreme one. The
+archetype has exactly one home, the Rayleigh operator, and two rules that say
+why. That is a smaller claim than the one this section opened with, and it is
+the one the measurements support.
 
 ## Engines, and the guess and check line
 
