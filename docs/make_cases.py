@@ -127,6 +127,9 @@ def check_composed():
 
 
 BACKGROUND = {
+    "water-tmd": [
+        "Water (data page)", "Maximum density",
+        "Molecular dynamics", "Autocorrelation"],
     "the-compiler": [
         "Quantum Heisenberg model", "Query optimization",
         "Variational method (quantum mechanics)", "Anytime algorithm"],
@@ -206,8 +209,25 @@ def _background(slug):
     return f'<p class="note">Background: {links}.</p>'
 
 
-def page(title, eyebrow, h1, dek, sections, slug=None):
+def page(title, eyebrow, h1, dek, sections, slug=None, recorded=None):
+    """recorded names an input this page did NOT compute at build time.
+
+    Every other page here regenerates end to end, and the footer says so.
+    One cannot: molecular dynamics costs hours and the CI job already
+    spends thirty minutes on these pages. Rather than quietly weaken the
+    claim for all of them, that page passes `recorded` and gets a footer
+    that states exactly which half is live and which is not."""
     body = "\n".join(sections)
+    if recorded is None:
+        foot = (f"Every number and figure above comes from the run that "
+                f"built this page: {STAMP}.")
+    else:
+        foot = (f"<strong>Partly recorded.</strong> Every certificate, "
+                f"table and figure above is computed by the run that built "
+                f"this page, {STAMP}, but the trajectories they read are "
+                f"not: {recorded} Nothing else on this site works this "
+                f"way. The certification is live and the simulation is "
+                f"not, and the reason is cost.")
     return f'''<!DOCTYPE html>
 <html lang="en">
 <meta charset="utf-8">
@@ -221,8 +241,7 @@ def page(title, eyebrow, h1, dek, sections, slug=None):
 {_background(slug)}
 {body}
 <hr>
-<p class="note">Every number and figure above comes from the run that
-built this page: {STAMP}. This builder, for scale: one 256&#215;256
+<p class="note">{foot} This builder, for scale: one 256&#215;256
 symmetric eigendecomposition took {RULER}. Any seconds above are this
 machine's, at that moment, and are not divided by it.</p>
 </main>'''
@@ -4239,6 +4258,191 @@ the exact rewrite is not offered here</text>
         slug="molecule")
 
 
+# ======================================================================
+
+
+DATA = os.path.join(ROOT, "data", "water_tmd_mw.npz")
+
+
+def water_case():
+    """The one page whose engine run is recorded rather than regenerated.
+
+    Everything downstream of the trajectories IS regenerated: the
+    autocorrelation analysis, every certified density, the bracket, and
+    the Bonferroni comparison all run here at build time against the
+    recorded series. Break timeseries_mean or argmax_bracket and this
+    page changes or fails, which is the property that matters.
+    """
+    z = np.load(DATA)
+    temps = (230.0, 250.0, 270.0, 290.0)
+
+    def certs(prefix, alpha):
+        return [(T, sf.timeseries_mean(z[f"{prefix}_d{T:.0f}"], alpha=alpha))
+                for T in temps if f"{prefix}_d{T:.0f}" in z]
+
+    big = certs("n216", 0.05)
+    brk = sf.argmax_bracket(big)
+    lo, hi = brk.value - brk.err, brk.value + brk.err
+
+    tight = certs("n216", 0.05 / len(big))
+    btight = sf.argmax_bracket(tight)
+    tlo, thi = btight.value - btight.err, btight.value + btight.err
+
+    d = dict(big)
+    gap_lo = ((d[250.0].value - d[250.0].err)
+              - (d[230.0].value + d[230.0].err))
+    dt = dict(tight)
+    tgap_lo = ((dt[250.0].value - dt[250.0].err)
+               - (dt[230.0].value + dt[230.0].err))
+    tgap_hi = ((dt[250.0].value - dt[250.0].err)
+               - (dt[270.0].value + dt[270.0].err))
+
+    small = certs("n64", 0.05)
+    ds = dict(small)
+
+    rows = "".join(
+        f"<tr><td>{T:.0f} K</td><td>{c.value:.5f}</td>"
+        f"<td>&#177;{c.err:.5f}</td>"
+        f"<td>{len(z[f'n216_d{T:.0f}']):,}</td>"
+        f"<td>{c.provenance[0].split('tau=')[1].split()[0]}</td></tr>"
+        for T, c in big)
+
+    ys = [c.value for _, c in big]
+    es = [c.err for _, c in big]
+    ax = Axes((222.0, 298.0), (min(ys) - 3 * max(es), max(ys) + 3 * max(es)),
+              h=340)
+    bars = "".join(
+        f'<line x1="{ax.X(T):.1f}" y1="{ax.Y(c.value - c.err):.1f}" '
+        f'x2="{ax.X(T):.1f}" y2="{ax.Y(c.value + c.err):.1f}" '
+        f'class="blue-ink" stroke-width="2.4"/>'
+        f'<circle cx="{ax.X(T):.1f}" cy="{ax.Y(c.value):.1f}" r="4" '
+        f'class="blue-fill"/>' for T, c in big)
+    band = (f'<rect x="{ax.X(lo):.1f}" y="{ax.mt}" '
+            f'width="{ax.X(hi) - ax.X(lo):.1f}" '
+            f'height="{340 - ax.mt - ax.mb}" fill="var(--rust)" '
+            f'opacity="0.10"/>')
+    svg = f'''<svg viewBox="0 0 640 340" role="img" aria-label="Certified
+density of mW water against temperature, with the bracketed maximum">
+{ax.grid([round(v, 3) for v in np.linspace(min(ys), max(ys), 4)],
+         (230, 250, 270, 290), xfmt=lambda v: f"{v:g} K",
+         yfmt=lambda v: f"{v:.4f}")}
+{band}{bars}
+<line x1="{ax.X(250.0):.1f}" y1="{ax.mt}" x2="{ax.X(250.0):.1f}"
+      y2="{340 - ax.mb}" class="rust-ink" stroke-width="1.4"
+      stroke-dasharray="5 4" opacity="0.85"/>
+<text x="{ax.X(250.0) + 6:.1f}" y="{ax.mt + 14}" class="board-text"
+      font-size="10.5" fill="var(--rust)">published mW maximum, 250 K</text>
+<text x="{ax.ml + 6}" y="{340 - ax.mb - 8}" class="board-text"
+      font-size="11">density (g/cm&#179;), 216 molecules, 1 atm</text></svg>'''
+
+    return page(
+        "Water's density maximum", "molecular kinetics",
+        "Water is densest above its freezing point",
+        "A stationary point is not a value. Locating one means certifying "
+        "an ordering, and no amount of precision at any single temperature "
+        "will do it.",
+        [
+            "<p>Water is densest at about 4&#176;C, because the open "
+            "tetrahedral network collapses as it warms while ordinary "
+            "thermal expansion pushes the other way. It is the sharpest "
+            "test of a water model anyone routinely runs: rigid three-site "
+            "models miss it by tens of kelvin and TIP3P has no maximum in "
+            "the liquid range at all.</p>"
+            "<p>The model here is mW, Molinero and Moore's monatomic "
+            "water, chosen because its maximum is <em>published</em> at "
+            "250 K. The bracket either contains that number or the code is "
+            "wrong. One site per molecule means no Ewald sum and no "
+            "rigid-body constraints, so the engine is a page of numpy "
+            "rather than a dependency.</p>",
+
+            "<h2>The certified ladder</h2>"
+            "<p>Each row is a density from an 8 or 2 nanosecond "
+            "constant-pressure trajectory, bounded by "
+            "<code>timeseries_mean</code>, which pays for correlation "
+            "rather than assuming it away. The last column is the "
+            "estimated autocorrelation time in samples: the honest count "
+            "is not how many samples there are but how many independent "
+            "ones they are worth.</p>"
+            "<table><thead><tr><th>T</th><th>density</th><th>half-width</th>"
+            f"<th>samples</th><th>&#964;</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            f"<figure>{svg}<figcaption>Certified densities with the "
+            f"bracketed maximum shaded. The bracket runs "
+            f"[{lo:.0f}, {hi:.0f}] K and the published value sits at its "
+            f"centre.</figcaption></figure>",
+
+            "<h2>The bracket</h2>"
+            "<p>Under a declared unimodality, a pair of disjoint intervals "
+            "with the lower one on the left puts the peak to the right of "
+            "it, and the mirror argument bounds it from above. Overlapping "
+            "error bars establish nothing and buy no bracket.</p>"
+            f"<p class='result'>{esc(str(brk))}</p>"
+            f"<p>That is <strong>{brk.value:.0f} &#177; {brk.err:.0f} K</strong> "
+            f"against a published 250 K.</p>",
+
+            "<h2>The half that does not survive</h2>"
+            "<p>The failure probability above is a union bound over four "
+            "rungs at 0.05 each, and reading the alpha instead of the "
+            "fail_p would overstate it fourfold. Asking for an honest "
+            "family-wise 5%, meaning 0.05/4 per rung, is the same data "
+            "with wider intervals:</p>"
+            f"<p class='result'>{esc(str(btight))}</p>"
+            f"<p>It survives, and only just. The ordering carrying the "
+            f"lower bound clears by {gap_lo:.2e} in density at 0.05 per "
+            f"rung and {tgap_lo:.2e} after the correction, which is "
+            f"comfortable. The upper bound clears by {tgap_hi:.1e}, which "
+            f"is about one part in a hundred thousand. Losing it would "
+            f"widen the answer to 260 &#177; 30 K, which still contains "
+            f"250. Reporting the bracket without reporting that margin "
+            f"would be reporting the half that worked.</p>",
+
+            "<h2>The box is not the model</h2>"
+            "<p>Sixty-four molecules are cheaper and wrong. The density "
+            "anomaly is a network effect and a small box under-represents "
+            "the network:</p>"
+            "<table><thead><tr><th>T</th><th>64 molecules</th>"
+            "<th>216 molecules</th><th>shift</th></tr></thead><tbody>"
+            + "".join(
+                f"<tr><td>{T:.0f} K</td><td>{ds[T].value:.5f} "
+                f"&#177;{ds[T].err:.5f}</td><td>{d[T].value:.5f} "
+                f"&#177;{d[T].err:.5f}</td>"
+                f"<td>{d[T].value - ds[T].value:+.5f}</td></tr>"
+                for T in (250.0, 270.0, 290.0))
+            + "</tbody></table>"
+            f"<p>The shift is not a constant offset, so it moves the peak "
+            f"and not merely the density. The anomaly "
+            f"&#961;(250)&#8722;&#961;(290) grows from "
+            f"{ds[250.0].value - ds[290.0].value:.5f} at 64 molecules to "
+            f"{d[250.0].value - d[290.0].value:.5f} at 216, a third "
+            f"stronger. What is certified here is a box, and the ladder to "
+            f"the thermodynamic limit is not run.</p>",
+
+            code_section(sf.water_tmd_bracket, sf.argmax_bracket),
+
+            "<h2>What none of this certifies</h2>"
+            "<p>Whether mW is water. It is a single site with no charge "
+            "and no hydrogen, fitted to a melting point, a density and an "
+            "enthalpy of vaporisation, and it reproduces the density "
+            "maximum because it was built to. Every certificate above is "
+            "about the model, and the model is declared rather than "
+            "certified. That is the error which dominates this whole "
+            "problem, and no amount of sampling reaches it.</p>"
+            "<p>Nor does anything here check the integrator. An engine is "
+            "untrusted the way every engine here is untrusted, and what "
+            "<code>ensemble_check</code> can ask is whether the trajectory "
+            "is consistent with the ensemble it claimed. Run long enough "
+            "to bound its own series, a superheated crystal passes every "
+            "one of those tests: it is a perfectly stationary sample of "
+            "the wrong phase. Consistency with a declared ensemble is not "
+            "ergodicity.</p>",
+        ],
+        slug="water-tmd",
+        recorded=("seven constant-pressure mW trajectories recorded on "
+                  "6 August 2026, 8 ns at 230 K and 2 ns elsewhere, "
+                  "about eleven hours of single-core time in total, "
+                  "stored in <code>data/water_tmd_mw.npz</code>."))
+
+
 CASES = {
     "junction.html": junction_case,
     "criticality.html": criticality_case,
@@ -4259,6 +4463,7 @@ CASES = {
     "the-budget.html": budget_case,
     "rdm2-bound.html": rdm2_case,
     "molecule.html": molecule_case,
+    "water-tmd.html": water_case,
 }
 
 # pages needing tools CI does not have: generated locally, committed,
