@@ -980,9 +980,58 @@ success remains the continuous case, the Rayleigh operator, where no cone
 exists, no symmetry exists, and the bound runs about 2.3x loose at the
 wavenumber that matters, which is the difference between an answer and none.
 
-Siblings still unclaimed, now with the confidence corrected downward:
-resonance widths in scattering, and transfer-operator spectra in molecular
-kinetics. Both should be checked for a cone FIRST.
+### The resonance-width transfer, also measured and also negative
+
+The second sibling was probed next and fails too, for a reason sharper than
+combustion's and more useful, because it generalises into a scope rule for the
+whole archetype.
+
+A resonance is a pole of the S-matrix at E_r - i*Gamma/2, and making it a
+discrete eigenvalue needs a non-Hermitian operator: a complex absorbing
+potential, or exterior complex scaling. Either way the result is complex
+symmetric and preserves no cone, so the cone check that combustion failed is
+passed here and the seventh archetype is genuinely the only candidate.
+
+It still fails. On a double barrier, gated against a transmission calculation
+that uses no complex arithmetic at all, since a Lorentzian peak in T(E) has
+full width Gamma:
+
+    V0    b     E_r        Gamma_true     bendixson cap    loose
+    10   1.50   0.81315    8.80e-03       1.2               136x
+    14   1.70   3.43835    5.23e-03       1.2               230x
+    20   2.00   3.64604    8.98e-04       1.2              1337x
+    28   2.40   3.81795    8.38e-04       1.2              1431x
+
+The cap never moves, because it is not about the physics. For H = H0 - i*eta*W
+the anti-Hermitian part IS the absorber, so Bendixson returns exactly
+2*eta*max(W): measured at 0.1, 0.4, 1.2 and 4.0 for eta of 0.05, 0.2, 0.6 and
+2.0, with the potential unchanged and irrelevant throughout.
+
+Nor can it be escaped by weakening the absorber. The CAP has to be strong
+enough to absorb the resonance, so if 2*eta fell below Gamma no eigenvalue of
+that width could exist at all. The bound is therefore necessarily at least the
+widths it must contain, and tight only if eta is tuned to the answer being
+computed.
+
+**The scope rule, now measured on three transfers rather than argued.** Every
+bound in this archetype is set by the size of the operator's non-normal part.
+So it is informative when the quantity sought is COMPARABLE to that size, and
+useless when it is exponentially smaller. A shear layer's growth rate and its
+velocity range are both O(dU), which is why Howard runs 2.3x loose and answers
+the question. A resonance width is exponentially small in the barrier while the
+absorber is O(1), which is why the same bound runs 136x loose and worsens
+without limit as the resonance narrows. And where a cone exists the fifth
+archetype is exact and this is merely valid.
+
+That rule is the durable product of both failed transfers, and it is why no
+imaginary-axis version of the enclosure was built. The measurement says there
+is nothing to point it at.
+
+One sibling remains: transfer-operator spectra in molecular kinetics. Check it
+for a cone first, and then check whether the relaxation rates sought are
+comparable to the generator's non-normality or exponentially below it. A
+Markov generator is Metzler off the diagonal, so the first check will probably
+end it the way combustion ended.
 
 ## Engines, and the guess and check line
 

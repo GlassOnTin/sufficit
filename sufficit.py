@@ -1641,6 +1641,23 @@ def spectral_abscissa_bracket(A, balance: bool = True) -> Certified:
     That asymmetry decides what it is for. The useful query is the SIGN
     of the abscissa, meaning is this operator stable, and the upper bound
     is the half that answers it.
+
+    There is a scope rule, measured on three transfers rather than
+    argued, and it is worth reading before reaching for this at all.
+    Every bound here is set by the size of the operator's non-normal
+    part: Bendixson by the extreme eigenvalues of (A + A*)/2, Gershgorin
+    by the off-diagonal row sums. So the certificate is informative when
+    the quantity being sought is COMPARABLE to that size, and useless
+    when it is exponentially smaller.
+
+    A shear layer's growth rate and its velocity range are both O(dU), so
+    Howard's semicircle runs about 2.3x loose and answers the question.
+    A resonance width is exponentially small in the barrier while the
+    absorbing potential that makes it an eigenvalue at all is O(1), so
+    the same bound runs 136x loose on a width of 9e-3 and 1431x on 8e-4,
+    growing without limit as the resonance narrows. And where the
+    operator preserves a cone the fifth archetype is exact and this is
+    merely valid.
     """
     A = np.asarray(A)
     if A.ndim != 2 or A.shape[0] != A.shape[1]:
