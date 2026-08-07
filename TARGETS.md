@@ -762,7 +762,7 @@ number is not a gate.
 
 ## Recurring certificate archetypes
 
-Six patterns cover nearly everything above, and the rewrite library should be
+Seven patterns cover nearly everything above, and the rewrite library should be
 organized around them.
 
 1. **Small-parameter expansions.** Gyrokinetics, EFT, post-Newtonian,
@@ -777,9 +777,14 @@ organized around them.
    tier.
 6. **Existence certificates.** The pn junction's Newton-Kantorovich enclosure.
    Rigorous tier.
+7. **Spectral enclosures.** Gershgorin, Bendixson-Hirsch, Howard's semicircle.
+   A region containing every eigenvalue, from the coefficients alone, for
+   operators with neither symmetry nor a cone. Rigorous tier, and loose.
 
 A compression contributed under one archetype in one field should transfer to
-its siblings mechanically. That transfer is the flywheel working.
+its siblings mechanically. That transfer is the flywheel working. It is also
+falsifiable, and the seventh archetype's first attempted transfer failed, which
+is recorded below rather than quietly dropped.
 
 ### The sixth archetype
 
@@ -870,7 +875,7 @@ hypothesis either function cares about. Still unclaimed, and expected to go the
 same way: Markov-state relaxation rates and transfer-operator spectra in
 molecular kinetics.
 
-### A candidate seventh
+### The seventh archetype
 
 The shear-flow probe above found a pattern none of the six covers, and it is
 worth naming before it is built rather than after. Where an operator is neither
@@ -888,11 +893,64 @@ about a factor of two too large where it matters. That makes it a first rung
 rather than a ladder, and the natural composition is with an untrusted
 eigensolve on top of it, which is a shape this library already has.
 
-Unclaimed siblings, in the same order of confidence as the fifth archetype's
-were: growth rates in any linear stability problem, resonance widths in
-scattering, and the spectra of the non-normal Jacobians that made the
-combustion probe expensive, where a region in the complex plane is exactly what
-a Gronwall bound throws away.
+It is now built, as `spectral_abscissa_bracket`. The upper bound is the best of
+Gershgorin by rows, Gershgorin by columns, and Bendixson's
+lambda_max((A + A*)/2), each on the raw matrix and on the balanced one, since
+diagonal similarity preserves the spectrum and every candidate is separately
+valid. The lower bound is the counting theorem: a Gershgorin component of k
+discs holds exactly k eigenvalues, so every component holds at least one and
+its leftmost point bounds some eigenvalue from below. RIGOROUS tier, fail_p
+zero, no eigensolve anywhere. Containment holds 400 out of 400 across well
+conditioned, badly scaled, strongly non-normal and complex families.
+
+The two sides are not equally good and the asymmetry decides what the tool is
+for. Median gaps over 600 matrices: the upper bound sits 0.68 above the true
+abscissa on well-conditioned matrices and 0.72 on badly scaled ones, where
+balancing does the work; the lower sits 7.4 and 7.7 below, because the discs
+usually merge into one component whose leftmost point is far away. On strongly
+non-normal matrices both degrade, to 38 and 274. So it is an upper bound with a
+lower bound attached, and the query it answers is the SIGN of the abscissa.
+
+One bug is worth recording because only the gate caught it. Building Gershgorin
+components from discs of radius min(row, col) broke containment on 6 of 200
+matrices, all on the lower bound. Row discs cover the spectrum and column discs
+cover the spectrum; the hybrid covers neither, so the counting theorem does not
+apply to it. The upper bound, which never mixes families, was never wrong.
+
+### The combustion transfer, measured and negative
+
+The claim first written here was that the non-normal Jacobians which made the
+combustion probe expensive were a promising sibling, since a region in the
+complex plane is what a Gronwall bound throws away. That was speculation and it
+is now measured to be wrong, in two independent ways.
+
+On the branched-chain skeleton the radical pool obeys, during induction, a
+linear system whose abscissa is the branching rate, and ignition is that
+abscissa crossing zero. Every off-diagonal is non-negative, because a radical
+only ever makes other radicals, so the block is Metzler and the FIFTH archetype
+reaches it. Sweeping termination through the crossover, Collatz-Wielandt lands
+on the true abscissa to five decimals at every point, while the enclosure is
+0.4 to 1.7 too high and its lower bound, at about -62, says nothing at all.
+Where a cone exists the fifth archetype wins outright.
+
+And on the full Jacobian, where the majors are consumed and the off-diagonals
+go to -50 so no cone exists, the enclosure gives [-71.5, 12.5] against a true
+abscissa of 2.5, which decides nothing. Worse, the question is degenerate
+there: mass conservation pins an eigenvalue at exactly zero, so the full
+Jacobian's abscissa is 0.00000 on both sides of the crossover and the branching
+mode is masked. The crossover only exists in the radical subspace, and that
+subspace is Metzler.
+
+So the seventh archetype does not rescue combustion, and does not subsume the
+fifth. It is a tool of last resort: where a cone exists the cone is exact, and
+where none does the enclosure is often too loose to decide. Its one measured
+success remains the continuous case, the Rayleigh operator, where no cone
+exists, no symmetry exists, and the bound runs about 2.3x loose at the
+wavenumber that matters, which is the difference between an answer and none.
+
+Siblings still unclaimed, now with the confidence corrected downward:
+resonance widths in scattering, and transfer-operator spectra in molecular
+kinetics. Both should be checked for a cone FIRST.
 
 ## Engines, and the guess and check line
 

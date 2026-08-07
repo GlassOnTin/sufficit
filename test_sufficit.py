@@ -4719,3 +4719,112 @@ def test_water_tmd_bracket_refuses_an_engine_that_missed_its_thermostat():
     temps = [210.0, 230.0, 250.0, 270.0, 290.0]
     with pytest.raises(ValueError, match="not in the ensemble it claims"):
         sf.water_tmd_bracket(temps, _fake_water(244.0, 0.005, hot=1.02))
+
+
+def _spectral_family(rng, kind, n):
+    """Four matrix families the enclosure has to survive."""
+    if kind == 0:
+        return rng.normal(size=(n, n))                  # well conditioned
+    if kind == 1:
+        s = 10.0 ** rng.uniform(-4, 4, n)               # badly scaled
+        return rng.normal(size=(n, n)) * s[:, None] / s[None, :]
+    if kind == 2:
+        return np.triu(rng.normal(size=(n, n)) * 50) - np.eye(n)   # non-normal
+    return rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))  # complex
+
+
+def test_spectral_abscissa_bracket_contains_the_true_abscissa():
+    """The seventh archetype's claim is that a region computed from the
+    coefficients alone contains every eigenvalue, so the only thing to
+    check is containment, against an eigensolve that plays no part in
+    producing the bound.
+
+    An earlier version failed this on 6 of 200 matrices, all on the lower
+    bound, by building Gershgorin components from discs of radius
+    min(row, col). Each family covers the spectrum on its own and the
+    hybrid covers neither, so the counting theorem did not apply. The
+    upper bound, which never mixes families, was never wrong."""
+    rng = np.random.default_rng(0)
+    for trial in range(120):
+        n = int(rng.integers(2, 12))
+        A = _spectral_family(rng, trial % 4, n)
+        c = sf.spectral_abscissa_bracket(A)
+        alpha = float(np.linalg.eigvals(A).real.max())
+        assert c.value - c.err - 1e-8 <= alpha <= c.value + c.err + 1e-8
+        assert c.tier == sf.Tier.RIGOROUS
+        assert c.fail_p == 0.0
+
+
+def test_spectral_abscissa_upper_bound_is_exact_when_the_matrix_is_normal():
+    """Bendixson bounds Re(lambda) by lambda_max((A + A*)/2), and for a
+    Hermitian A that IS A, so the upper bound is not merely valid but
+    exactly the largest eigenvalue. The seventh archetype degenerates
+    into the second at the symmetric end, which is the right behaviour
+    and worth pinning.
+
+    Only the upper half is exact. The lower bound still comes from
+    Gershgorin components and stays weak, so this checks the bound that
+    the archetype is actually for rather than the width of the bracket.
+
+    A triangular matrix does NOT get this, which was a wrong guess on
+    the way here: upper-triangular column discs collect the entries
+    above the diagonal, so neither disc family has zero radius and
+    Gershgorin is not tight. Only the diagonal case collapses."""
+    rng = np.random.default_rng(3)
+    for _ in range(20):
+        n = int(rng.integers(2, 8))
+        M = rng.normal(size=(n, n))
+        A = M + M.T                                    # symmetric
+        c = sf.spectral_abscissa_bracket(A)
+        exact = float(np.linalg.eigvalsh(A)[-1])
+        assert c.value + c.err == pytest.approx(exact, rel=1e-9, abs=1e-9)
+
+    D = np.diag([-1.0, -3.0, -7.0])                    # diagonal: both sides
+    c = sf.spectral_abscissa_bracket(D)
+    assert c.err < 1e-9
+    assert c.value == pytest.approx(-1.0, abs=1e-9)
+
+
+def test_cone_bracket_beats_the_enclosure_wherever_a_cone_exists():
+    """A measured negative, and the reason the seventh archetype is a
+    tool of last resort rather than a replacement for the fifth.
+
+    The chain-branching skeleton behind hydrogen ignition gives, during
+    induction, a linear system in the radical pool whose spectral
+    abscissa is the branching rate. Ignition is that abscissa crossing
+    zero. Every off-diagonal is non-negative, because a radical only ever
+    makes other radicals, so the block is Metzler and Perron-Frobenius
+    reaches it: Collatz-Wielandt sandwiches the abscissa from any
+    strictly positive trial vector, and the sandwich is rigorous whatever
+    the vector, tight when it is near the Perron vector.
+
+    Measured here: the cone bracket lands on the true abscissa to five
+    decimals at every point of the sweep, while the enclosure is 0.4 to
+    1.7 too high and its lower bound, at about -62, says nothing. So
+    where a cone exists the fifth archetype wins outright, and the
+    seventh earns its place only where no cone does."""
+    k1, k2, k3 = 3.0, 20.0, 50.0
+    for k4 in (4.0, 5.5, 8.0, 12.0):
+        a, b, c_, t = k1, k2, k3, k4
+        A = np.array([[-(a + t), b, c_], [a, -b, 0.0], [a, b, -c_]])
+        assert (A - np.diag(np.diag(A))).min() >= 0.0        # Metzler
+
+        alpha = float(np.linalg.eigvals(A).real.max())
+
+        # Collatz-Wielandt, written out here rather than imported
+        shift = float(-np.diag(A).min()) + 1.0
+        P = A + shift * np.eye(3)
+        assert (P >= 0).all()
+        x = np.ones(3)
+        for _ in range(200):
+            x = P @ x
+            x /= np.linalg.norm(x)
+        q = (P @ x) / x
+        cone_lo, cone_hi = float(q.min()) - shift, float(q.max()) - shift
+        assert cone_lo - 1e-8 <= alpha <= cone_hi + 1e-8
+        assert cone_hi - cone_lo < 1e-6              # essentially exact
+
+        enc = sf.spectral_abscissa_bracket(A)
+        lo, hi = enc.value - enc.err, enc.value + enc.err
+        assert lo - 1e-8 <= alpha <= hi + 1e-8
+        assert enc.err > 100 * (cone_hi - cone_lo)   # and far looser
