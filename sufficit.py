@@ -1682,6 +1682,173 @@ def spectral_abscissa_bracket(A, balance: bool = True) -> Certified:
                       f"upper-by={won} no-eigensolve",), fail_p=0.0)
 
 
+def _rayleigh_modes(z, U, Upp, k):
+    """Most unstable complex phase speed of the Rayleigh equation
+
+        (U - c)(phi'' - k^2 phi) - U'' phi = 0
+
+    on a uniform grid with Dirichlet ends. This is the PROPOSER. It is a
+    discretised eigensolve and nothing downstream trusts it.
+    """
+    from scipy.linalg import eig
+    h = float(z[1] - z[0])
+    n = len(z) - 2
+    D2 = np.zeros((n, n))
+    np.fill_diagonal(D2, -2.0 / h ** 2)
+    np.fill_diagonal(D2[1:], 1.0 / h ** 2)
+    np.fill_diagonal(D2[:, 1:], 1.0 / h ** 2)
+    B = D2 - k ** 2 * np.eye(n)
+    A = np.diag(U[1:-1]) @ B - np.diag(Upp[1:-1])
+    w = eig(A, B, right=False)
+    w = w[np.isfinite(w)]
+    if not len(w):
+        return 0.0 + 0.0j
+    return complex(w[np.argmax(w.imag)])
+
+
+def shear_stability_bracket(z, U, k: float, n_coarse: int = None
+                            ) -> Certified:
+    """Certified growth rate of an inviscid parallel shear flow U(z) at
+    wavenumber k, and the first front door for the seventh archetype.
+
+    z and U are a uniform grid and the velocity on it. Returns the
+    temporal growth rate k*Im(c), which is zero for a stable layer.
+
+    Three certificates and one solver, in that order of authority.
+
+    Rayleigh's criterion is rigorous and free: a parallel inviscid flow
+    with no inflection point in U cannot be unstable. Fjortoft's is
+    rigorous, free and strictly stronger: instability also needs
+    U''*(U - U_s) < 0 somewhere, with U_s the velocity at an inflection
+    point. Either one firing ends the query with a RIGOROUS zero and no
+    eigenvalue is ever computed.
+
+    Howard's semicircle theorem is rigorous and also free: every unstable
+    c lies in the upper half of the circle centred on the median velocity
+    with radius half the velocity range, so the growth rate cannot exceed
+    k times that radius. Here it is used as a CHECKER. The eigensolve
+    proposes a mode; if that mode falls outside the semicircle the solver
+    is wrong, and this raises rather than reporting it.
+
+    What the solver contributes is the value, at the EMPIRICAL tier, with
+    its error taken from a second solve on a coarser mesh. That is a
+    resolution estimate and not a bound, and it is labelled accordingly.
+
+    Two refusals are worth knowing about. The theorem is proven for
+    INVISCID flow and does not survive viscosity, so a viscous problem is
+    outside what this certifies and the reduction to the Rayleigh
+    equation is a declared modelling step, not a free one. And the
+    Dirichlet ends need the mode to have decayed, which it does like
+    exp(-k|z|), so a domain with k*L below about 4 is refused: measured,
+    k*L = 2.4 costs 0.4% on the tanh layer against 0.02% at k*L = 4.
+    """
+    z = np.asarray(z, float)
+    U = np.asarray(U, float)
+    if z.ndim != 1 or U.shape != z.shape:
+        raise ValueError("shear_stability_bracket: z and U must be one "
+                         f"dimensional and the same length, got {z.shape} "
+                         f"and {U.shape}")
+    if len(z) < 65:
+        raise ValueError(f"shear_stability_bracket: {len(z)} points is too "
+                         "few to resolve a mode; use at least 65")
+    h = float(z[1] - z[0])
+    if not np.allclose(np.diff(z), h, rtol=1e-9, atol=0.0):
+        raise ValueError("shear_stability_bracket: the grid must be uniform")
+    if k <= 0.0:
+        raise ValueError(f"shear_stability_bracket: k={k:g} must be positive")
+
+    Upp = np.empty_like(U)
+    Upp[1:-1] = (U[2:] - 2.0 * U[1:-1] + U[:-2]) / h ** 2
+    Upp[0], Upp[-1] = Upp[1], Upp[-2]
+
+    # Rayleigh: no inflection point, no instability.
+    # The zero tolerance has to be relative to the curvature this profile
+    # COULD have, not to the curvature it does. Keyed on max|U''| it
+    # degenerates when U'' vanishes identically: plane Couette has U''
+    # exactly zero, so the threshold collapses to zero, rounding noise
+    # registers as sign changes, and a flow Rayleigh certifies stable
+    # gets sent to the eigensolve instead.
+    interior = Upp[1:-1]
+    ref = max((float(U.max()) - float(U.min())) / h ** 2, 1.0)
+    signs = np.sign(np.where(np.abs(interior) < 1e-9 * ref, 0.0, interior))
+    nz = signs[signs != 0.0]
+    inflects = bool(len(nz)) and bool((nz[1:] != nz[:-1]).any())
+    if not inflects:
+        return Certified(0.0, 0.0, Tier.RIGOROUS,
+                         (f"shear-stability k={k:g} rayleigh-no-inflection "
+                          f"stable no-eigensolve",), fail_p=0.0)
+
+    # Fjortoft: needs U''*(U - U_s) < 0 somewhere, at some inflection U_s.
+    idx = np.nonzero(nz[1:] != nz[:-1])[0]
+    where = np.nonzero(signs != 0.0)[0]
+    # Fjortoft needs the product to be genuinely negative, not negative
+    # by rounding. On U = z^3, where the theorem says stable, the minimum
+    # comes out -4.5e-21 against a scale of 476, and a strict < 0 test
+    # reads that as instability and sends a certifiably stable flow to
+    # the eigensolve. Same failure as the Rayleigh tolerance above: an
+    # exact zero is not a small negative number.
+    fj = False
+    for i in idx:
+        Us = float(U[1:-1][where[i]])
+        prod = interior * (U[1:-1] - Us)
+        pscale = max(float(np.abs(prod).max()), 1e-300)
+        if float(prod.min()) < -1e-9 * pscale:
+            fj = True
+            break
+    if not fj:
+        return Certified(0.0, 0.0, Tier.RIGOROUS,
+                         (f"shear-stability k={k:g} fjortoft stable "
+                          f"no-eigensolve",), fail_p=0.0)
+
+    # Only now does the domain matter. The two criteria above are
+    # pointwise on U and owe the solver nothing, so a free rigorous
+    # answer must not be refused for a precondition of the eigensolve.
+    half = 0.5 * (float(z[-1]) - float(z[0]))
+    if k * half < 4.0:
+        raise ValueError(
+            f"shear_stability_bracket: the mode decays like exp(-k|z|) and "
+            f"k*L/2 = {k * half:.2f} leaves it finite at the Dirichlet ends. "
+            f"Measured on the tanh layer, k*L/2 = 2.4 costs 0.4% against "
+            f"0.02% at 4. Widen the domain to at least {4.0 / k:.3g} either "
+            f"side, or raise k")
+
+    mid = 0.5 * (float(U.max()) + float(U.min()))
+    radius = 0.5 * (float(U.max()) - float(U.min()))
+    cap = k * radius                       # Howard's cap on the growth rate
+
+    c = _rayleigh_modes(z, U, Upp, k)
+    if c.imag <= 1e-9:
+        return Certified(0.0, 0.0, Tier.EMPIRICAL,
+                         (f"shear-stability k={k:g} no-growing-mode-found "
+                          f"NOT-a-stability-proof howard-cap={cap:.6g}",),
+                         fail_p=0.0)
+
+    if abs(c - mid) > radius * (1.0 + 1e-6):
+        raise ValueError(
+            f"shear_stability_bracket: the solver proposed c={c:.6g} at "
+            f"k={k:g}, which is outside Howard's semicircle of centre "
+            f"{mid:.6g} and radius {radius:.6g}. No unstable mode of an "
+            f"inviscid parallel flow can be there, so the eigensolve is "
+            f"wrong and its answer is not reported")
+
+    m = n_coarse if n_coarse is not None else (len(z) + 1) // 2
+    zc = np.linspace(z[0], z[-1], m)
+    Uc = np.interp(zc, z, U)
+    hc = float(zc[1] - zc[0])
+    Uppc = np.empty_like(Uc)
+    Uppc[1:-1] = (Uc[2:] - 2.0 * Uc[1:-1] + Uc[:-2]) / hc ** 2
+    Uppc[0], Uppc[-1] = Uppc[1], Uppc[-2]
+    cc = _rayleigh_modes(zc, Uc, Uppc, k)
+
+    grow = k * float(c.imag)
+    err = abs(grow - k * float(cc.imag))
+    return Certified(grow, err, Tier.EMPIRICAL,
+                     (f"shear-stability k={k:g} c={c.real:+.6g}"
+                      f"{c.imag:+.6g}j n={len(z)}/{m} "
+                      f"howard-cap={cap:.6g} loose={cap / grow:.2f}x "
+                      f"resolution-error-not-a-bound",), fail_p=0.0)
+
+
 # ------------------------------------------------ an engine to distrust.
 # The blocks above certify what comes out of a molecular simulation. They
 # need something to come out of one, and the cheapest honest source is

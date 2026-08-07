@@ -751,13 +751,45 @@ spectral linear-stability eigenvalue solves with a resolution-convergence
 criterion for rejecting spurious modes, which is this project's proposer and
 checker split, already built and already Python.
 
-None of this is in `sufficit.py`. It is a probe, recorded so the decision to
-enter is made against numbers. Two of its own bugs are worth recording with it,
-because both were caught by gates rather than by reading. The Bickley jet's
-U'' had a sign error and reported a famously unstable jet as stable. And the
+It is now built, as `shear_stability_bracket`, and it is where the seventh
+archetype earns its place: no cone exists here, no symmetry exists, and nothing
+else in the library reaches the problem at all. Three certificates and one
+solver, in that order of authority.
+
+Rayleigh and Fjortoft come first, are rigorous, are free, and are pointwise on
+U. Either firing ends the query at a RIGOROUS zero with no eigenvalue computed:
+a parabolic profile and plane Couette by no inflection point, and U = z^3 by
+Fjortoft despite having one. They are deliberately evaluated BEFORE the
+solver's own preconditions, since a free rigorous answer must not be refused
+for a precondition of a solve it never needs.
+
+Howard's semicircle is used as a CHECKER rather than as an answer, which is the
+shape this library already has everywhere else. The eigensolve proposes a mode;
+if it lands outside the circle of centre (Umax+Umin)/2 and radius
+(Umax-Umin)/2, no unstable mode of an inviscid parallel flow can be there, so
+the solver is wrong and the query raises instead of reporting. What the solver
+contributes is the value at the EMPIRICAL tier, with its error from a second
+solve on a coarser mesh, labelled a resolution estimate and not a bound.
+
+Gated against two analytic answers derived rather than recalled, plus one from
+the literature: the tanh layer neutral at exactly k=1, from substituting
+phi = sech(z) and c = 0; the Bickley jet neutral at k=2 with c=2/3; and
+Michalke's 1964 maximum, which the front door reproduces as 0.189506 +-
+0.000588 at k=0.445 against 0.19. The Howard cap runs 1.43x loose at k=0.2,
+2.35x at the most unstable wavenumber, and 7.47x approaching neutral.
+
+Four bugs are recorded with it because all four were caught by gates rather
+than by reading, and two are the same mistake in different clothes. The Bickley
+jet's U'' had a sign error and reported a famously unstable jet as stable. The
 tanh growth rate was first checked against a remembered k(1-k), which is not
 the answer to anything here; the solver was right and the reference was wrong,
-which is the N2 episode inverted and the same lesson either way. An ungated
+which is the N2 episode inverted. And both stability criteria needed a
+tolerance relative to the scale the profile COULD have rather than the one it
+does: plane Couette has U'' identically zero, so a threshold keyed on max|U''|
+collapses and rounding noise reads as sign changes, and on U = z^3 the Fjortoft
+product's minimum is -4.5e-21 against a scale of 476, which a strict < 0 test
+reads as instability. In both cases a certifiably stable flow was being handed
+to the eigensolve. An exact zero is not a small negative number. An ungated
 number is not a gate.
 
 ## Recurring certificate archetypes

@@ -4828,3 +4828,87 @@ def test_cone_bracket_beats_the_enclosure_wherever_a_cone_exists():
         lo, hi = enc.value - enc.err, enc.value + enc.err
         assert lo - 1e-8 <= alpha <= hi + 1e-8
         assert enc.err > 100 * (cone_hi - cone_lo)   # and far looser
+
+
+def test_shear_stability_certifies_stable_flows_without_any_eigensolve():
+    """Rayleigh and Fjortoft are rigorous, free, and pointwise on U. A
+    profile with no inflection point cannot be unstable, and one with an
+    inflection still cannot be unless U''*(U - U_s) goes negative
+    somewhere. Either firing ends the query at RIGOROUS zero with no
+    eigenvalue computed at all.
+
+    Both tests needed a tolerance relative to the scale the profile could
+    have, not to the scale it does, and both failed without one. Plane
+    Couette has U'' identically zero, so a threshold keyed on max|U''|
+    collapses and rounding noise reads as sign changes. On U = z^3, where
+    Fjortoft says stable, the product's minimum is -4.5e-21 against a
+    scale of 476, and a strict < 0 test reads that as instability. In
+    both cases a certifiably stable flow was being sent to the solver."""
+    z = np.linspace(-3.0, 3.0, 401)
+    for U, via in ((1.0 - z ** 2, "rayleigh-no-inflection"),
+                   (z.copy(), "rayleigh-no-inflection"),
+                   (z ** 3, "fjortoft")):
+        c = sf.shear_stability_bracket(z, U, 0.5)
+        assert c.value == 0.0 and c.err == 0.0
+        assert c.tier == sf.Tier.RIGOROUS
+        assert c.fail_p == 0.0
+        assert via in c.provenance[0]
+        assert "no-eigensolve" in c.provenance[0]
+
+
+def test_shear_stability_reproduces_michalke_on_the_tanh_layer():
+    """The tanh shear layer passes both rigorous criteria, so the query
+    falls through to the solver, which is where the archetype stops
+    certifying and starts proposing.
+
+    Two gates on that solver, neither of them recalled. The neutral mode
+    is analytic: substituting phi = sech(z) and c = 0 into the Rayleigh
+    equation leaves sech^2(z)(1 - k^2), so the layer is neutral at k = 1
+    and nowhere else on that branch. And Michalke integrated the same
+    equation in 1964, finding the most unstable wave at k = 0.445 growing
+    at 0.095|dU|/l_u, which is 0.19 for tanh(z)."""
+    z = np.linspace(-20.0, 20.0, 501)
+    U = np.tanh(z)
+
+    c = sf.shear_stability_bracket(z, U, 0.445)
+    assert c.tier == sf.Tier.EMPIRICAL
+    assert c.value == pytest.approx(0.19, abs=0.005)     # Michalke
+    assert c.err < 0.002
+
+    # the analytic neutral point: growing below k=1, not above
+    assert sf.shear_stability_bracket(z, U, 0.8).value > 0.05
+    for k in (1.05, 1.3):
+        stable = sf.shear_stability_bracket(z, U, k)
+        assert stable.value == 0.0
+        assert "NOT-a-stability-proof" in stable.provenance[0]
+
+
+def test_howard_semicircle_refuses_a_solver_that_left_it():
+    """The semicircle is used as a CHECKER, which is the whole point of
+    it. No unstable mode of an inviscid parallel flow can sit outside the
+    circle centred on the median velocity with radius half the velocity
+    range, so a solver proposing one is wrong and its answer must not be
+    reported.
+
+    Faking that is the only way to test it, so the proposer is swapped
+    for one that returns a mode far outside the circle."""
+    z = np.linspace(-20.0, 20.0, 257)
+    U = np.tanh(z)
+    real = sf._rayleigh_modes
+    try:
+        sf._rayleigh_modes = lambda *a, **kw: complex(0.0, 40.0)
+        with pytest.raises(ValueError, match="outside Howard's semicircle"):
+            sf.shear_stability_bracket(z, U, 0.5)
+    finally:
+        sf._rayleigh_modes = real
+
+
+def test_shear_stability_refuses_a_domain_the_mode_has_not_decayed_in():
+    """The Dirichlet ends assume the mode has died, and it dies like
+    exp(-k|z|). Measured on the tanh layer, k*L/2 = 2.4 costs 0.4%
+    against 0.02% at 4, so below 4 the answer is refused and priced in
+    the width it would take. The rigorous criteria run first and are
+    never refused for this, since they owe the solver nothing."""
+    z = np.linspace(-4.0, 4.0, 401)
+    with pytest.raises(ValueError, match="Widen the domain"):
+        sf.shear_stability_bracket(z, np.tanh(z), 0.2)
