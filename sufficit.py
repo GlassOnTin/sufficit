@@ -1446,6 +1446,24 @@ def ensemble_check(observed: dict, setpoints: dict, alpha: float = 0.05,
     thermostat 2% hot is still caught 60 times out of 60, because it
     sits twenty half-widths out rather than two.
 
+    Choose the probe with care, because a setpoint test is only as good
+    as the thermometer it is given, and the obvious thermometer is
+    biased. A BAOAB trajectory samples configurations accurately and
+    velocities less so, so its KINETIC temperature carries an O(dt^2)
+    error while a configurational observable does not. Measured on the
+    mW ladder's 230 K rung at 70,000 samples: the kinetic probe reads
+    228.840 +- 0.439 and is refused, while Rugh's configurational
+    temperature on the same trajectory reads 229.749 +- 1.046 and
+    passes, and the density, which is what was being certified, is
+    unaffected either way. Pass configurational_temperature through the
+    callable route above when the engine can supply it.
+
+    The perverse part, and the reason this went unnoticed: a systematic
+    bias is caught only when the error bar is small enough to see it, so
+    MORE sampling makes a good run MORE likely to be refused. Three rungs
+    of that ladder passed at twenty thousand samples and the fourth, at
+    eighty thousand, did not, on the same 1 K bias.
+
     What this does NOT check is the force field, which is the error that
     dominates everything here and is declared rather than certified. A
     sampler can pass both tests perfectly while describing a liquid that
@@ -1461,11 +1479,21 @@ def ensemble_check(observed: dict, setpoints: dict, alpha: float = 0.05,
 
     out, wide, failures = {}, {}, []
     for name in sorted(observed):
+        src = observed[name]
+        # An entry is either a series, bounded here, or a callable that
+        # takes an alpha and returns a Certified. The second exists
+        # because not every probe IS a series. A configurational
+        # temperature is a ratio of two averages, so it cannot be handed
+        # over as an array, and handing over a finished Certified would
+        # break the two-threshold design below, which has to be able to
+        # recompute the same quantity wider. functools.partial on
+        # configurational_temperature already has the right shape.
+        bound = src if callable(src) else (
+            lambda a, _s=src: timeseries_mean(_s, alpha=a, **kw))
         try:
-            out[name] = timeseries_mean(observed[name], alpha=alpha, **kw)
+            out[name] = bound(alpha)
             if name in setpoints:
-                wide[name] = timeseries_mean(observed[name],
-                                             alpha=reject_alpha, **kw)
+                wide[name] = bound(reject_alpha)
         except ValueError as exc:
             raise ValueError(
                 f"ensemble_check: the {name} series cannot be bounded, so "
@@ -2074,7 +2102,8 @@ def mw_water_npt(temperature: float, pressure: float = 1.0, cells: int = 2,
                  baro_scale: float = None, sample_every: int = 10,
                  equil_frac: float = 0.5, seed: int = 0, start=None,
                  density0: float = 0.97, melt: float = 600.0,
-                 melt_steps: int = 20000) -> dict:
+                 melt_steps: int = 20000,
+                 configurational: bool = False) -> dict:
     """Sample mW water at constant temperature and pressure. Untrusted.
 
     Returns the time series a certificate can be built from: density in
@@ -2088,10 +2117,18 @@ def mw_water_npt(temperature: float, pressure: float = 1.0, cells: int = 2,
     The timestep is 5 fs, not the 10 fs mW is usually run at. At 10 fs
     the kinetic temperature comes out 294.7 K when 298 K was asked for,
     at both frictions tried, so it is discretisation and not thermostat
-    coupling. That is a 1.1% miss and ensemble_check refuses it. BAOAB's
-    configurational sampling is accurate enough at 10 fs that the density
-    would have been fine, which is exactly why this needed measuring: the
-    run would have looked healthy while failing the only test that asks.
+    coupling. BAOAB's configurational sampling is accurate enough at 10
+    fs that the density would have been fine.
+
+    That last sentence was written before its consequence was followed,
+    and the consequence is that 5 fs does not fix the problem either. The
+    kinetic temperature is still about 1 K low at 5 fs, and dropping to 2
+    fs only moves it to 0.4 K while costing 2.5x, so the bias is never
+    removed, merely hidden under whatever error bar the sampling
+    affords. The density does not care: measured at 290 K, 0.99538 at 5
+    fs against 0.99540 at 2 fs, a shift of 3e-5 against a combined
+    half-width of 3.8e-3. Set configurational=True and gate the run with
+    configurational_temperature instead, which has no velocities in it.
 
     The barostat is Monte Carlo on the logarithm of the volume, which
     needs no virial and therefore no pressure estimator, so the pressure
@@ -2157,6 +2194,10 @@ def mw_water_npt(temperature: float, pressure: float = 1.0, cells: int = 2,
     equil = int(equil_frac * steps)
     acc = att = 0
     out = {"density": [], "temperature": [], "potential": []}
+    if configurational:
+        out["grad2"], out["laplacian"] = [], []
+        probe = np.random.default_rng(seed + 104729)
+        hh = 1e-4
 
     for s in range(steps):
         v += 0.5 * dt * F * _FCONV / m           # B
@@ -2184,11 +2225,76 @@ def mw_water_npt(temperature: float, pressure: float = 1.0, cells: int = 2,
             out["density"].append(N * _MW["mass"] / (0.602214076 * L ** 3))
             out["temperature"].append(2.0 * ke / (3.0 * N * KB_KCAL))
             out["potential"].append(e / N)
+            if configurational:
+                # Rugh's identity needs |grad U|^2, which the forces
+                # already are, and the Hessian trace, which they do not.
+                # One Hutchinson probe per frame costs two extra force
+                # evaluations instead of the 6N an exact trace would.
+                # Its variance averages out along the trajectory, which
+                # is where the average was going anyway.
+                u = probe.integers(0, 2, x.shape) * 2.0 - 1.0
+                Fp = _mw_energy_forces(x + hh * u, L)[1]
+                Fm = _mw_energy_forces(x - hh * u, L)[1]
+                out["grad2"].append(float((F * F).sum()))
+                out["laplacian"].append(
+                    float((u * (-(Fp - Fm) / (2.0 * hh))).sum()))
 
     res = {k: np.array(val) for k, val in out.items()}
     res["accept"] = acc / max(att, 1)
     res["state"] = (x, L)
     return res
+
+
+def configurational_temperature(grad2, laplacian, alpha: float = 0.05
+                                ) -> Certified:
+    """Temperature from positions alone, by Rugh's identity
+
+        k_B T_conf = <|grad U|^2> / <lap U>
+
+    and the reason to want it is that no velocity appears in it.
+
+    A BAOAB trajectory samples configurations accurately and velocities
+    less so: the kinetic temperature carries an O(dt^2) error that the
+    configurational marginal does not. Measured on mW at a 290 K
+    thermostat setting, the kinetic estimate is 1.66 K low at a 5 fs
+    step and 0.39 K low at 2 fs, while the density, a configurational
+    observable, does not move at all between those steps: 0.99538 against
+    0.99540, a shift of 3e-5 against a combined half-width of 3.8e-3.
+
+    That is the trap this exists to avoid. A setpoint test built on the
+    kinetic temperature refuses a trajectory whose configurational
+    sampling is correct, and refuses it harder the more samples it is
+    given, since the bias is systematic and only the error bar shrinks.
+    Measured: three of four rungs of the published mW ladder pass at
+    twenty thousand samples and the fourth, with eighty thousand, is
+    refused, for the same 1 K bias.
+
+    Both averages are bounded separately and the ratio is formed by
+    interval arithmetic, [a_lo / b_hi, a_hi / b_lo]. That is conservative
+    and, more to the point, valid whatever the correlation between the
+    two series, which share a trajectory and are certainly not
+    independent. Refuses if the Laplacian interval reaches zero, where
+    the ratio is unbounded.
+    """
+    g = timeseries_mean(np.asarray(grad2, float), alpha=alpha)
+    lap = timeseries_mean(np.asarray(laplacian, float), alpha=alpha)
+    g_lo, g_hi = g.value - g.err, g.value + g.err
+    l_lo, l_hi = lap.value - lap.err, lap.value + lap.err
+    if l_lo <= 0.0:
+        raise ValueError(
+            f"configurational_temperature: the mean Laplacian is bounded "
+            f"by [{l_lo:.6g}, {l_hi:.6g}], which reaches zero, so the "
+            f"ratio is unbounded. That is a system with no restoring "
+            f"curvature on average, not a temperature")
+    if g_lo < 0.0:
+        g_lo = 0.0
+    lo, hi = g_lo / l_hi / KB_KCAL, g_hi / l_lo / KB_KCAL
+    return Certified(0.5 * (lo + hi), 0.5 * (hi - lo), Tier.EMPIRICAL,
+                     (f"configurational-temperature rugh "
+                      f"grad2={g.value:.4g}+-{g.err:.2g} "
+                      f"lap={lap.value:.4g}+-{lap.err:.2g} "
+                      f"interval-ratio no-velocities",),
+                     fail_p=min(1.0, g.fail_p + lap.fail_p))
 
 
 def water_tmd_bracket(temps, engine, alpha: float = 0.05,
@@ -2272,9 +2378,15 @@ def water_tmd_bracket(temps, engine, alpha: float = 0.05,
                 f"water_tmd_bracket: the engine returned no density "
                 f"series at {t:g} K, only {sorted(series)}")
         want = {"temperature": t, **(setpoints or {})}
+        # Callables pass through as well as arrays. An engine that
+        # supplies a configurational thermometer hands over a callable,
+        # and dropping it here would leave the setpoint ungated while
+        # looking like it was checked, which is the worst way for a gate
+        # to fail.
         try:
             certs = ensemble_check({k: v for k, v in series.items()
-                                    if isinstance(v, np.ndarray)},
+                                    if isinstance(v, np.ndarray)
+                                    or callable(v)},
                                    want, alpha=alpha)
         except EnsembleMismatch:
             raise                    # the engine is wrong, not the rung

@@ -4912,3 +4912,106 @@ def test_shear_stability_refuses_a_domain_the_mode_has_not_decayed_in():
     z = np.linspace(-4.0, 4.0, 401)
     with pytest.raises(ValueError, match="Widen the domain"):
         sf.shear_stability_bracket(z, np.tanh(z), 0.2)
+
+
+def test_configurational_temperature_is_exact_on_harmonic_oscillators():
+    """Rugh's identity, k_B T_conf = <|grad U|^2> / <lap U>, gated where
+    the answer is analytic.
+
+    For N independent three-dimensional harmonic oscillators with
+    U = k/2 sum r^2, the gradient is k r and the Laplacian is exactly
+    3Nk. At temperature T equipartition gives <|r_i|^2> = 3 k_B T / k, so
+    <|grad U|^2> = 3 N k k_B T and the ratio is k_B T with the spring
+    constant cancelling. T_conf must therefore recover T exactly, and
+    must not depend on k.
+
+    This gates the identity, the interval-arithmetic ratio and the units
+    together, without any molecular dynamics being involved. What it does
+    NOT gate is the Hutchinson estimate of the Laplacian, which is not
+    needed here because the harmonic Laplacian is a constant."""
+    kB = sf.KB_KCAL
+    for T in (150.0, 290.0, 500.0):
+        for k in (0.5, 5.0):
+            rng = np.random.default_rng(int(T + k))
+            N, n = 200, 20_000
+            r = rng.normal(0.0, math.sqrt(kB * T / k), (n, N, 3))
+            g2 = k ** 2 * (r * r).sum(axis=(1, 2))
+            lap = np.full(n, 3.0 * N * k)
+            c = sf.configurational_temperature(g2, lap)
+            assert abs(c.value - T) <= c.err
+            assert c.err < 0.01 * T
+            assert c.tier == sf.Tier.EMPIRICAL
+
+
+def test_configurational_temperature_refuses_a_zero_crossing_laplacian():
+    """The ratio is unbounded when the mean Laplacian can be zero, and a
+    system with no restoring curvature on average has no configurational
+    temperature to report. Refusing is the answer, not a nuisance."""
+    rng = np.random.default_rng(0)
+    n = 20_000
+    g2 = 1.0 + 0.1 * rng.standard_normal(n)
+    lap = 0.02 + 5.0 * rng.standard_normal(n)      # mean well inside noise
+    with pytest.raises(ValueError, match="reaches zero"):
+        sf.configurational_temperature(g2, lap)
+
+
+def test_ensemble_check_accepts_a_probe_that_is_not_a_series():
+    """Not every thermometer IS a series. A configurational temperature
+    is a ratio of two averages, so it cannot be handed over as an array,
+    and handing over a finished Certified would break the two-threshold
+    design, which has to recompute the same quantity at the stricter
+    rejection alpha. So an entry may instead be a callable taking alpha
+    and returning a Certified, which is the shape functools.partial
+    already gives.
+
+    Gated on a synthetic run where the two probes disagree by
+    construction: the recorded temperature series is biased 1.2 K low,
+    as a BAOAB kinetic temperature is, while the configurational
+    quantities are consistent with the setpoint. The kinetic probe must
+    refuse and the configurational one must pass, on the same run."""
+    from functools import partial
+    rng = np.random.default_rng(0)
+    n, N, kB = 20_000, 216, sf.KB_KCAL
+    T = 230.0
+
+    biased = (T - 1.2) + 12.0 * _ar1(n, 0.8, 0.0, 1)
+    k = 3.0
+    r = rng.normal(0.0, math.sqrt(kB * T / k), (n, N, 3))
+    g2 = k ** 2 * (r * r).sum(axis=(1, 2))
+    lap = np.full(n, 3.0 * N * k)
+    dens = 1.0 + 1e-3 * _ar1(n, 0.8, 0.0, 2)
+
+    with pytest.raises(ValueError, match="not in the ensemble it claims"):
+        sf.ensemble_check({"density": dens, "temperature": biased},
+                          {"temperature": T})
+
+    out = sf.ensemble_check(
+        {"density": dens,
+         "temperature": partial(sf.configurational_temperature, g2, lap)},
+        {"temperature": T})
+    assert abs(out["temperature"].value - T) <= out["temperature"].err
+    assert "no-velocities" in out["temperature"].provenance[0]
+    assert out["density"].err < 1e-4          # the array path still works
+
+
+def test_water_tmd_bracket_does_not_drop_a_callable_probe():
+    """water_tmd_bracket filters an engine's output before handing it to
+    ensemble_check, and that filter has to pass callables as well as
+    arrays. Dropping one would leave the setpoint ungated while looking
+    checked, which is the worst way for a gate to fail: the engine below
+    is 3% hot and must still be caught through the callable path."""
+    from functools import partial
+    temps = [210.0, 230.0, 250.0, 270.0, 290.0]
+    n, N, kB, k = 20_000, 216, sf.KB_KCAL, 3.0
+
+    def engine(T):
+        rng = np.random.default_rng(int(T))
+        r = rng.normal(0.0, math.sqrt(kB * T * 1.03 / k), (n, N, 3))
+        g2 = k ** 2 * (r * r).sum(axis=(1, 2))
+        return {"density": 1.0 - 3e-6 * (T - 244.0) ** 2
+                + 0.005 * _ar1(n, 0.8, 0.0, int(T) + 5),
+                "temperature": partial(sf.configurational_temperature,
+                                       g2, np.full(n, 3.0 * N * k))}
+
+    with pytest.raises(ValueError, match="not in the ensemble it claims"):
+        sf.water_tmd_bracket(temps, engine)
