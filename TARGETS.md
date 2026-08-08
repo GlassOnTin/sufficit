@@ -792,6 +792,69 @@ reads as instability. In both cases a certifiably stable flow was being handed
 to the eigensolve. An exact zero is not a small negative number. An ungated
 number is not a gate.
 
+**Well-balanced surface tension** is a note rather than a probe, and is marked
+as such: nothing below has been measured here, unlike the two entries above it.
+It is recorded because the shape of the certificate is unusually clean and
+because it separates two things the field routinely conflates.
+
+Interfacial flow at high surface tension and low viscosity fails in two
+different ways. One is a stability limit, the capillary timestep restriction
+`dt <= sqrt(rho * dx^3 / (2 pi sigma))`, which falls as `dx^1.5` and comes from
+resolving capillary waves explicitly. The other is spurious currents, which are
+a CONSISTENCY error: the discrete surface tension force and the discrete
+pressure gradient fail to cancel, leaving velocities of order sigma/mu that
+nothing damps when the viscosity is small. They happen at any timestep. Only
+the first is a stability problem, and they want different certificates.
+
+The second is the one with a clean certificate. For a static interface with
+exact curvature, a balanced-force discretisation makes the discrete pressure
+gradient cancel the surface tension force IDENTICALLY. That is algebra, not
+approximation, so it is checkable in exact rational arithmetic and lands
+RIGOROUS. It certifies a scheme rather than a run, once rather than per query,
+and it has a crisp binary answer against a documented failure mode. The
+archetype is not the seventh: no eigenvalue is involved. It is closest to the
+exact-rational verification the SOS work already uses.
+
+What makes it worth stating separately is that exact balance holds only if the
+curvature is exact, so the certificate isolates the half that can be certified
+and names the half that cannot. The literature supports that split rather than
+merely permitting it. Popinet and Zaleski reduced spurious currents to machine
+precision in two dimensions in 1999, machine zero being direct evidence that
+the pressure jump balances the surface tension force. The direct extension of
+that integral formulation to three dimensions stayed open for about
+twenty-five years and appears to have landed only in July 2026, in Gennari and
+van Wachem, which reports spurious currents comparable to continuous surface
+force methods rather than at machine precision. That is what the split
+predicts: in two dimensions a marker chain gives curvature essentially exactly,
+while in three dimensions curvature comes from a surface mesh or height
+functions and is second order, so the residual is curvature error rather than
+force imbalance. Meanwhile the route that actually put surface tension into
+production in three dimensions went around the problem, through balanced-force
+volume of fluid with height-function curvature, which is what Gerris and then
+Basilisk do.
+
+The capillary timestep limit is the seventh archetype's natural second home,
+and the scope rule already says how well it would do. Clause two is satisfied,
+since stability is a question about an extreme eigenvalue. Clause one is not:
+near the threshold the eigenvalue of interest is close to zero while the
+operator carries entries of order 1/dt, so the bound is loosest exactly where
+it is wanted. Loose in the safe direction is still usable, since practitioners
+run well inside the limit anyway, but the niche is narrow: for constant
+coefficients von Neumann analysis gives the exact amplification factor and the
+enclosure adds nothing. It would earn its place only with variable density and
+curvature, where von Neumann does not apply.
+
+Three things argue against entering this as a domain rather than as a tool.
+Criterion four is weak, since Basilisk is C and the Python-facing route is
+Firedrake or FEniCSx with real effort rather than an existing hook. The field's
+queries are functionals, breakup time and droplet size distribution and bubble
+rise velocity, and a stability certificate is a precondition rather than an
+answer, though Kantorovich is precedent for certifying preconditions. And the
+functional may not exist: this library has already met that here, since the sea
+wall's peak impact pressure showed no asymptotic range and the GCI certifier
+refused it. Breakup and coalescence at low viscosity are strong candidates for
+the same refusal, which is a real result but not the one anyone wants.
+
 ## Recurring certificate archetypes
 
 Seven patterns cover nearly everything above, and the rewrite library should be
