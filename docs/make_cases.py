@@ -4282,11 +4282,11 @@ def water_case():
     def probe(T):
         k = f"{T:.0f}"
         return partial(sf.configurational_temperature,
-                       z[f"n216_grad2{k}"].astype(float),
-                       z[f"n216_lap{k}"].astype(float))
+                       z[f"n512_grad2{k}"].astype(float),
+                       z[f"n512_lap{k}"].astype(float))
 
     def engine(T):
-        return {"density": z[f"n216_d{T:.0f}"].astype(float),
+        return {"density": z[f"n512_d{T:.0f}"].astype(float),
                 "temperature": probe(T)}
 
     brk = sf.water_tmd_bracket(temps, engine)
@@ -4294,18 +4294,20 @@ def water_case():
     btight = sf.water_tmd_bracket(temps, engine, alpha=0.05 / len(temps))
     tlo, thi = btight.value - btight.err, btight.value + btight.err
 
-    dens = {T: sf.timeseries_mean(z[f"n216_d{T:.0f}"].astype(float))
+    dens = {T: sf.timeseries_mean(z[f"n512_d{T:.0f}"].astype(float))
             for T in temps}
     tcon = {T: sf.configurational_temperature(
-        z[f"n216_grad2{T:.0f}"].astype(float),
-        z[f"n216_lap{T:.0f}"].astype(float)) for T in temps}
+        z[f"n512_grad2{T:.0f}"].astype(float),
+        z[f"n512_lap{T:.0f}"].astype(float)) for T in temps}
     small = {T: sf.timeseries_mean(z[f"n64_d{T:.0f}"].astype(float))
              for T in (250.0, 270.0, 290.0)}
+    mid = {T: sf.timeseries_mean(z[f"n216_d{T:.0f}"].astype(float))
+           for T in temps}
 
     rows = "".join(
         f"<tr><td>{T:.0f} K</td><td>{dens[T].value:.5f}</td>"
         f"<td>&#177;{dens[T].err:.5f}</td>"
-        f"<td>{len(z[f'n216_d{T:.0f}']):,}</td>"
+        f"<td>{len(z[f'n512_d{T:.0f}']):,}</td>"
         f"<td>{tcon[T].value:.2f} &#177; {tcon[T].err:.2f}</td></tr>"
         for T in temps)
 
@@ -4402,36 +4404,56 @@ density of mW water against temperature, with the bracketed maximum">
             f"bound, the same data gives "
             f"<strong>[{tlo:.0f}, {thi:.0f}] K</strong>.</p>"
             "<p>An earlier version of this page reported a tighter answer, "
-            "250 &#177; 20 K, on a different trajectory of the same model. "
-            "Its upper bound rested on one ordering that cleared by 8.2e-6 "
-            "in density, about one part in a hundred thousand, and this "
-            "chain does not reproduce it: the same two rungs now overlap. "
-            "Every rung agrees with the old one inside its error bar. The "
-            "narrow bracket was real and it was not robust, which is what "
-            "a margin that small should be expected to mean.</p>",
+            "250 &#177; 20 K. Its upper bound rested on one ordering that "
+            "cleared by 8.2e-6 in density, about one part in a hundred "
+            "thousand, and neither of the two ladders run since reproduces "
+            "it: at 216 and again at 512 molecules, on separately annealed "
+            "chains, those same two rungs overlap. Every rung agrees with "
+            "the old one inside its error bar, so nothing was wrong with "
+            "the densities. The narrow bracket was real and it was not "
+            "robust, which is what a margin that small should be expected "
+            "to mean.</p>"
+            "<p>The reason it cannot simply be tightened is physical "
+            "rather than statistical. A maximum is flat near its top, so "
+            "&#961;(250)&#8722;&#961;(270) is only 6.5e-4 here, and the 512 "
+            "half-widths are already a third narrower than the 216 ones "
+            "without separating those rungs. Locating a stationary point "
+            "to within some width costs the square of that width in "
+            "precision, and this is what that exchange rate looks like "
+            "when the bill arrives.</p>",
 
-            "<h2>The box is not the model</h2>"
-            "<p>Sixty-four molecules are cheaper and wrong. The density "
-            "anomaly is a network effect and a small box under-represents "
-            "the network:</p>"
-            "<table><thead><tr><th>T</th><th>64 molecules</th>"
-            "<th>216 molecules</th><th>shift</th></tr></thead><tbody>"
+            "<h2>The box, measured rather than declared</h2>"
+            "<p>The density anomaly is a network effect, so a box too "
+            "small to hold the network gets it wrong. Three sizes, at the "
+            "three temperatures all of them ran:</p>"
+            "<table><thead><tr><th>T</th><th>64</th><th>216</th>"
+            "<th>512</th><th>64&#8594;216</th><th>216&#8594;512</th>"
+            "</tr></thead><tbody>"
             + "".join(
-                f"<tr><td>{T:.0f} K</td><td>{small[T].value:.5f} "
-                f"&#177;{small[T].err:.5f}</td><td>{dens[T].value:.5f} "
-                f"&#177;{dens[T].err:.5f}</td>"
-                f"<td>{dens[T].value - small[T].value:+.5f}</td></tr>"
+                f"<tr><td>{T:.0f} K</td>"
+                f"<td>{small[T].value:.5f} &#177;{small[T].err:.5f}</td>"
+                f"<td>{mid[T].value:.5f} &#177;{mid[T].err:.5f}</td>"
+                f"<td>{dens[T].value:.5f} &#177;{dens[T].err:.5f}</td>"
+                f"<td>{mid[T].value - small[T].value:+.5f}</td>"
+                f"<td>{dens[T].value - mid[T].value:+.5f}</td></tr>"
                 for T in (250.0, 270.0, 290.0))
             + "</tbody></table>"
-            f"<p>The anomaly &#961;(250)&#8722;&#961;(290) grows from "
-            f"{small[250.0].value - small[290.0].value:.5f} at 64 molecules "
-            f"to {dens[250.0].value - dens[290.0].value:.5f} at 216. What "
-            f"is certified here is a box. The ladder to the thermodynamic "
-            f"limit is not run, and it is out of reach rather than merely "
-            f"undone: <code>continuum_limit</code> wants the gap between "
-            f"rungs to exceed ten times the widest bracket, and measured "
-            f"here that ratio is about one, so closing it needs roughly a "
-            f"hundred times the sampling.</p>",
+            "<p>Sixty-four molecules are wrong and two hundred and sixteen "
+            "are not. Every 216 value agrees with its 512 value inside the "
+            "error bars, at all three temperatures, while the step up from "
+            "64 is several times larger. So the finite-size term is now "
+            "bounded by measurement rather than merely declared, at about "
+            f"{max(abs(dens[T].value - mid[T].value) for T in (250.0, 270.0, 290.0)):.1e} "
+            "in density.</p>"
+            "<p>The thermodynamic limit itself is still not certified, and "
+            "the refusal is worth reading. <code>continuum_limit</code> "
+            "wants the closest gap between rungs to exceed ten times the "
+            "widest bracket, and here the ratios are 0.08, 0.09 and 0.17. "
+            "But that is not because the ladder is noisy. It is because "
+            "the closest gap is the one from 216 to 512, and that gap has "
+            "nearly closed. The extrapolation is refused for want of "
+            "anything left to extrapolate, which is the happier of the two "
+            "reasons it could fail.</p>",
 
             code_section(sf.water_tmd_bracket, sf.configurational_temperature),
 
@@ -4450,10 +4472,11 @@ density of mW water against temperature, with the bracketed maximum">
             "ensemble is not ergodicity.</p>",
         ],
         slug="water-tmd",
-        recorded=("eight constant-pressure mW trajectories recorded on 8 "
-                  "and 9 August 2026 across two annealed chains, 8 ns at "
-                  "230 K and 2 to 4 ns elsewhere, about eleven hours of "
-                  "single-core time, stored at float32 in "
+        recorded=("fifteen constant-pressure mW trajectories recorded on 8 "
+                  "and 9 August 2026 across three annealed chains, 4.5 ns at "
+                  "230 K and 2 to 5 ns elsewhere, about twenty-two hours "
+                  "of single-core time across 64, 216 and 512 molecules, "
+                  "stored at float32 in "
                   "<code>data/water_tmd_mw.npz</code>. Storing them at "
                   "float32 rather than float64 halves the file and leaves "
                   "every certificate on this page unchanged to every digit "
