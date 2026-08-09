@@ -4267,56 +4267,58 @@ DATA = os.path.join(ROOT, "data", "water_tmd_mw.npz")
 def water_case():
     """The one page whose engine run is recorded rather than regenerated.
 
-    Everything downstream of the trajectories IS regenerated: the
-    autocorrelation analysis, every certified density, the bracket, and
-    the Bonferroni comparison all run here at build time against the
-    recorded series. Break timeseries_mean or argmax_bracket and this
-    page changes or fails, which is the property that matters.
+    Everything downstream of the trajectories IS regenerated, and now
+    that includes the front door itself. The page calls
+    water_tmd_bracket, which calls ensemble_check, which gates every rung
+    on its thermostat before any density is believed. The first version
+    of this page rendered that function as its program while quietly
+    computing the answer a shorter way, and the function would in fact
+    have raised on the page's own data.
     """
+    from functools import partial
     z = np.load(DATA)
-    temps = (230.0, 250.0, 270.0, 290.0)
+    temps = [230.0, 250.0, 270.0, 290.0]
 
-    def certs(prefix, alpha):
-        return [(T, sf.timeseries_mean(z[f"{prefix}_d{T:.0f}"], alpha=alpha))
-                for T in temps if f"{prefix}_d{T:.0f}" in z]
+    def probe(T):
+        k = f"{T:.0f}"
+        return partial(sf.configurational_temperature,
+                       z[f"n216_grad2{k}"].astype(float),
+                       z[f"n216_lap{k}"].astype(float))
 
-    big = certs("n216", 0.05)
-    brk = sf.argmax_bracket(big)
+    def engine(T):
+        return {"density": z[f"n216_d{T:.0f}"].astype(float),
+                "temperature": probe(T)}
+
+    brk = sf.water_tmd_bracket(temps, engine)
     lo, hi = brk.value - brk.err, brk.value + brk.err
-
-    tight = certs("n216", 0.05 / len(big))
-    btight = sf.argmax_bracket(tight)
+    btight = sf.water_tmd_bracket(temps, engine, alpha=0.05 / len(temps))
     tlo, thi = btight.value - btight.err, btight.value + btight.err
 
-    d = dict(big)
-    gap_lo = ((d[250.0].value - d[250.0].err)
-              - (d[230.0].value + d[230.0].err))
-    dt = dict(tight)
-    tgap_lo = ((dt[250.0].value - dt[250.0].err)
-               - (dt[230.0].value + dt[230.0].err))
-    tgap_hi = ((dt[250.0].value - dt[250.0].err)
-               - (dt[270.0].value + dt[270.0].err))
-
-    small = certs("n64", 0.05)
-    ds = dict(small)
+    dens = {T: sf.timeseries_mean(z[f"n216_d{T:.0f}"].astype(float))
+            for T in temps}
+    tcon = {T: sf.configurational_temperature(
+        z[f"n216_grad2{T:.0f}"].astype(float),
+        z[f"n216_lap{T:.0f}"].astype(float)) for T in temps}
+    small = {T: sf.timeseries_mean(z[f"n64_d{T:.0f}"].astype(float))
+             for T in (250.0, 270.0, 290.0)}
 
     rows = "".join(
-        f"<tr><td>{T:.0f} K</td><td>{c.value:.5f}</td>"
-        f"<td>&#177;{c.err:.5f}</td>"
+        f"<tr><td>{T:.0f} K</td><td>{dens[T].value:.5f}</td>"
+        f"<td>&#177;{dens[T].err:.5f}</td>"
         f"<td>{len(z[f'n216_d{T:.0f}']):,}</td>"
-        f"<td>{c.provenance[0].split('tau=')[1].split()[0]}</td></tr>"
-        for T, c in big)
+        f"<td>{tcon[T].value:.2f} &#177; {tcon[T].err:.2f}</td></tr>"
+        for T in temps)
 
-    ys = [c.value for _, c in big]
-    es = [c.err for _, c in big]
+    ys = [dens[T].value for T in temps]
+    es = [dens[T].err for T in temps]
     ax = Axes((222.0, 298.0), (min(ys) - 3 * max(es), max(ys) + 3 * max(es)),
               h=340)
     bars = "".join(
-        f'<line x1="{ax.X(T):.1f}" y1="{ax.Y(c.value - c.err):.1f}" '
-        f'x2="{ax.X(T):.1f}" y2="{ax.Y(c.value + c.err):.1f}" '
+        f'<line x1="{ax.X(T):.1f}" y1="{ax.Y(dens[T].value - dens[T].err):.1f}" '
+        f'x2="{ax.X(T):.1f}" y2="{ax.Y(dens[T].value + dens[T].err):.1f}" '
         f'class="blue-ink" stroke-width="2.4"/>'
-        f'<circle cx="{ax.X(T):.1f}" cy="{ax.Y(c.value):.1f}" r="4" '
-        f'class="blue-fill"/>' for T, c in big)
+        f'<circle cx="{ax.X(T):.1f}" cy="{ax.Y(dens[T].value):.1f}" r="4" '
+        f'class="blue-fill"/>' for T in temps)
     band = (f'<rect x="{ax.X(lo):.1f}" y="{ax.mt}" '
             f'width="{ax.X(hi) - ax.X(lo):.1f}" '
             f'height="{340 - ax.mt - ax.mb}" fill="var(--rust)" '
@@ -4356,20 +4358,37 @@ density of mW water against temperature, with the bracketed maximum">
             "rather than a dependency.</p>",
 
             "<h2>The certified ladder</h2>"
-            "<p>Each row is a density from an 8 or 2 nanosecond "
-            "constant-pressure trajectory, bounded by "
-            "<code>timeseries_mean</code>, which pays for correlation "
-            "rather than assuming it away. The last column is the "
-            "estimated autocorrelation time in samples: the honest count "
-            "is not how many samples there are but how many independent "
-            "ones they are worth.</p>"
+            "<p>Each row is a density from a constant-pressure trajectory, "
+            "bounded by <code>timeseries_mean</code>, which pays for "
+            "correlation rather than assuming it away. The last column is "
+            "the temperature each rung was gated on, and it is not the "
+            "obvious one.</p>"
             "<table><thead><tr><th>T</th><th>density</th><th>half-width</th>"
-            f"<th>samples</th><th>&#964;</th></tr></thead>"
+            f"<th>samples</th><th>T<sub>conf</sub></th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
             f"<figure>{svg}<figcaption>Certified densities with the "
             f"bracketed maximum shaded. The bracket runs "
-            f"[{lo:.0f}, {hi:.0f}] K and the published value sits at its "
-            f"centre.</figcaption></figure>",
+            f"[{lo:.0f}, {hi:.0f}] K and contains the published "
+            f"value.</figcaption></figure>",
+
+            "<h2>The thermometer had to be replaced</h2>"
+            "<p>A BAOAB integrator samples configurations accurately and "
+            "velocities less so, so its <em>kinetic</em> temperature "
+            "carries an error of order the timestep squared. Measured on "
+            "these four rungs it runs 0.75 to 1.27 K cold, and "
+            "<code>ensemble_check</code> refuses every one of them.</p>"
+            "<p>It is right to. The trajectory really does miss its "
+            "setpoint on that measure. But the density does not care: at "
+            "290 K it is 0.99538 at a 5 fs step against 0.99540 at 2 fs, a "
+            "shift of 3e-5 against a combined half-width of 3.8e-3. The "
+            "probe was wrong, not the run.</p>"
+            "<p>So the column above is Rugh's configurational temperature, "
+            "<code>&lt;|&#8711;U|&#178;&gt; / &lt;&#8711;&#178;U&gt;</code>, "
+            "which has no velocity in it and sits within 0.5 K of every "
+            "setpoint. The perverse part, and the reason this went "
+            "unnoticed at first: a systematic bias is caught only once the "
+            "error bar is small enough to see it, so <em>more</em> sampling "
+            "makes a good run <em>more</em> likely to be refused.</p>",
 
             "<h2>The bracket</h2>"
             "<p>Under a declared unimodality, a pair of disjoint intervals "
@@ -4378,23 +4397,18 @@ density of mW water against temperature, with the bracketed maximum">
             "error bars establish nothing and buy no bracket.</p>"
             f"<p class='result'>{esc(str(brk))}</p>"
             f"<p>That is <strong>{brk.value:.0f} &#177; {brk.err:.0f} K</strong> "
-            f"against a published 250 K.</p>",
-
-            "<h2>The half that does not survive</h2>"
-            "<p>The failure probability above is a union bound over four "
-            "rungs at 0.05 each, and reading the alpha instead of the "
-            "fail_p would overstate it fourfold. Asking for an honest "
-            "family-wise 5%, meaning 0.05/4 per rung, is the same data "
-            "with wider intervals:</p>"
-            f"<p class='result'>{esc(str(btight))}</p>"
-            f"<p>It survives, and only just. The ordering carrying the "
-            f"lower bound clears by {gap_lo:.2e} in density at 0.05 per "
-            f"rung and {tgap_lo:.2e} after the correction, which is "
-            f"comfortable. The upper bound clears by {tgap_hi:.1e}, which "
-            f"is about one part in a hundred thousand. Losing it would "
-            f"widen the answer to 260 &#177; 30 K, which still contains "
-            f"250. Reporting the bracket without reporting that margin "
-            f"would be reporting the half that worked.</p>",
+            f"against a published 250 K. Asked for an honest family-wise "
+            f"5%, meaning 0.05/{len(temps)} per rung rather than a union "
+            f"bound, the same data gives "
+            f"<strong>[{tlo:.0f}, {thi:.0f}] K</strong>.</p>"
+            "<p>An earlier version of this page reported a tighter answer, "
+            "250 &#177; 20 K, on a different trajectory of the same model. "
+            "Its upper bound rested on one ordering that cleared by 8.2e-6 "
+            "in density, about one part in a hundred thousand, and this "
+            "chain does not reproduce it: the same two rungs now overlap. "
+            "Every rung agrees with the old one inside its error bar. The "
+            "narrow bracket was real and it was not robust, which is what "
+            "a margin that small should be expected to mean.</p>",
 
             "<h2>The box is not the model</h2>"
             "<p>Sixty-four molecules are cheaper and wrong. The density "
@@ -4403,21 +4417,23 @@ density of mW water against temperature, with the bracketed maximum">
             "<table><thead><tr><th>T</th><th>64 molecules</th>"
             "<th>216 molecules</th><th>shift</th></tr></thead><tbody>"
             + "".join(
-                f"<tr><td>{T:.0f} K</td><td>{ds[T].value:.5f} "
-                f"&#177;{ds[T].err:.5f}</td><td>{d[T].value:.5f} "
-                f"&#177;{d[T].err:.5f}</td>"
-                f"<td>{d[T].value - ds[T].value:+.5f}</td></tr>"
+                f"<tr><td>{T:.0f} K</td><td>{small[T].value:.5f} "
+                f"&#177;{small[T].err:.5f}</td><td>{dens[T].value:.5f} "
+                f"&#177;{dens[T].err:.5f}</td>"
+                f"<td>{dens[T].value - small[T].value:+.5f}</td></tr>"
                 for T in (250.0, 270.0, 290.0))
             + "</tbody></table>"
-            f"<p>The shift is not a constant offset, so it moves the peak "
-            f"and not merely the density. The anomaly "
-            f"&#961;(250)&#8722;&#961;(290) grows from "
-            f"{ds[250.0].value - ds[290.0].value:.5f} at 64 molecules to "
-            f"{d[250.0].value - d[290.0].value:.5f} at 216, a third "
-            f"stronger. What is certified here is a box, and the ladder to "
-            f"the thermodynamic limit is not run.</p>",
+            f"<p>The anomaly &#961;(250)&#8722;&#961;(290) grows from "
+            f"{small[250.0].value - small[290.0].value:.5f} at 64 molecules "
+            f"to {dens[250.0].value - dens[290.0].value:.5f} at 216. What "
+            f"is certified here is a box. The ladder to the thermodynamic "
+            f"limit is not run, and it is out of reach rather than merely "
+            f"undone: <code>continuum_limit</code> wants the gap between "
+            f"rungs to exceed ten times the widest bracket, and measured "
+            f"here that ratio is about one, so closing it needs roughly a "
+            f"hundred times the sampling.</p>",
 
-            code_section(sf.water_tmd_bracket, sf.argmax_bracket),
+            code_section(sf.water_tmd_bracket, sf.configurational_temperature),
 
             "<h2>What none of this certifies</h2>"
             "<p>Whether mW is water. It is a single site with no charge "
@@ -4427,20 +4443,21 @@ density of mW water against temperature, with the bracketed maximum">
             "about the model, and the model is declared rather than "
             "certified. That is the error which dominates this whole "
             "problem, and no amount of sampling reaches it.</p>"
-            "<p>Nor does anything here check the integrator. An engine is "
-            "untrusted the way every engine here is untrusted, and what "
-            "<code>ensemble_check</code> can ask is whether the trajectory "
-            "is consistent with the ensemble it claimed. Run long enough "
-            "to bound its own series, a superheated crystal passes every "
-            "one of those tests: it is a perfectly stationary sample of "
-            "the wrong phase. Consistency with a declared ensemble is not "
-            "ergodicity.</p>",
+            "<p>Nor does anything here check the integrator. Run long "
+            "enough to bound its own series, a superheated crystal passes "
+            "every ensemble test there is: it is a perfectly stationary "
+            "sample of the wrong phase. Consistency with a declared "
+            "ensemble is not ergodicity.</p>",
         ],
         slug="water-tmd",
-        recorded=("seven constant-pressure mW trajectories recorded on "
-                  "6 August 2026, 8 ns at 230 K and 2 ns elsewhere, "
-                  "about eleven hours of single-core time in total, "
-                  "stored in <code>data/water_tmd_mw.npz</code>."))
+        recorded=("eight constant-pressure mW trajectories recorded on 8 "
+                  "and 9 August 2026 across two annealed chains, 8 ns at "
+                  "230 K and 2 to 4 ns elsewhere, about eleven hours of "
+                  "single-core time, stored at float32 in "
+                  "<code>data/water_tmd_mw.npz</code>. Storing them at "
+                  "float32 rather than float64 halves the file and leaves "
+                  "every certificate on this page unchanged to every digit "
+                  "shown, which was checked rather than assumed."))
 
 
 CASES = {
