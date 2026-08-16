@@ -4,10 +4,21 @@
 error you can tolerate. The system searches for the compression, the algorithm,
 and the certificate.
 
-> **Status:** design phase. This document is the founding vision, and it is an
-> invitation to argue with it. The name comes from the Latin *sufficere*, "it
-> suffices", and it is a working title. The central object of the project is the
-> *minimal sufficient statistic of a physical question*.
+> **Status:** this is the founding vision, written before the code, and kept
+> as written apart from this box. It is still an invitation to argue. As of
+> August 2026 the argument has a body of evidence: a working rewrite library
+> and test suite exist ([README](README.md)); all nine target domains have
+> certified entry rewrites, plus two more entered from the further-afield
+> list; the three tiers all ship; and the first compiler slice runs, a
+> planner choosing rewrites by declared cost with certificates as referee,
+> behind a combinator that four composed plans go through. The roadmap below
+> is annotated with what shipped. Still open, in this document's own terms:
+> every rewrite is built and proved by hand, so the search finds the plan
+> and never the proof; there is no machine-checked kernel for the core
+> inequalities; and no group unaffiliated with the project has used it. The
+> name comes from the Latin *sufficere*, "it suffices", and it is a working
+> title. The central object of the project is the *minimal sufficient
+> statistic of a physical question*.
 
 ## The problem
 
@@ -135,11 +146,23 @@ randomized rank probes with failure probabilities, standard analytic bounds.
 Deliverable: toy pipelines where end-to-end bounds survive nontrivial rewrite
 chains.
 
+*Shipped, in working form rather than formal form: the error algebra is the
+`Certified` type and `compose()` in one Python file. Errors add, tiers take
+the minimum, failure probabilities union-bound, and four composed plans run
+through it. It is not yet an IR a prover can consume.*
+
 **Phase 1. N-body with arbitrary kernels.** The compiler must rediscover FMM
 given only a black-box smooth kernel, then handle oscillatory
 (Helmholtz-class) kernels via directional and butterfly rewrites. This is a
 pure sanity check. The answers are known, the bounds are classical, and failure
 is unambiguous.
+
+*Shipped as certified rewrites: N-body at 64× fewer operations within a
+pointwise ε, and black-box H-matrix and butterfly compression whose bounds
+hold for every future input with stated failure odds. The rank structure is
+discovered numerically from the black box. What remains of the sanity check
+as stated is mechanical assembly, the compiler composing those pieces
+unprompted.*
 
 **Phase 2. Gibbs-state observables.** Automated high-temperature cluster
 expansions for local observables of lattice Hamiltonians. Convergence radii
@@ -147,10 +170,19 @@ yield rigorous, temperature-dependent certificates, and the recent
 polynomial-time Gibbs-sampling results mark out the tractable region in
 advance.
 
+*Shipped: the 2D Ising entry certifies the free energy and correlations
+inside the proven convergence radius, carries the floating point in
+intervals, and refuses outside the radius.*
+
 **Phase 3. Smeared spectral functions.** Resolution enters the query type
 itself, in the Hansen-Lupo-Tantalo mold. Euclidean correlator data goes in, and
 certified smeared spectral answers come out. This is first contact with real
 lattice-QCD workflows and real error budgets.
+
+*Shipped: the HLT entry makes the resolution part of the query, splits one
+tolerance between the smearing bill and the statistics, and a three-stage
+composed plan reprices its model stage midstream. Contact with a real
+lattice-QCD workflow has not happened yet.*
 
 **Phase 4. Coarse-grained dynamics.** ML-assisted discovery of Mori-Zwanzig
 closures, meaning automatic identification of slow variables plus certified or
@@ -158,6 +190,10 @@ honestly statistical memory-kernel truncations. This is the hardest tier.
 Nonlinear, time-dependent error bounds are brutal, and the type system exists
 precisely so this phase can ship empirical certificates without pretending
 otherwise.
+
+*Entered, at exactly the tier this paragraph predicted: a certified linear
+tier where the gap permits it, and a conformal empirical tier with
+fail_p = 1/(n+1) where the dynamics outrun the proofs.*
 
 ## Non-goals
 
@@ -202,6 +238,25 @@ error bounds actually depend on, proof-assistant engineers interested in
 analysis rather than algebra, and skeptics who enjoy breaking certificates. The
 first useful contribution is an attack. Find a rewrite whose claimed bound
 fails to compose, and file it as an issue with a counterexample.
+
+The attack surfaces, named: `compose()`'s three rules (errors add, tiers
+take the minimum, failure probabilities union-bound; break one and
+everything downstream is wrong), the `Sensitivity` algebra (add and sub
+compose, mul drops the claim; find a composed plan that smuggles an
+amplification through), and the planner's cost models, which are measured
+rather than proven and whose failure can only buy a worse plan, never a
+wrong bound. Show a wrong bound and that is the finding of the year.
+
+The second useful contribution is a rewrite. Bring three things. An
+inequality relating a cheap computation to the declared model's exact
+answer, at whichever tier you can honestly claim. Hypotheses a program can
+check at run time, because a certificate that assumes what it cannot check
+is a hope. A cost estimate, so the planner can price the rewrite against
+its siblings. In return the bound composes like a gradient, the planner
+escalates to it, and the archetype it joins carries it to sibling fields.
+That transfer is measured rather than hoped for: the reactor's M-matrix
+witness now prices the semiconductor junction's Kantorovich constant, on
+physics it never saw.
 
 *The fast multipole method was the existence proof that the map from model to
 answer is compressible. This project is the induction step.*
