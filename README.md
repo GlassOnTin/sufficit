@@ -140,7 +140,7 @@ every push; the narrative and the failure modes live there.
 | [2D Ising at high temperature](https://glassontin.github.io/sufficit/ising-cluster.html) | free energy and correlations, floating point carried in intervals | refuses outside the proven convergence region |
 | Helmholtz scattering | solver depth chosen from the requested ε | per-angle certified; refuses strong scattering |
 | [H₂ from scratch (McMurchie-Davidson, s+p)](https://glassontin.github.io/sufficit/h2-bracket.html) | −1.137275944 ± 1.5·10⁻¹³ Ha | two-sided bracket over all particle sectors |
-| [Hydrogen chains up to 2²⁰ states](https://glassontin.github.io/sufficit/hchain-ladder.html) | 55 mHa/atom bracket at ℓ=7 | rigorous on both sides; no exact answer exists, and none is needed |
+| [Hydrogen chains up to 2²⁰ states](https://glassontin.github.io/sufficit/hchain-ladder.html) | 43 mHa/atom bracket at ℓ=7 | rigorous on both sides; no exact answer exists, and none is needed |
 | [Smeared spectral functions (HLT)](https://glassontin.github.io/sufficit/smeared-spectral.html) | resolution is part of the query | error bounded by the data; degrades to statistics when the data are noisy |
 | [Mori-Zwanzig closures](https://glassontin.github.io/sufficit/mz-closure.html) | certified linear tier and conformal empirical tier | gap-dependent bound, or distribution-free fail_p = 1/(n+1) |
 | [TFI quench on a 10⁶-site chain](https://glassontin.github.io/sufficit/lr-dispatch.html) | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | the boundary commutator is measured inside the cone; refuses when the light cone outruns the budget |

@@ -551,8 +551,9 @@ certified width, mHa per atom (log scale)</text></svg>'''
             "checked against exact diagonalization in this run. Rust: "
             "H₁₀, a 2²⁰-dimensional problem with no exact answer to "
             "compare against; none is needed. A separate recorded run "
-            "extends H₁₀ to ℓ=7 at 55 mHa/atom using particle-number "
-            "sectors; it is left out here to keep the page quick to "
+            "extends H₁₀ to ℓ=7 at 43 mHa/atom using particle-number "
+            "sectors (31 minutes on a quiet 32-core box); it is left "
+            "out here to keep the page quick to "
             "regenerate.</figcaption></figure>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>H₆ containment against exact: <strong>{sum(checks)}/"
