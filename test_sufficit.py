@@ -1649,8 +1649,19 @@ def test_fp32_certification_prep():
     assert cb.value - cb.err <= t6 <= cb.value + cb.err
     c64 = sf.h_chain_bracket(6, 1.8, ell=4)
     assert cb.err < c64.err + 0.01           # inflated by pads only
-    with pytest.raises(ImportError):         # no cupy on this box
-        sf.use_gpu(True)
+    try:
+        import cupy                          # noqa: F401
+    except ImportError:                      # no cupy on this box:
+        with pytest.raises(ImportError):     # enabling must refuse
+            sf.use_gpu(True)
+        return
+    sf.use_gpu(True)                         # cupy present: the same
+    try:                                     # claim, proved on the device
+        cg = sf.eigen_bracket(H, fp32=True)
+        assert cg.value - cg.err <= truth <= cg.value + cg.err
+        assert abs(cg.value - c.value) < 1e-4
+    finally:
+        sf.use_gpu(False)
 
 
 def test_h_chain_ell5_hierarchy_knob():
