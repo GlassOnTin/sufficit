@@ -1167,7 +1167,13 @@ certificates on functionals. The level must be fixed per rung, because
 Richardson over freely adapting meshes is not a ladder. First artifact: the
 sea-wall triage rerun with the Saint-Venant solver in place of the toy WCSPH.
 Second-order ladders should tighten the impulse certificate by an order of
-magnitude, and may flip the low-berm refusal to a certificate. The cost is a C
+magnitude, and may flip the low-berm refusal to a certificate. Measured,
+August 2026: within the toy WCSPH the flip does not come from resolution
+alone. A recorded ladder at nres = 64, 96, 144, 192, the crest jet about
+fourteen particles thick, still shows no asymptotic range for the low-berm
+impulse, and its differences change sign between 144 and 192
+(data/sph_funnel.json). If the refusal flips, it flips on the model, which
+is this bridge's argument. The cost is a C
 toolchain (qcc), so recorded-run pages rather than CI regeneration, at least at
 first.
 
