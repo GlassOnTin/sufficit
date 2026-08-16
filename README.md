@@ -2,10 +2,15 @@
 
 A query compiler for physics. Declare the model, the question, and the
 error you can tolerate. Get back a cheap computation and a proof of how
-wrong it could be.
+far it can sit from the model's exact answer.
 
-Every answer carries a value, an error bound, a tier, and the provenance
-of the bound. The bound is the product.
+Every error must live in one of two places. Error from computing (a
+mesh, a truncation window, a finite sample, a float) goes in the
+certificate: bounded, tiered, with provenance. Error from modelling (a
+2D tank standing in for a 3D sea, a box of 216 molecules, a basis set)
+goes in the declaration: named, never bounded. Nothing floats between,
+so after a run the only thing left to doubt is the model, and the model
+is written down.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
@@ -30,18 +35,32 @@ portable part is the untrusted proposer and the cheap checker, not the
 certificates. Learning splits into three kinds with very different risk.
 This project is an existence proof for only one of them.
 
-## Two answers with receipts
+## Ask a question, get a receipt
 
 ```python
 import sufficit as sf
 
-# H2 molecule, from raw Gaussian integrals to a two-sided energy bracket
-c = sf.h2_energy_bracket(1.4)          # bond length in bohr
-print(c.value, c.err)                  # -1.137275944 +/- 1.5e-13 hartree
+# Declare the question and the tolerance. The planner picks the algorithm.
+c = sf.h_chain_energy_dispatch(6, tol=0.08)   # H6 ground energy, STO-3G,
+c.value, c.err, c.tier.name                   #   tol is half-width/atom
+# (-3.3524, 0.2659, 'RIGOROUS')
+c.provenance[0]
+# 'h-chain marginal-lower ell=4 n=6 d=1.8 iters=60 block-product-upper ...'
 
-# A Heisenberg chain with 4^2000 quantum states, bracketed in ~1 second,
-# because window cost does not depend on chain length
-h = sf.heisenberg_chain_bracket(2000)  # per-bond: [-0.4572, -0.4221]
+# Too tight a tolerance is refused, and the refusal is a receipt: every
+# rung it ran, predicted against measured cost, and the price of the
+# cheapest thing it did not try.
+sf.h_chain_energy_dispatch(6, tol=1e-6)
+# Refusal: hchain-energy: no rung within budget certifies tol=6e-06 at
+# n=6; measured (knob, err, cost): (2, 2.32, 0.21s), (3, 0.715, 0.26s),
+# (D, 1.24, 0.13s), (5, 0.105, 1.2s), (DQ, 0.093, 2.1s), (DQG, 0.0499,
+# 10s); the next window ell=6 costs 4^6 = 4096 and is past the declared
+# ladder (ell_max=5)
+
+# Scale is a knob, not a wall: a Heisenberg chain with 4^2000 quantum
+# states, bracketed in three seconds, because window cost does not
+# depend on chain length. Per bond: [-0.4566, -0.4221], RIGOROUS.
+h = sf.heisenberg_chain_bracket(2000)
 ```
 
 There is no package yet. The library is the single file
@@ -53,32 +72,92 @@ output on our side. Run the suite with
 noticeably longer on a busy one, measured between five and ten. The SPH
 ladders and the planner's receipt test are the long poles.
 
+## What comes back
+
+One certificate type serves every domain. A `Certified` carries:
+
+- `value`: the answer, float or array.
+- `err`: a bound on the distance from `value` to the declared model's
+  exact answer.
+- `tier`: `RIGOROUS` (the bound is proven), `ASYMPTOTIC` (the exponent
+  is proven, the constant is measured), or `EMPIRICAL` (statistical,
+  with the failure probability carried in `fail_p`).
+- `provenance`: which rewrites produced the bound, with their knobs.
+- `sensitivity`: when the rewrite can certify one, a Lipschitz bound on
+  how hard the output leans on a named input, so a composed plan can
+  price the input error it feeds in. `None` means no claim, never no
+  amplification.
+
+Bounds compose the way gradients do in autodiff: errors add, tiers take
+the minimum, failure probabilities union-bound. When no rung within
+budget certifies the tolerance, the front door raises a `Refusal` that
+records every rung it ran, predicted cost beside measured cost, and the
+price of the cheapest thing it did not try. The bound is the product.
+
+## Will it take your problem?
+
+The eleven domains below are demonstrations. The capability is seven
+certificate archetypes, and the question is which structure your
+problem exposes:
+
+1. **Small-parameter expansions.** A proven exponent in a stated limit;
+   the constant is measured on a cheap ladder (guiding-center drift,
+   EFT-like hierarchies). ASYMPTOTIC tier.
+2. **Variational sandwiches.** A minimum principle gives one side and a
+   trial state the other (energy brackets, SOS transport bounds).
+   RIGOROUS.
+3. **Resolution-limited queries.** The instrument's finite resolution
+   is part of the question, so the bound follows the data (smeared
+   spectral functions, GW mismatch).
+4. **Projection with memory.** Slow variables plus a closure that is
+   certified where linear and honestly statistical where not
+   (Mori-Zwanzig). EMPIRICAL, `fail_p` printed.
+5. **Cone-preserving brackets.** The operator preserves a cone, so
+   positivity brackets an eigenvalue the variational theorem cannot
+   reach (reactor criticality, S_N transport). RIGOROUS.
+6. **Existence certificates.** Newton-Kantorovich proves a solution of
+   the nonlinear system exists near the iterate, before anything is
+   said about accuracy (pn junctions, peaked tokamak profiles).
+   RIGOROUS.
+7. **Spectral enclosures.** A region containing every eigenvalue, from
+   the coefficients alone, for operators with neither symmetry nor a
+   cone. RIGOROUS, and loose.
+
+If your problem exposes none of these, there is no certificate here for
+it yet. [TARGETS.md](TARGETS.md) records the entries and the measured
+dead ends alike; combustion's ignition delay is refused there with the
+amplification factor that refuses it.
+
 ## Measured results
+
+Each linked row has a case page that regenerates from a fresh run on
+every push; the narrative and the failure modes live there.
 
 | Problem | Result | Guarantee |
 |---|---|---|
 | N-body sums, 50k bodies | 64× fewer operations | pointwise within the requested ε |
-| Black-box kernels (H-matrix + butterfly) | amortized applies, per-block competition | holds for every future input; failure odds 10⁻¹⁰, stated |
-| 2D Ising at high temperature | free energy and correlations, floating point carried in intervals | refuses outside the proven convergence region |
+| [Black-box kernels (H-matrix + butterfly)](https://glassontin.github.io/sufficit/butterfly-crossover.html) | amortized applies, per-block competition | holds for every future input; failure odds 10⁻¹⁰, stated |
+| [2D Ising at high temperature](https://glassontin.github.io/sufficit/ising-cluster.html) | free energy and correlations, floating point carried in intervals | refuses outside the proven convergence region |
 | Helmholtz scattering | solver depth chosen from the requested ε | per-angle certified; refuses strong scattering |
-| H₂ from scratch (McMurchie-Davidson, s+p) | −1.137275944 ± 1.5·10⁻¹³ Ha | two-sided bracket over all particle sectors |
-| Hydrogen chains up to 2²⁰ states | 55 mHa/atom bracket at ℓ=7 | rigorous on both sides; no exact answer exists, and none is needed |
-| Smeared spectral functions (HLT) | resolution is part of the query | error bounded by the data; degrades to statistics when the data are noisy |
-| Mori-Zwanzig closures | certified linear tier and conformal empirical tier | gap-dependent bound, or distribution-free fail_p = 1/(n+1) |
-| TFI quench on a 10⁶-site chain | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | the boundary commutator is measured inside the cone; refuses when the light cone outruns the budget |
-| Guiding-center drift (plasma hierarchy) | the first ASYMPTOTIC-tier certificate | exponent proven, constant measured on a cheap large-ε ladder; refuses when the data contradict the exponent |
-| Lorenz ⟨z⟩ (SOS transport bound) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
-| Breaking wave on a sea wall (SPH) | delivered impulse certified, raw peak refused for want of an asymptotic range, and a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
-| Tokamak equilibrium (Grad-Shafranov via FEniCSx) | guaranteed energy-norm bound within 1.6× of the true error; implicit coupling certified by a contraction factor | Prager-Synge with rectangle-exact constants, so the bound is guaranteed rather than estimated. Refuses past the contraction limit |
-| The same equilibrium with a real pressure profile | certified where the contraction refuses, at a contraction factor of 33 against a limit of 1 | A peaked profile is nonlinear in ψ, and its derivative adds a positive mass matrix to the Jacobian. That closes both the contraction and the cone route to ‖J⁻¹‖, at every coupling. Kantorovich certifies anyway. It reaches the discrete equilibrium rather than the continuum solution, and prints the mesh gap beside it |
-| The continuum answer, in three domains | k_eff, junction charge and tokamak flux each lifted off their meshes by one shared step | Each rung is rigorous about a discretised model and silent about the mesh. The distance to h→0 is measured off the ladder, so the pair takes the weaker tier and is never RIGOROUS. Checked against closed forms for the reactor and the tokamak, and out of sample for the junction, whose bracket from ≤400 cells contains runs at 800 and 1600 |
-| Gravitational-wave surrogates | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
-| Reactor criticality (k_eff) | 1 pcm in 20 fission-source iterations, bracket floor ~10⁻⁶ pcm; a mesh ladder then certifies the continuum answer to 0.57 pcm | Perron-Frobenius rather than the variational theorem. The operator is not self-adjoint, so positivity brackets it instead. Four hypotheses machine-checked, and the continuum half degrades to EMPIRICAL and says so |
-| The same bracket on S_N transport | runs unaltered on a different equation, with no new proof and no new code | The certificate needs the operator to preserve a cone, not to be symmetric, and upwind differencing supplies that. Having both models measures the diffusion approximation itself: −9200 pcm at 5 mean free paths, −41 at 20 |
-| pn junction (drift-diffusion Poisson) | a proof that an exact solution exists within a stated radius, not just that the residual is small | Newton-Kantorovich, with ‖J⁻¹‖ priced by the reactor's M-matrix witness on completely different physics. The last refusing rung has residual 10⁻³. One step later, at 5·10⁻⁶, the certificate closes, and only to half a per cent |
-| The 2-RDM lower bound (chemistry) | 2.25 mHa below FCI at H₄ and 7.57 mHa at H₆; H₁₄ certified in 497 s, at 2²⁸ Fock states, where the matrix cannot be formed. Its knob is which conditions it imposes: D, DQ, DQG runs 98 to 8.0 mHa per atom at H₄, and the DQG width per atom barely moves with chain length, 8.0 at H₄ to 8.9 at H₁₂, against a window ladder that goes 44.8 to 78.1 over the same range | The 2-positivity relaxation contains every N-representable 2-RDM, so its minimum lies below the true one, and dropping a condition only enlarges that set. SCS proposes the multipliers and nothing trusts them: any PSD pair certifies, and a deliberately random pair still bounds, at −2550 against an exact −2.175. Positivity is issued by the library's own eigenvalue bracket, so the certificate itself costs 0.01 s. Spin projection blocks every matrix by S_z without moving the bound, and that is what makes H₁₀ and beyond reachable at all. The upper half is a self-consistent determinant, which is the binding side: 62 mHa above exact at H₄ against 261 for a core guess and 147 for the window ladder's trial state. Scope is the N-electron sector |
-| A molecular front door, on a real basis | McMurchie-Davidson integrals take any angular momentum, so a σ-polarised H₆ is 12 orbitals: a 16,777,216-state Fock space and a 134,596-wide sector, past forming. The exact rewrite is not offered there and `rdm2@DQ` certifies in 54 s. With published STO-3G for H, C, N and O, water is 7 orbitals and 10 electrons, and DQG lands 2.3 mHa below its own full CI | Two rewrites on one query, the N-electron ground energy. The dense one cuts the sector out of the Fock operator and is exact; the relaxation is priced in orbitals. The dense rung is capped twice because it pays twice, once to assemble 4^nao and once to diagonalise the sector, and pricing only the second was measurably wrong: at eight orbitals with two electrons the sector is 120 wide and instant while the assembly takes five seconds. The basis constants were written from recollection, so they are gated on three closed-shell molecules nobody here chose: RHF/STO-3G for water, methane and ammonia comes out −74.9631, −39.7268 and −55.4541 against published −74.9659, −39.727 and −55.4554 |
-| The planner (first compiler slice) | one question at three tolerances gets three algorithms; a model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | Cost models order the attempts and certificates arbitrate. Every rung logs predicted cost, measured cost, and measured error, so the receipt audits the cost model |
+| [H₂ from scratch (McMurchie-Davidson, s+p)](https://glassontin.github.io/sufficit/h2-bracket.html) | −1.137275944 ± 1.5·10⁻¹³ Ha | two-sided bracket over all particle sectors |
+| [Hydrogen chains up to 2²⁰ states](https://glassontin.github.io/sufficit/hchain-ladder.html) | 55 mHa/atom bracket at ℓ=7 | rigorous on both sides; no exact answer exists, and none is needed |
+| [Smeared spectral functions (HLT)](https://glassontin.github.io/sufficit/smeared-spectral.html) | resolution is part of the query | error bounded by the data; degrades to statistics when the data are noisy |
+| [Mori-Zwanzig closures](https://glassontin.github.io/sufficit/mz-closure.html) | certified linear tier and conformal empirical tier | gap-dependent bound, or distribution-free fail_p = 1/(n+1) |
+| [TFI quench on a 10⁶-site chain](https://glassontin.github.io/sufficit/lr-dispatch.html) | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | the boundary commutator is measured inside the cone; refuses when the light cone outruns the budget |
+| [Guiding-center drift (plasma hierarchy)](https://glassontin.github.io/sufficit/plasma-hierarchy.html) | the first ASYMPTOTIC-tier certificate | exponent proven, constant measured on a cheap large-ε ladder; refuses when the data contradict the exponent |
+| [Lorenz ⟨z⟩ (SOS transport bound)](https://glassontin.github.io/sufficit/sos-transport.html) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
+| [Breaking wave on a sea wall (SPH)](https://glassontin.github.io/sufficit/sph-wall.html) | delivered impulse certified, raw peak refused, and a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
+| [Tokamak equilibrium (Grad-Shafranov via FEniCSx)](https://glassontin.github.io/sufficit/gs-equilibrium.html) | guaranteed energy-norm bound within 1.6× of the true error | Prager-Synge with rectangle-exact constants; refuses past the contraction limit |
+| [The same equilibrium with a real pressure profile](https://glassontin.github.io/sufficit/gs-equilibrium.html) | certified where the contraction refuses, at a contraction factor of 33 against a limit of 1 | a peaked profile closes both the contraction and the cone route to ‖J⁻¹‖; Kantorovich certifies anyway, reaches the discrete equilibrium, and prints the mesh gap beside it |
+| The continuum answer, in three domains | k_eff, junction charge and tokamak flux each lifted off their meshes by one shared step | the distance to h→0 is measured off the ladder, so the pair takes the weaker tier and is never RIGOROUS; checked against closed forms twice and out of sample once |
+| [Gravitational-wave surrogates](https://glassontin.github.io/sufficit/gw-surrogate.html) | any parameter in ~0.3 ms | conformal mismatch bound with fail_p = 1/(n_cal+1); refuses outside the training range or above the detector's ε |
+| [Reactor criticality (k_eff)](https://glassontin.github.io/sufficit/criticality.html) | 1 pcm in 20 fission-source iterations; a mesh ladder then certifies the continuum answer to 0.57 pcm | Perron-Frobenius positivity rather than the variational theorem, four hypotheses machine-checked; the continuum half degrades to EMPIRICAL and says so |
+| [The same bracket on S_N transport](https://glassontin.github.io/sufficit/criticality.html) | runs unaltered on a different equation, with no new proof and no new code | the certificate needs a preserved cone, not symmetry; having both models measures the diffusion approximation itself: −9200 pcm at 5 mean free paths, −41 at 20 |
+| [pn junction (drift-diffusion Poisson)](https://glassontin.github.io/sufficit/junction.html) | a proof that an exact solution exists within a stated radius, then accuracy to half a per cent | Newton-Kantorovich, with ‖J⁻¹‖ priced by the reactor's M-matrix witness on completely different physics |
+| [The 2-RDM lower bound (chemistry)](https://glassontin.github.io/sufficit/rdm2-bound.html) | H₁₄ certified in 497 s at 2²⁸ Fock states, where the matrix cannot be formed; DQG width 8.0 mHa/atom at H₄ barely moves to 8.9 at H₁₂ | the 2-positivity set contains every N-representable 2-RDM, so its minimum lies below the true one; SCS proposes the multipliers and nothing trusts them |
+| [A molecular front door, on a real basis](https://glassontin.github.io/sufficit/molecule.html) | σ-polarised H₆ is a 16,777,216-state Fock space, past forming, certified in 54 s; STO-3G water lands 2.3 mHa below its own full CI | two rewrites on one query, priced in orbitals; the basis constants are gated on three closed-shell molecules nobody here chose |
+| [Water's density maximum (mW)](https://glassontin.github.io/sufficit/water-tmd.html) | bracketed at 250 ± 20 K by a 216-molecule ladder, the published value at its centre; a separately annealed 512-molecule run reproduces it at 260 ± 30 K | certified means of correlated series and a certified argmax, family-wise 0.05; the cold rung was refused for run length, and spending the budget showed the refused number was nearly two half-widths wrong |
+| [The planner (first compiler slice)](https://glassontin.github.io/sufficit/the-compiler.html) | one question at three tolerances gets three algorithms; a model-guided jump reaches the certifying rung in 4 runs where stepping takes 7 | cost models order the attempts and certificates arbitrate; every rung logs predicted cost, measured cost, and measured error, so the receipt audits the cost model |
 
 ## The search half
 
