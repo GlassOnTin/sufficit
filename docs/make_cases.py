@@ -212,11 +212,14 @@ def _background(slug):
 def page(title, eyebrow, h1, dek, sections, slug=None, recorded=None):
     """recorded names an input this page did NOT compute at build time.
 
-    Every other page here regenerates end to end, and the footer says so.
-    One cannot: molecular dynamics costs hours and the CI job already
-    spends thirty minutes on these pages. Rather than quietly weaken the
-    claim for all of them, that page passes `recorded` and gets a footer
-    that states exactly which half is live and which is not."""
+    Most pages here regenerate end to end, and the footer says so. Some
+    cannot afford the run that produces their inputs: hours of molecular
+    dynamics, a window diagonalization with a 36 GB working set, SPH
+    rungs near an hour each. Those runs happen on a machine that can
+    hold them, via record.py, and land in data/ with provenance. The
+    page restores the record, recomputes the certification from it
+    live, passes `recorded`, and gets a footer that states exactly
+    which half is live and which is not."""
     body = "\n".join(sections)
     if recorded is None:
         foot = (f"Every number and figure above comes from the run that "
@@ -224,10 +227,9 @@ def page(title, eyebrow, h1, dek, sections, slug=None, recorded=None):
     else:
         foot = (f"<strong>Partly recorded.</strong> Every certificate, "
                 f"table and figure above is computed by the run that built "
-                f"this page, {STAMP}, but the trajectories they read are "
-                f"not: {recorded} Nothing else on this site works this "
-                f"way. The certification is live and the simulation is "
-                f"not, and the reason is cost.")
+                f"this page, {STAMP}, but the expensive inputs they read "
+                f"are not: {recorded} The certification is live and the "
+                f"heavy run is not, and the reason is cost.")
     return f'''<!DOCTYPE html>
 <html lang="en">
 <meta charset="utf-8">
@@ -318,6 +320,36 @@ class Axes:
                        f'text-anchor="middle" class="board-text" '
                        f'font-size="10.5" opacity="0.7">{xfmt(v)}</text>')
         return "".join(out)
+
+
+def load_recorded(slug):
+    """Restore a recorded run written by record.py, and establish what
+    can honestly be claimed about it. The record carries a hash of
+    sufficit.py as it was when the run happened; if the library has
+    changed since, the recorded numbers are claims about a library
+    that no longer exists, and the footer must say so."""
+    import hashlib
+    import json
+    with open(os.path.join(ROOT, "data", f"{slug}.json")) as f:
+        rec = json.load(f)
+    with open(os.path.join(ROOT, "sufficit.py"), "rb") as f:
+        cur = hashlib.sha256(f.read()).hexdigest()[:12]
+    rec["library_changed"] = (
+        rec.get("provenance", {}).get("library_sha") != cur)
+    return rec
+
+
+def cite_recorded(rec, what):
+    """The sentence the footer prints for a recorded input."""
+    p = rec.get("provenance", {})
+    s = (f"{what} (data/{rec['slug']}.json, recorded {p.get('recorded')} "
+         f"on a {p.get('box')} box, {p.get('stack')}, library at commit "
+         f"{p.get('commit')}).")
+    if rec["library_changed"]:
+        s += (" The library has changed since that recording, so the "
+              "recorded numbers describe the library that ran them; "
+              "re-record to renew the claim.")
+    return s
 
 
 # ======================================================================
@@ -502,7 +534,13 @@ def ladder_case():
                 checks.append(c.value - c.err <= truth <= c.value + c.err)
         data[n] = pts
 
-    ax = Axes((2.7, 5.3), (40, 600), h=320, logy=True, mt=44)
+    rec = load_recorded("h10_ladder")
+    rec_pts = [(e, 2 * rec["ells"][str(e)]["err"] / 10 * 1000.0)
+               for e in (6, 7, 8)]
+    w10 = [w for _, w in data[10]] + [w for _, w in rec_pts]
+    mono = all(a >= b for a, b in zip(w10, w10[1:]))
+
+    ax = Axes((2.7, 8.3), (20, 600), h=320, logy=True, mt=44)
     series = []
     for n, cls in ((6, "blue"), (10, "rust")):
         xs = [p[0] for p in data[n]]
@@ -516,9 +554,22 @@ def ladder_case():
                           f'text-anchor="middle" class="board-text" '
                           f'font-size="10.5" fill="var(--{cls})">'
                           f'{y:.0f}</text>')
+    tail = [data[10][-1]] + rec_pts
+    tail_d = ax.path([p[0] for p in tail], [p[1] for p in tail])
+    series.append(f'<path d="{tail_d}" '
+                  f'fill="none" class="rust-ink" stroke-width="2" '
+                  f'stroke-dasharray="5 4" opacity="0.85"/>')
+    for x, y in rec_pts:
+        series.append(f'<circle cx="{ax.X(x):.1f}" cy="{ax.Y(y):.1f}" '
+                      f'r="5" fill="none" class="rust-ink" '
+                      f'stroke-width="2"/>'
+                      f'<text x="{ax.X(x):.1f}" y="{ax.Y(y) - 10:.1f}" '
+                      f'text-anchor="middle" class="board-text" '
+                      f'font-size="10.5" fill="var(--rust)">{y:.0f}</text>')
     svg = f'''<svg viewBox="0 0 640 320" role="img" aria-label="Certified
 bracket width per atom versus window length, log scale">
-{ax.grid((50, 100, 200, 400), (3, 4, 5), xfmt=lambda v: f"ℓ = {v:g}")}
+{ax.grid((25, 50, 100, 200, 400), (3, 4, 5, 6, 7, 8),
+         xfmt=lambda v: f"ℓ = {v:g}")}
 {"".join(series)}
 <text x="{ax.ml + 6}" y="{ax.mt - 24}" class="board-text" font-size="11">
 certified width, mHa per atom (log scale)</text></svg>'''
@@ -550,20 +601,29 @@ certified width, mHa per atom (log scale)</text></svg>'''
             f"<figure>{svg}<figcaption>Blue: H₆, where every point is "
             "checked against exact diagonalization in this run. Rust: "
             "H₁₀, a 2²⁰-dimensional problem with no exact answer to "
-            "compare against; none is needed. A separate recorded run "
-            "extends H₁₀ to ℓ=7 at 43 mHa/atom and ℓ=8 at 28 mHa/atom "
-            "using particle-number sectors (31 minutes and 2.9 hours "
-            "on a quiet 32-core box, the latter at 36 GB peak memory); "
-            "it is left out here to keep the page quick to "
-            "regenerate.</figcaption></figure>",
+            "compare against; none is needed. Hollow points restore "
+            "the recorded ladder this build cannot afford to rerun: "
+            f"{', '.join(f'ℓ={e} at {w:.0f}' for e, w in rec_pts)} "
+            "mHa/atom, costing "
+            f"{', '.join(f'{rec['ells'][str(e)]['wall_s'] / 60:.0f}' for e, _ in rec_pts)} "
+            "minutes, the last with a "
+            f"{rec['ells']['8']['peak_rss_gb']:.0f} GB working set. "
+            "The record's own caveat travels with it: ℓ=7 tiles "
+            "oddly and can move between numpy/scipy stacks; the even "
+            "rungs cannot.</figcaption></figure>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>H₆ containment against exact: <strong>{sum(checks)}/"
             f"{len(checks)}</strong>, at every ℓ.</li>"
+            f"<li>The H₁₀ ladder is monotone in ℓ across the live and "
+            f"recorded rungs: <strong>{'yes' if mono else 'NO'}</strong>."
+            "</li>"
             "<li>Widths halve, roughly, per unit ℓ. This chain is "
             "critical, the slowest case; gapped systems tighten "
             "faster.</li></ul>",
         ],
-        slug="hchain-ladder")
+        slug="hchain-ladder",
+        recorded=cite_recorded(rec, "the H₁₀ window runs at ℓ = 6, 7 "
+                                    "and 8"))
 
 
 # ======================================================================
@@ -997,6 +1057,51 @@ def sph_case():
     except ValueError:
         mid_refused = True
 
+    # the recorded funnel: restore the expensive ladder, recompute the
+    # certification from it live
+    rec = load_recorded("sph_funnel")
+    rJ = {c: {int(k): v for k, v in d.items()} for c, d in rec["J"].items()}
+    tris = ((16, 24, 36), (32, 48, 72), (64, 96, 144))
+    chks = {tris[0]: 48, tris[1]: 96, tris[2]: 192}
+    fun = {}
+    for cfg in ("plain", "tall", "low"):
+        for tri in tris:
+            try:
+                c = sf.gci_extrapolate([rJ[cfg][n] for n in tri],
+                                       [1.0 / n for n in tri])
+                fun[cfg, tri] = (c, abs(rJ[cfg][chks[tri]] - c.value)
+                                 <= c.err)
+            except ValueError:
+                fun[cfg, tri] = (None, None)
+    cpl = fun["plain", tris[2]][0]
+    clow = fun["low", tris[1]][0]
+    low_refuses_fine = fun["low", tris[2]][0] is None
+
+    NR = (16, 24, 32, 36, 48, 64, 72, 96, 144, 192)
+    axf = Axes((14, 220), (-0.012, 0.26), h=300, mt=40, logx=True)
+    fser = []
+    for cfg, cls in (("plain", "rust"), ("low", "blue")):
+        ys = [rJ[cfg][n] for n in NR]
+        fser.append(f'<path d="{axf.path(NR, ys)}" fill="none" '
+                    f'class="{cls}-ink" stroke-width="2" opacity="0.8"/>')
+        for x, y in zip(NR, ys):
+            fser.append(f'<circle cx="{axf.X(x):.1f}" '
+                        f'cy="{axf.Y(y):.1f}" r="4" class="{cls}-fill"/>')
+    for cfg, cls, tri in (("plain", "rust", tris[2]),
+                          ("low", "blue", tris[1])):
+        c = fun[cfg, tri][0]
+        x = axf.X(tri[-1]) + 8
+        fser.append(f'<line x1="{x:.1f}" x2="{x:.1f}" '
+                    f'y1="{axf.Y(c.value - c.err):.1f}" '
+                    f'y2="{axf.Y(c.value + c.err):.1f}" '
+                    f'class="{cls}-ink" stroke-width="3" opacity="0.45"/>')
+    svg_fun = f'''<svg viewBox="0 0 640 300" role="img" aria-label="Recorded
+impulse versus resolution with certified intervals">
+{axf.grid((0, 0.05, 0.1, 0.15, 0.2, 0.25), (16, 48, 96, 192))}
+{"".join(fser)}
+<text x="{axf.ml + 6}" y="{axf.mt - 20}" class="board-text" font-size="11">
+delivered impulse; rust: bare wall, blue: 12% berm (nres, log)</text></svg>'''
+
     # snapshots: particles colored by pressure, three moments
     W, Hp, ml, mt = 640, 150, 30, 8
     sc = (W - 2 * ml) / 4.0
@@ -1142,35 +1247,52 @@ against time at two resolutions: peaks scatter, areas agree better">
             "at all, which is what the refusal looks like when it is "
             "drawn.</figcaption></figure>",
             "<h2>A recorded funnel</h2>"
-            "<p>The ladders above are what a page build can afford. A "
-            "recorded run (data/sph_funnel.json, August 2026; the "
-            "finest rungs are 50-minute runs of 36,864 fluid "
-            "particles on a 32-core box) extends the "
-            "delivered-impulse ladder to nres = 64, 96, 144 with 192 "
-            "held out as the check, for all three obstacles, on the "
-            "same impulse functional the berm ladders use. Three "
-            "verdicts come back. The bare wall certifies 0.155 ± "
-            "0.084 at (64, 96, 144), and the 192 rung the certificate "
-            "never saw lands inside. The 40% berm is exactly zero at "
-            "every rung, so the certified zero survives to a rung "
-            "359× costlier (nres³) than the finest berm rung above. "
-            "And the 12% berm "
-            "still refuses: its ladder climbs 0.0319, 0.0410, 0.0504 "
-            "and then turns back to 0.0483 at nres = 192, so the "
-            "differences change sign and there is no asymptotic range "
-            "to extrapolate, even with the crest jet about fourteen "
-            "particles thick. The refusal was not a budget "
-            "artifact.</p>"
-            "<p>The same run caught the failure mode the teeth exist "
-            "for. On the low berm the triple (32, 48, 72) measures a "
-            "plausible order and certifies 0.033 ± 0.009, and its own "
-            "check rung at 96 lands inside, by 0.0008. The 144 rung "
-            "then lands 0.0175 from the certified value, twice the "
-            "certified error. A "
-            "lucky triplet can pass its first audit and still be "
-            "wrong, which is why the order is capped, the refusal has "
-            "teeth, and a certificate at the EMPIRICAL tier says "
-            "EMPIRICAL on it.</p>",
+            f"<figure>{svg_fun}<figcaption>The recorded ladder, "
+            "restored: delivered impulse against resolution for the "
+            "bare wall (rust) and the 12% berm (blue); the 40% berm "
+            "is identically zero at every rung and is not drawn. The "
+            "vertical bars are certified intervals this build "
+            "recomputes from the record: the bare wall's at "
+            "(64, 96, 144), which the 192 rung lands inside, and the "
+            "12% berm's at (32, 48, 72), the lucky triplet whose own "
+            "check rung at 96 lands inside and whose 144 rung lands "
+            "far outside. The blue curve turning back down at 192 is "
+            "what no asymptotic range looks like.</figcaption>"
+            "</figure>"
+            "<p>The finest rungs are 36,864 fluid particles and near "
+            "an hour each, so the runs are recorded and the "
+            "certification is recomputed from them at build time. "
+            "Three verdicts. The bare wall certifies "
+            f"{cpl.value:.3f} ± {cpl.err:.3f} at (64, 96, 144), and "
+            "the 192 rung the extrapolation never saw lands "
+            f"{'inside' if fun['plain', tris[2]][1] else 'OUTSIDE'}. "
+            "The 40% berm is exactly zero at every rung, so the "
+            "certified zero survives to a rung 359× costlier (nres³) "
+            "than the finest one the live ladders above run. And the "
+            "12% berm "
+            f"{'still refuses' if low_refuses_fine else 'NOW CERTIFIES'} "
+            "at (64, 96, 144): its ladder climbs "
+            f"{rJ['low'][64]:.4f}, {rJ['low'][96]:.4f}, "
+            f"{rJ['low'][144]:.4f} and then turns back to "
+            f"{rJ['low'][192]:.4f} at nres = 192, so the differences "
+            "change sign and there is no asymptotic range to "
+            "extrapolate, even with the crest jet about fourteen "
+            "particles thick. The refusal at this page's own budget "
+            "was never a budget artifact.</p>"
+            "<p>The same record holds the failure mode the teeth "
+            "exist for. On the low berm the triple (32, 48, 72) "
+            "measures a plausible order and certifies "
+            f"{clow.value:.3f} ± {clow.err:.3f}, and its own check "
+            "rung at 96 lands inside, by "
+            f"{clow.err - abs(rJ['low'][96] - clow.value):.4f}. The "
+            "144 rung then lands "
+            f"{abs(rJ['low'][144] - clow.value):.4f} from the "
+            "certified value, "
+            f"{abs(rJ['low'][144] - clow.value) / clow.err:.1f}× the "
+            "certified error. A lucky triplet can pass its first "
+            "audit and still be wrong, which is why the order is "
+            "capped, the refusal has teeth, and a certificate at the "
+            "EMPIRICAL tier says EMPIRICAL on it.</p>",
             "<h2>Checked in this run</h2><ul>"
             f"<li>Delivered impulse: <strong>{cJ.value:.3f} ± "
             f"{cJ.err:.3f}</strong>. The bar is wide, and the measured "
@@ -1188,9 +1310,18 @@ against time at two resolutions: peaks scatter, areas agree better">
             f"<li>Low berm (12%): <strong>"
             f"{'refused' if mid_refused else 'NOT REFUSED'}</strong>. "
             "The crest jet is under-resolved at this budget, and the "
-            "certificate says so.</li></ul>",
+            "certificate says so.</li>"
+            f"<li>Funnel recompute from the record: the 12% berm "
+            f"refused at (64, 96, 144): <strong>"
+            f"{'yes' if low_refuses_fine else 'NO'}</strong>; the "
+            f"bare wall certified there, with the 192 rung "
+            f"{'inside' if fun['plain', tris[2]][1] else 'OUTSIDE'}."
+            "</li></ul>",
         ],
-        slug="sph-wall")
+        slug="sph-wall",
+        recorded=cite_recorded(rec, "the impulse ladder it restores "
+                                    "(thirty runs at nres = 16 to 192, "
+                                    "the finest near an hour each)"))
 
 
 # ======================================================================

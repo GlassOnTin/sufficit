@@ -1,0 +1,35 @@
+{
+ "call": "h_chain_bracket(10, 1.8, ell)",
+ "ells": {
+  "5": {
+   "err": 0.586922,
+   "value": -5.684917,
+   "wall_s": 4.3
+  },
+  "6": {
+   "err": 0.349297,
+   "value": -5.561283,
+   "wall_s": 59.5
+  },
+  "7": {
+   "err": 0.214726,
+   "value": -5.426712,
+   "wall_s": 1881.2
+  },
+  "8": {
+   "err": 0.14108,
+   "peak_rss_gb": 36.4,
+   "value": -5.365392,
+   "wall_s": 10530.1
+  }
+ },
+ "note": "ell=7 tiles [7,3]; odd blocks carry a degenerate doublet, so its value is stack-dependent. Even rungs are not.",
+ "provenance": {
+  "box": "32-core x86_64",
+  "commit": "fba8b23",
+  "library_sha": "f7dc74181cfb",
+  "recorded": "2026-08-17",
+  "stack": "numpy 2.3.5 / scipy 1.16.3"
+ },
+ "slug": "h10_ladder"
+}

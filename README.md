@@ -132,7 +132,11 @@ amplification factor that refuses it.
 ## Measured results
 
 Each linked row has a case page that regenerates from a fresh run on
-every push; the narrative and the failure modes live there.
+every push; the narrative and the failure modes live there. Results too
+heavy for a page build (a 36 GB window, hour-long SPH rungs, hours of
+molecular dynamics) are recorded by `docs/record.py` into `data/` with
+provenance, restored and re-certified at build time, and named in the
+page's footer.
 
 | Problem | Result | Guarantee |
 |---|---|---|

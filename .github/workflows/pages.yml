@@ -96,7 +96,7 @@ jobs:
       # is already on GitHub and nothing on the site links to it.
       - name: Keep the build tooling out of the published site
         run: |
-          rm -rf docs/__pycache__ docs/.pytest_cache docs/make_cases.py
+          rm -rf docs/__pycache__ docs/.pytest_cache docs/make_cases.py docs/record.py
           echo "publishing:"; find docs -type f | sort
 
       - uses: actions/upload-pages-artifact@v5
