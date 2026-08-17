@@ -14,7 +14,7 @@ is written down.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 247 checks). Every claimed bound is
+([`test_sufficit.py`](test_sufficit.py), 250 checks). Every claimed bound is
 verified there against brute force, exact solutions, or independent
 constructions.
 
@@ -151,7 +151,7 @@ page's footer.
 | [TFI quench on a 10⁶-site chain](https://glassontin.github.io/sufficit/cases/lr-dispatch.html) | ⟨Z(t)⟩ ± 10⁻³ in ~2 s | the boundary commutator is measured inside the cone; refuses when the light cone outruns the budget |
 | [Guiding-center drift (plasma hierarchy)](https://glassontin.github.io/sufficit/cases/plasma-hierarchy.html) | the first ASYMPTOTIC-tier certificate | exponent proven, constant measured on a cheap large-ε ladder; refuses when the data contradict the exponent |
 | [Lorenz ⟨z⟩ (SOS transport bound)](https://glassontin.github.io/sufficit/cases/sos-transport.html) | [27, 27.001], sharp to the fixed-point witness | Gram identity and positive-definiteness proven in exact rational arithmetic |
-| [Breaking wave on a sea wall (SPH)](https://glassontin.github.io/sufficit/cases/sph-wall.html) | delivered impulse certified, raw peak refused, and a 40% berm certifiably zeroes the load | grid-convergence certificate with refusal and a capped measured order |
+| [Breaking wave on a sea wall (SPH)](https://glassontin.github.io/sufficit/cases/sph-wall.html) | delivered impulse certified, raw peak refused, a 40% berm certifiably zeroes the load; and a GPU ladder to 105,000 particles that finds the model's noise floor rather than its answer | grid-convergence certificate with refusal, a capped measured order, and a declared reproducibility floor. Rerunning the engine perturbs only the summation order, and on the same three rungs one draw measures a convergence order of 1.06 and certifies while another measures 0.15 and refuses. Both refuse once the floor is declared |
 | [Tokamak equilibrium (Grad-Shafranov via FEniCSx)](https://glassontin.github.io/sufficit/cases/gs-equilibrium.html) | guaranteed energy-norm bound within 1.6× of the true error | Prager-Synge with rectangle-exact constants; refuses past the contraction limit |
 | [The same equilibrium with a real pressure profile](https://glassontin.github.io/sufficit/cases/gs-equilibrium.html) | certified where the contraction refuses, at a contraction factor of 33 against a limit of 1 | a peaked profile closes both the contraction and the cone route to ‖J⁻¹‖; Kantorovich certifies anyway, reaches the discrete equilibrium, and prints the mesh gap beside it |
 | The continuum answer, in three domains | k_eff, junction charge and tokamak flux each lifted off their meshes by one shared step | the distance to h→0 is measured off the ladder, so the pair takes the weaker tier and is never RIGOROUS; checked against closed forms twice and out of sample once |
@@ -230,6 +230,14 @@ because every one of those measurements depends on it.
   is declared in the query. The H₂ bracket is ±10⁻¹³ hartree about the
   STO-3G model, which itself sits about 0.05 hartree from the molecule.
   Choosing a better model is a separate, stated step.
+- **A number with no error bar can still have one.** A ladder of bare
+  floats hides how well each rung reproduces, and a chaotic engine's
+  rungs reproduce to about a part in a thousand. Where that is
+  comparable to the differences between rungs, the measured
+  convergence order is fitted to rounding and the certificate is
+  fiction. Rungs now declare their reproducibility, and refining a
+  ladder past the point where its differences reach that floor makes
+  the answer worse rather than better.
 
 ## Neighbors
 

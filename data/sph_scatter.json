@@ -1,0 +1,100 @@
+{
+ "device": "gpu",
+ "draws": {
+  "live/16": [
+   0.093516,
+   0.093522,
+   0.09352,
+   0.093518,
+   0.093502,
+   0.093519
+  ],
+  "live/24": [
+   0.187319,
+   0.188163,
+   0.189034,
+   0.1903,
+   0.188731,
+   0.190278
+  ],
+  "live/36": [
+   0.261922,
+   0.261702,
+   0.26122,
+   0.260204,
+   0.261401,
+   0.259995
+  ],
+  "live/48": [
+   0.304284,
+   0.30341,
+   0.305711,
+   0.30514,
+   0.305801,
+   0.302533
+  ],
+  "low/144": [
+   0.049827,
+   0.051024,
+   0.048214,
+   0.047634,
+   0.049499,
+   0.049138
+  ],
+  "low/192": [
+   0.048202,
+   0.045769,
+   0.048585,
+   0.046074,
+   0.047127,
+   0.046094
+  ],
+  "plain/144": [
+   0.156584,
+   0.157561,
+   0.155332,
+   0.154478,
+   0.156076,
+   0.154363
+  ],
+  "plain/64": [
+   0.11739862396994576,
+   0.11762379491099911,
+   0.11708485189650289,
+   0.11837283533699303,
+   0.1157017606334026,
+   0.11691841912998518
+  ],
+  "plain/96": [
+   0.1393833686583836,
+   0.13937099345290502,
+   0.14067137350583608,
+   0.1390212026759389,
+   0.14080468720527803,
+   0.1390672559337445
+  ]
+ },
+ "functional": "sph_wall_impulse(nres, obstacle, T=3.2); the live/* rungs are the bare wall to T=4.6, which is the functional this page's own headline ladder uses",
+ "note": "Each draw perturbs the summation order by about one ulp and nothing else, the GPU force scatter being atomic. These numbers are NOT reproducible by construction: that is what they measure. Re-running the recipe gives statistically equivalent draws, not these ones. The CPU engine's single draw for the same rung lives in sph_funnel.json and counts as one more sample. Some draws were taken through cupyx.scatter_add and the rest through cupy.add.at, which is the same atomic operation under a renamed entry point.",
+ "obstacles": {
+  "low": [
+   2.9,
+   0.4,
+   0.12
+  ],
+  "plain": null,
+  "tall": [
+   2.9,
+   0.4,
+   0.4
+  ]
+ },
+ "provenance": {
+  "box": "32-core x86_64",
+  "commit": "49b3e7e",
+  "library_sha": "3169b53cb2f0",
+  "recorded": "2026-08-17",
+  "stack": "numpy 2.3.5 / scipy 1.16.3"
+ },
+ "slug": "sph_scatter"
+}

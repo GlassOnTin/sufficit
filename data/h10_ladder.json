@@ -23,11 +23,11 @@
    "wall_s": 10530.1
   }
  },
- "note": "ell=7 tiles [7,3]; odd blocks carry a degenerate doublet, so its value is stack-dependent. Even rungs are not.",
+ "note": "ell=7 tiles [7,3]; odd blocks carry a degenerate doublet, so its value is stack-dependent. Even rungs are not. Re-verified 2026-08-17 against the library at 3169b53cb2f0: ell=5 and ell=6 reproduce bit-identically. ell=7 (31 min) and ell=8 (2.9 h, 36 GB) were not re-run; they share the code path the cheap rungs just exercised.",
  "provenance": {
   "box": "32-core x86_64",
-  "commit": "fba8b23",
-  "library_sha": "f7dc74181cfb",
+  "commit": "49b3e7e",
+  "library_sha": "3169b53cb2f0",
   "recorded": "2026-08-17",
   "stack": "numpy 2.3.5 / scipy 1.16.3"
  },

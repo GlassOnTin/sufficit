@@ -1036,9 +1036,31 @@ def sph_case():
         o = runs[n]
         return float(np.sum(o["F"]) * (o["ts"][1] - o["ts"][0]))
 
+    # the measured reproducibility floors, one per functional: the
+    # "live" rungs are this page's own bare wall to T=4.6, the rest are
+    # sph_wall_impulse to T=3.2. A floor measured on one functional
+    # says nothing about the other, so they are kept apart.
+    rec = load_recorded("sph_funnel")
+    rJ = {c: {int(k): v for k, v in d.items()} for c, d in rec["J"].items()}
+    scat = load_recorded("sph_scatter")
+    stats = {}
+    for key, draws in scat["draws"].items():
+        cfg, n = key.split("/")
+        cpu = rJ.get(cfg, {}).get(int(n))     # the CPU engine's one draw
+        allv = list(draws) + ([cpu] if cpu is not None else [])
+        stats[key] = (float(np.mean(allv)), float(np.std(allv, ddof=1)),
+                      cpu)
+    sigma = max(s for k, (_m, s, _c) in stats.items()
+                if not k.startswith("live/"))
+    sigma_live = max(s for k, (_m, s, _c) in stats.items()
+                     if k.startswith("live/"))
+    live_ns = sorted(int(k.split("/")[1]) for k in stats
+                     if k.startswith("live/"))
+    s_min = stats[f"live/{live_ns[0]}"][1]
+
     hs = [1 / 16, 1 / 24, 1 / 36]
     cJ = sf.gci_extrapolate([J(n) for n in (16, 24, 36)], hs,
-                        p_floor=0.3)
+                        p_floor=0.3, noise=sigma_live)
     contained = abs(J(48) - cJ.value) <= cJ.err
     peaks = {n: float(np.max(runs[n]["F"])) for n in runs}
     try:
@@ -1058,9 +1080,9 @@ def sph_case():
         mid_refused = True
 
     # the recorded funnel: restore the expensive ladder, recompute the
-    # certification from it live
-    rec = load_recorded("sph_funnel")
-    rJ = {c: {int(k): v for k, v in d.items()} for c, d in rec["J"].items()}
+    # certification from it live. Left undeclared here on purpose: this
+    # is what the ladder says before anyone measures how well its rungs
+    # reproduce, and the section after it does the measuring.
     tris = ((16, 24, 36), (32, 48, 72), (64, 96, 144))
     chks = {tris[0]: 48, tris[1]: 96, tris[2]: 192}
     fun = {}
@@ -1101,6 +1123,114 @@ impulse versus resolution with certified intervals">
 {"".join(fser)}
 <text x="{axf.ml + 6}" y="{axf.mt - 20}" class="board-text" font-size="11">
 delivered impulse; rust: bare wall, blue: 12% berm (nres, log)</text></svg>'''
+
+    # ---- the reproducibility floor, and the fine ladder it refuses
+    gfun = load_recorded("sph_gpu_funnel")
+    gJ = {c: {int(k): v for k, v in d.items()}
+          for c, d in gfun["J"].items()}
+    NAME = {"plain": "bare wall", "low": "12% berm", "tall": "40% berm",
+            "live": "bare wall, T=4.6"}
+    SCAT_N = min(len(v) for v in scat["draws"].values())
+    srows = [(cfg, int(n), m, s, cpu)
+             for key, (m, s, cpu) in stats.items()
+             for cfg, n in [key.split("/")]]
+    scatter_table = (
+        '<table><thead><tr><th>configuration</th><th>nres</th>'
+        '<th>mean</th><th>sd</th><th>relative</th><th>CPU draw</th>'
+        '</tr></thead><tbody>'
+        + "".join(f"<tr><td>{NAME[c]}</td><td>{n}</td><td>{m:.4f}</td>"
+                  f"<td>{s:.2g}</td><td>{100 * s / m:.2g}%</td>"
+                  f"<td>{'—' if cpu is None else f'{cpu:.4f}'}</td></tr>"
+                  for c, n, m, s, cpu in sorted(srows))
+        + "</tbody></table>")
+
+    GTRI = (((64, 96, 144), 216), ((96, 144, 216), 324),
+            ((144, 216, 324), None))
+    grows, g_refused, g_total = [], 0, 0
+    for cfg in ("plain", "low"):
+        for tri, chk in GTRI:
+            vals = [gJ[cfg][n] for n in tri]
+            hs_g = [1.0 / n for n in tri]
+            g_total += 1
+            try:
+                c = sf.gci_extrapolate(vals, hs_g, noise=sigma)
+                v = f"certified {c.value:.4f} ± {c.err:.4f}"
+                if chk:
+                    ok = abs(gJ[cfg][chk] - c.value) <= c.err
+                    v += (f", and nres {chk} lands "
+                          f"{'inside' if ok else 'OUTSIDE'}")
+            except ValueError as e:
+                g_refused += 1
+                why = ("differences inside the rungs' own noise"
+                       if "reproducibility" in str(e)
+                       else "the order is not determined by the rungs"
+                       if "not determined" in str(e)
+                       else "differences change sign"
+                       if "not monotone" in str(e)
+                       else "measured order below the floor")
+                v = f"<strong>refused</strong>: {why}"
+            grows.append(f"<tr><td>{NAME[cfg]}</td>"
+                         f"<td>{tri[0]}, {tri[1]}, {tri[2]}</td>"
+                         f"<td>{v}</td></tr>")
+    gpu_table = ('<table><thead><tr><th>configuration</th><th>triple</th>'
+                 '<th>verdict</th></tr></thead><tbody>'
+                 + "".join(grows) + "</tbody></table>")
+
+    # the same ladder, two draws of the same model, opposite verdicts
+    coarse = (64, 96, 144)
+    hs_c = [1.0 / n for n in coarse]
+
+    def _order(D):
+        a, b = D[coarse[1]] - D[coarse[0]], D[coarse[2]] - D[coarse[1]]
+        return math.log(abs(a / b)) / math.log(1.5)
+
+    flip = {}
+    for tag, D in (("CPU", rJ["plain"]), ("GPU", gJ["plain"])):
+        for lbl, nz in (("bare", 0.0), ("floor", sigma)):
+            try:
+                c = sf.gci_extrapolate([D[n] for n in coarse], hs_c,
+                                       noise=nz)
+                flip[tag, lbl] = f"certifies {c.value:.4f} ± {c.err:.4f}"
+            except ValueError:
+                flip[tag, lbl] = "refuses"
+    flip_table = (
+        '<table><thead><tr><th>draw</th><th>rungs 64, 96, 144</th>'
+        '<th>measured order</th><th>verdict</th><th>with the floor '
+        'declared</th></tr></thead><tbody>'
+        + "".join(
+            f"<tr><td>{tag} engine</td><td>"
+            + ", ".join(f"{D[n]:.4f}" for n in coarse)
+            + f"</td><td>p = {_order(D):.2f}</td>"
+            f"<td>{flip[tag, 'bare']}</td>"
+            f"<td>{flip[tag, 'floor']}</td></tr>"
+            for tag, D in (("CPU", rJ["plain"]), ("GPU", gJ["plain"])))
+        + "</tbody></table>")
+
+    live_d = [J(24) - J(16), J(36) - J(24)]
+    live_margin = min(abs(x) for x in live_d) / (10 * sigma_live)
+
+    fine = (144, 216, 324)
+    walk = ", ".join(f"{gJ['plain'][n]:.4f}"
+                     for n in (64, 96, 144, 216, 324))
+    dlast = abs(gJ["plain"][324] - gJ["plain"][216])
+    try:
+        naive = sf.gci_extrapolate([gJ["plain"][n] for n in fine],
+                                   [1.0 / n for n in fine])
+        claim = (f"its finest triple certifies {naive.value:.4f} ± "
+                 f"{naive.err:.4f}, which reads as a "
+                 f"{100 * naive.err / naive.value:.1f}% answer. It is "
+                 f"fitted to a final difference of {dlast:.4f}, or "
+                 f"{dlast / sigma:.1f} times the noise in the rungs it "
+                 f"is measured from. That is the lucky triplet again, "
+                 f"caught this time before it was issued rather than "
+                 f"after a finer rung refuted it")
+    except ValueError:
+        claim = ("its finest triple refuses for its own reasons even "
+                 "before the floor is declared")
+    gpu_verdict = (
+        f"The bare wall is the one to read, because it is the ladder "
+        f"that behaves: monotone at every rung, {walk}. Without the "
+        f"floor declared, {claim}.")
 
     # snapshots: particles colored by pressure, three moments
     W, Hp, ml, mt = 640, 150, 30, 8
@@ -1279,6 +1409,79 @@ against time at two resolutions: peaks scatter, areas agree better">
             "extrapolate, even with the crest jet about fourteen "
             "particles thick. The refusal at this page's own budget "
             "was never a budget artifact.</p>"
+            "<h2>The floor underneath the ladder</h2>"
+            "<p>Every rung above is one number, and a number with no "
+            "error bar can still have one. The GPU engine scatters "
+            "forces with atomics, so rerunning it perturbs the "
+            "summation order by one ulp and changes nothing else: "
+            "same model, same arithmetic, same precision. A dam break "
+            "is chaotic, so that perturbation grows, and the question "
+            "is what it grows to by the time the impulse is "
+            f"integrated. Measured, {SCAT_N} draws per rung:</p>"
+            f"{scatter_table}"
+            f"<p>The floor is not a constant, and the way it moves is "
+            f"the whole story. Within this page's own functional it "
+            f"climbs steeply with resolution, from {s_min:.0e} at nres "
+            f"{live_ns[0]} to {sigma_live:.1e} by {live_ns[-1]}: a "
+            f"coarse flow has too few degrees of freedom to amplify "
+            f"anything, and a finer one has plenty. Within the "
+            f"funnel's functional, from nres 64 to 192, it has stopped "
+            f"climbing and sits between "
+            f"{min(s for k, (_m, s, _c) in stats.items() if not k.startswith('live/')):.2g}"
+            f" and {sigma:.2g} with no trend left in it. The "
+            f"amplification saturates once the flow is turbulent "
+            f"enough, and that saturated value is the floor. The CPU "
+            f"engine is bitwise reproducible, and that is not the same "
+            f"as being right: it returns the same draw every time, and "
+            f"its value sits inside this spread rather than apart from "
+            f"it.</p>"
+            "<p>Now put that beside what a ladder is for. Refining "
+            "makes the differences between rungs <em>smaller</em>, "
+            "because that is what converging means, while the floor "
+            "underneath them grows and then holds. The two trends run "
+            "at each other, and where they meet is where a ladder "
+            "stops being able to say anything. That point is real, it "
+            "is measurable, and on this engine it arrives before the "
+            "crest jet is resolved.</p>"
+            "<p>Here is what that floor does to a verdict. The same "
+            "three rungs, the same declared model, computed twice:</p>"
+            f"{flip_table}"
+            "<p>One draw certifies and the other refuses. Nothing "
+            "separates them but the order in which forces were added "
+            "up. The convergence order, which is what the certificate "
+            "rests on, is a <em>ratio</em> of differences, so it "
+            "amplifies the rungs' noise far more than the differences "
+            "themselves do: these two ladders differ by well under a "
+            "per cent in every rung and by a factor of seven in the "
+            "order they measure. A verdict that depends on which draw "
+            "you were handed is not a verdict.</p>"
+            "<p>So the certifier grew two teeth, and the rule for "
+            "both was already in the library. "
+            "<code>continuum_limit</code> refuses a ladder whose "
+            "rungs' brackets are within a factor of ten of the closest "
+            "pair of rungs, because a measured order would be fitting "
+            "bracket noise; it can, because its rungs are "
+            "certificates. <code>gci_extrapolate</code> takes floats, "
+            "so it could not, until the caller was given a way to "
+            "declare what the floats do not carry. Same factor of ten "
+            "for the differences, and then the same "
+            "<code>p_spread</code> the certifier already calls "
+            "unusable, applied to how far one sigma of rung noise "
+            "moves the order. With the measured "
+            f"{sigma:.4f} declared, both draws above refuse, and so "
+            "does the ladder at the fine end:</p>"
+            f"{gpu_table}"
+            f"<p>{gpu_verdict}</p>"
+            "<p>So the answer to the question the funnel was run to "
+            "settle is not the one it was run to find. Resolving the "
+            "crest jet does not flip the low berm, and past about "
+            "nres = 216 no ladder can flip anything: the differences "
+            "a finer rung buys are smaller than the noise in the "
+            "rungs themselves. That is a property of this declared "
+            "model, not of the certifier, and it is the honest "
+            "meaning of a refusal here. A better model, resolved the "
+            "same way, is a separate question and a separate "
+            "run.</p>"
             "<p>The same record holds the failure mode the teeth "
             "exist for. On the low berm the triple (32, 48, 72) "
             "measures a plausible order and certifies "
@@ -1311,12 +1514,27 @@ against time at two resolutions: peaks scatter, areas agree better">
             f"{'refused' if mid_refused else 'NOT REFUSED'}</strong>. "
             "The crest jet is under-resolved at this budget, and the "
             "certificate says so.</li>"
-            f"<li>Funnel recompute from the record: the 12% berm "
-            f"refused at (64, 96, 144): <strong>"
+            f"<li>Funnel recompute from the record, with nothing "
+            f"declared about the rungs: the 12% berm refused at "
+            f"(64, 96, 144): <strong>"
             f"{'yes' if low_refuses_fine else 'NO'}</strong>; the "
             f"bare wall certified there, with the 192 rung "
             f"{'inside' if fun['plain', tris[2]][1] else 'OUTSIDE'}."
-            "</li></ul>",
+            "</li>"
+            f"<li>Measured reproducibility floor, {SCAT_N} draws a "
+            f"rung: <strong>{sigma:.4f}</strong> for the funnel's "
+            f"functional, <strong>{sigma_live:.4f}</strong> for this "
+            f"page's. The bare wall's own ladder gives p = "
+            f"{_order(rJ['plain']):.2f} on one draw and p = "
+            f"{_order(gJ['plain']):.2f} on another, so the order it "
+            "measures is not a property of the model.</li>"
+            f"<li>With those floors declared, the certificate above "
+            f"survives with its closest pair of rungs at <strong>"
+            f"{live_margin:.1f}×</strong> the refusal threshold, while "
+            f"<strong>{g_refused}/{g_total}</strong> of the finer "
+            "recorded ladders refuse. Refining is what breaks them: "
+            "the differences shrink into a floor that does "
+            "not.</li></ul>",
         ],
         slug="sph-wall",
         recorded=cite_recorded(rec, "the impulse ladder it restores "

@@ -1,0 +1,50 @@
+{
+ "J": {
+  "low": {
+   "144": 0.051527,
+   "216": 0.045766,
+   "324": 0.046935,
+   "64": 0.026037,
+   "96": 0.044306
+  },
+  "plain": {
+   "144": 0.157567,
+   "216": 0.166008,
+   "324": 0.167983,
+   "64": 0.118843,
+   "96": 0.138807
+  },
+  "tall": {
+   "144": 0.0,
+   "216": 0.0,
+   "324": 0.0,
+   "64": 0.0,
+   "96": 0.0
+  }
+ },
+ "device": "gpu",
+ "functional": "sph_wall_impulse(nres, obstacle, T=3.2)",
+ "note": "nested geometric ladder: (64,96,144) checked at 216, (96,144,216) checked at 324, (144,216,324) unchecked. At 324 the box holds about 105,000 particles and the crest jet over the 12% berm is roughly 24 particles thick. Wall times not recorded: the runs shared the device with the scatter sampling, so they would time contention rather than the engine.",
+ "obstacles": {
+  "low": [
+   2.9,
+   0.4,
+   0.12
+  ],
+  "plain": null,
+  "tall": [
+   2.9,
+   0.4,
+   0.4
+  ]
+ },
+ "provenance": {
+  "box": "32-core x86_64",
+  "commit": "49b3e7e",
+  "library_sha": "3169b53cb2f0",
+  "recorded": "2026-08-17",
+  "stack": "numpy 2.3.5 / scipy 1.16.3"
+ },
+ "ratio": 1.5,
+ "slug": "sph_gpu_funnel"
+}

@@ -37,7 +37,9 @@
    "96": 0.0
   }
  },
+ "device": "cpu",
  "functional": "sph_wall_impulse(nres, obstacle, T=3.2)",
+ "note": "Re-verified 2026-08-17 after the engine gained a device parameter: five values across three obstacles and two resolutions reproduce bit-identically, the CPU path being the same operations in the same order.",
  "obstacles": {
   "low": [
    2.9,
@@ -53,8 +55,8 @@
  },
  "provenance": {
   "box": "32-core x86_64",
-  "commit": "fba8b23",
-  "library_sha": "f7dc74181cfb",
+  "commit": "49b3e7e",
+  "library_sha": "3169b53cb2f0",
   "recorded": "2026-08-17",
   "stack": "numpy 2.3.5 / scipy 1.16.3"
  },

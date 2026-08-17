@@ -2083,10 +2083,113 @@ def test_sph_berm_design_brackets():
 
 
 def test_sph_deterministic():
-    """No randomness anywhere: two runs are bitwise identical."""
+    """No randomness anywhere: two runs are bitwise identical. True of
+    the CPU engine only, and see test_sph_gpu_is_the_same_model for
+    what that does and does not buy."""
     a = sf.sph_dam_break(nres=12, T=1.0)
     b = sf.sph_dam_break(nres=12, T=1.0)
     assert np.array_equal(a["F"], b["F"])
+
+
+def test_sph_gpu_is_the_same_model():
+    """The GPU engine must be the same arithmetic in the same
+    precision, and the test that proves it has to be a SHORT one.
+
+    At fourteen steps the two engines agree to one ulp. They then
+    separate exponentially: measured at nres=24, the largest position
+    difference runs 2.2e-16 at t=0.01, 9.2e-15 at 0.1, 3.1e-13 at 0.5,
+    8.2e-11 at 1.0 and 3.4e-8 at 1.5, a rate near 13 per time unit. A
+    dam break is chaotic and this model has discrete switches in it (a
+    pair crossing the cutoff radius, the viscosity's vr < 0 branch), so
+    asserting agreement at the impact would be asserting something
+    false. What the short test pins is the only thing that is true of
+    both engines: they start from the same particles and compute the
+    same rates.
+
+    The device is therefore part of the declared model, and rungs from
+    different devices must not share a ladder."""
+    with pytest.raises(ValueError, match="device"):
+        sf.sph_dam_break(nres=8, T=0.01, device="tpu")
+    pytest.importorskip("cupy")
+    a = sf.sph_dam_break(nres=24, T=0.01, snapshots=(0.005,))
+    b = sf.sph_dam_break(nres=24, T=0.01, snapshots=(0.005,),
+                         device="gpu")
+    assert np.max(np.abs(a["px"] - b["px"])) < 1e-14
+    assert np.max(np.abs(a["py"] - b["py"])) < 1e-14
+    assert np.max(np.abs(a["rho"] - b["rho"])) < 1e-13
+    assert np.max(np.abs(a["F"] - b["F"])) < 1e-14
+    assert np.array_equal(a["fluid"], b["fluid"])
+    for (ta, xa, ya, pa), (tb, xb, yb, pb) in zip(a["snaps"], b["snaps"]):
+        assert ta == tb and np.max(np.abs(xa - xb)) < 1e-14
+        assert np.max(np.abs(pa - pb)) < 1e-12
+
+
+def test_gci_refuses_a_ladder_inside_its_own_rerun_noise():
+    """A bare float carries no error bar and can still have one.
+
+    continuum_limit already refuses a ladder whose rungs' brackets are
+    within a factor of ten of the closest pair of rungs, because a
+    measured order would be fitting bracket noise. It can, because its
+    rungs are certificates. gci_extrapolate takes floats, so until now
+    nothing stopped it fitting an order to rerun noise, and the SPH
+    sea wall turned out to be exactly that case. Same factor of ten,
+    with the caller supplying what the floats do not carry."""
+    hs = [1 / 64, 1 / 96, 1 / 144]
+    quiet = [0.0500, 0.0490, 0.0485]        # differences 1e-3 and 5e-4
+    c = sf.gci_extrapolate(quiet, hs, p_floor=0.3)
+    assert c.err < 0.002                    # tight, and unearned
+    with pytest.raises(ValueError, match="reproducibility"):
+        sf.gci_extrapolate(quiet, hs, p_floor=0.3, noise=0.0012)
+
+    # a ladder whose rungs are far apart and whose order is determined:
+    # second order exactly, at ratio 1.5, so both teeth pass and the
+    # declared floor only widens the answer
+    clean = [0.0, 0.1, 0.1 + 0.1 / 2.25]
+    base = sf.gci_extrapolate(clean, hs)
+    assert base.err == sf.gci_extrapolate(clean, hs, noise=0.0).err
+    withn = sf.gci_extrapolate(clean, hs, noise=0.0012)
+    assert withn.err == pytest.approx(base.err + 0.0012, rel=1e-9)
+    assert "reproducibility" in withn.provenance[0]
+
+    # exactly constant is not the same as constant within noise: the
+    # tall berm's impulse is 0.0 at every rung because no fluid ever
+    # reaches the wall
+    assert sf.gci_extrapolate([0.0, 0.0, 0.0], hs, noise=0.0012).err == 0.0
+    with pytest.raises(ValueError, match="standard deviation"):
+        sf.gci_extrapolate(clean, hs, noise=-1.0)
+
+
+def test_gci_refuses_an_order_its_ladder_cannot_determine():
+    """Clearing the difference gate is not enough, because the order is
+    a RATIO of differences and amplifies the noise the gate measures.
+
+    Measured, and this is why the check exists. The sea wall's bare
+    wall at nres 64, 96, 144: the CPU engine's draw gives p=1.06 and
+    certifies 0.155 +- 0.084, while a draw of the SAME model from the
+    GPU engine gives p=0.15 and refuses. The two differ only in
+    summation order. Both clear the ten-sigma gate. A verdict that
+    flips between reruns is not a verdict, so declaring the measured
+    reproducibility has to make both refuse, and it does.
+
+    The surprise is which ladders survive. Refining shrinks the
+    differences while the floor stays put, so a COARSE ladder can
+    determine an order that a finer one cannot."""
+    hs = [1 / 64, 1 / 96, 1 / 144]
+    cpu = [0.116820, 0.139771, 0.154732]      # recorded, CPU engine
+    gpu = [0.118843, 0.138807, 0.157567]      # recorded, GPU engine
+    sigma = 0.0012                            # measured, six draws a rung
+
+    assert sf.gci_extrapolate(cpu, hs).err > 0.0        # certifies
+    with pytest.raises(ValueError, match="unstable or below"):
+        sf.gci_extrapolate(gpu, hs)                     # refuses
+    for draw in (cpu, gpu):                             # both, once told
+        with pytest.raises(ValueError, match="not determined"):
+            sf.gci_extrapolate(draw, hs, noise=sigma)
+    # and the gate and this check are different teeth: the fine triple
+    # never reaches the order at all, its rungs being too close
+    with pytest.raises(ValueError, match="reproducibility"):
+        sf.gci_extrapolate([0.157567, 0.166008, 0.167983],
+                           [1 / 144, 1 / 216, 1 / 324], noise=sigma)
 
 
 def test_gs_certified_energy_bound_ladder():

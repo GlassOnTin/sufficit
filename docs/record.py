@@ -101,10 +101,93 @@ def sph_funnel():
             print(f"{cfg:5s} nres={n:3d}  J={val:.6f}  {dt:.0f}s",
                   flush=True)
     return {"functional": "sph_wall_impulse(nres, obstacle, T=3.2)",
-            "obstacles": SPH_OBSTACLES, "J": J, "wall_s": wall}
+            "obstacles": SPH_OBSTACLES, "J": J, "wall_s": wall,
+            "device": "cpu"}
 
 
-RECIPES = {"h10_ladder": h10_ladder, "sph_funnel": sph_funnel}
+def sph_scatter():
+    """How reproducible is the delivered impulse at a FIXED resolution?
+
+    The GPU engine scatters forces with atomics, so every run perturbs
+    the summation order by about one ulp and changes nothing else.
+    Repeated runs are therefore independent draws of the same model
+    under rounding, which is the cleanest probe available of how much
+    of a ladder difference is signal. The CPU value belongs in the
+    sample as one more draw: it is bitwise reproducible, and that only
+    means it always returns the same draw.
+
+    Needs cupy. Four at a time, because the engine is launch-bound at
+    these sizes and the device is not close to full."""
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing
+    # Two functionals, because the page runs two. The cfg rungs are
+    # sph_wall_impulse, integrated to T=3.2, which is what the recorded
+    # funnels use. The "live" rungs are the bare wall integrated to
+    # T=4.6, which is what the page's own headline ladder uses, and a
+    # floor measured on one functional says nothing about the other.
+    jobs = [(cfg, n, k) for cfg, n in (("plain", 64), ("plain", 96),
+                                       ("plain", 144), ("low", 144),
+                                       ("low", 192), ("live", 16),
+                                       ("live", 24), ("live", 36),
+                                       ("live", 48))
+            for k in range(6)]
+    draws = {}
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=4, mp_context=ctx) as ex:
+        for cfg, n, _k, J in ex.map(_sph_gpu_one, jobs):
+            draws.setdefault(f"{cfg}/{n}", []).append(J)
+            print(f"{cfg:5s} nres={n:3d}  J={J:.6f}", flush=True)
+    return {"functional": "sph_wall_impulse(nres, obstacle, T=3.2)",
+            "obstacles": SPH_OBSTACLES, "draws": draws, "device": "gpu",
+            "note": "each draw is one ulp-level perturbation of the "
+                    "summation order and nothing else; the CPU value "
+                    "for the same rung lives in sph_funnel.json and "
+                    "counts as one more draw"}
+
+
+def _sph_gpu_one(job):
+    cfg, n, k = job
+    sys.path.insert(0, ROOT)
+    import numpy
+    import sufficit as sf
+    if cfg == "live":       # the page's own functional: bare wall, T=4.6
+        o = sf.sph_dam_break(nres=n, device="gpu")
+        J = float(numpy.sum(o["F"]) * (o["ts"][1] - o["ts"][0]))
+    else:
+        J = sf.sph_wall_impulse(n, obstacle=SPH_OBSTACLES[cfg],
+                                device="gpu")
+    return cfg, n, k, J
+
+
+GPU_NRES = (64, 96, 144, 216, 324)
+
+
+def sph_gpu_funnel():
+    """The impulse ladder the CPU engine could not reach, on the GPU
+    engine and at a fixed refinement ratio of 1.5 throughout, so it
+    holds three overlapping triples: (64, 96, 144) checked at 216,
+    (96, 144, 216) checked at 324, and (144, 216, 324) with nothing
+    finer to check it. At 324 the crest jet over the 12% berm is about
+    24 particles thick, against 3 at the resolutions a page build can
+    afford. Every rung is GPU, because a ladder must not mix devices.
+    Needs cupy; about an hour on an RTX 5090."""
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing
+    jobs = sorted(((c, n, 0) for c in SPH_OBSTACLES for n in GPU_NRES),
+                  key=lambda j: -j[1])
+    J = {}
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=3, mp_context=ctx) as ex:
+        for cfg, n, _k, val in ex.map(_sph_gpu_one, jobs):
+            J.setdefault(cfg, {})[str(n)] = val
+            print(f"{cfg:5s} nres={n:3d}  J={val:.6f}", flush=True)
+    return {"functional": "sph_wall_impulse(nres, obstacle, T=3.2)",
+            "obstacles": SPH_OBSTACLES, "J": J, "device": "gpu",
+            "ratio": 1.5}
+
+
+RECIPES = {"h10_ladder": h10_ladder, "sph_funnel": sph_funnel,
+           "sph_scatter": sph_scatter, "sph_gpu_funnel": sph_gpu_funnel}
 
 
 def write(slug, payload):

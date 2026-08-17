@@ -5972,7 +5972,8 @@ def gw_surrogate_dispatch(sur, lam: float, tol: float) -> Certified:
 
 
 def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
-                    p_spread: float = 0.8, p_cap: float = 2.0) -> Certified:
+                    p_spread: float = 0.8, p_cap: float = 2.0,
+                    noise: float = 0.0) -> Certified:
     """Grid-convergence certificate for a resolution ladder, in the
     manner of Roache's GCI (the standard of engineering solution
     verification). vals are the functional at resolutions hs, coarse
@@ -5982,16 +5983,52 @@ def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
     asymptotic range: differences that change sign, a measured order
     below p_floor, or orders that disagree across triplets by more
     than p_spread. The certified value is the finest rung; err covers
-    the remaining distance to h -> 0 with the declared safety factor."""
+    the remaining distance to h -> 0 with the declared safety factor.
+
+    noise is one standard deviation of a single rung under a rerun
+    that changes nothing about the model, in the units of vals. It
+    exists because a bare float does not carry an error bar and can
+    still have one. continuum_limit already refuses a ladder whose
+    rungs' brackets are within a factor of ten of the closest pair of
+    rungs, on the ground that a measured order would be fitting
+    bracket noise; it can do that because its rungs are certificates.
+    Here the rungs are floats, so the caller has to supply what the
+    floats do not carry, and the SAME factor of ten then applies.
+    Default 0.0 is the old behaviour and moves no existing certificate.
+
+    Measured, and the reason this parameter exists: the SPH sea wall's
+    delivered impulse over a 12% berm reruns to 0.0012 at nres 144 and
+    0.0014 at 192 (six draws each, perturbing only the summation order
+    by one ulp), against ladder differences of about 0.002 across the
+    same rungs. That ladder was refused for a sign change, which was
+    the right verdict reached by the shallower of two reasons.
+
+    One standard deviation, rather than the observed range, because
+    the range grows with the number of draws and would make the
+    threshold depend on how long the measurer had. noise is added to
+    err as well: a certificate cannot be narrower than the
+    reproducibility of the number it certifies."""
     if len(vals) < 3 or len(vals) != len(hs):
         raise ValueError("need >= 3 ladder rungs")
     if any(b >= a for a, b in zip(hs, hs[1:])):
         raise ValueError("hs must decrease, coarse to fine")
+    if noise < 0:
+        raise ValueError("noise is a standard deviation, so >= 0")
     d = [b - a for a, b in zip(vals, vals[1:])]
     if all(x == 0 for x in d):
+        # exactly constant is not the same as constant within noise:
+        # the tall berm's impulse is 0.0 at every rung because no
+        # fluid ever touches the wall, and there is nothing to reread
         return Certified(vals[-1], 0.0, Tier.EMPIRICAL,
                          (f"gci rungs={len(vals)} ladder constant at every "
                           "rung; assumes the constancy persists to h=0",))
+    if noise > 0 and min(abs(x) for x in d) <= 10.0 * noise:
+        raise ValueError(
+            f"no asymptotic range: the closest pair of rungs "
+            f"({min(abs(x) for x in d):.3g}) is not clear of the rungs' own "
+            f"reproducibility ({noise:.3g} per rung), so a measured order "
+            f"would be fitting rerun noise; tighten the engine below "
+            f"{min(abs(x) for x in d) / 10:.2g} or coarsen the ladder")
     if any(x == 0 for x in d) or any(x * y <= 0 for x, y in zip(d, d[1:])):
         raise ValueError("no asymptotic range: ladder differences are "
                          f"not monotone ({', '.join(f'{x:.3g}' for x in d)})")
@@ -6000,6 +6037,34 @@ def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
         raise ValueError("ladder must use a fixed refinement ratio")
     ps = [math.log(abs(d[k] / d[k + 1])) / math.log(ratios[k])
           for k in range(len(d) - 1)]
+    if noise > 0:
+        # Clearing the gate above is not enough. The order is a RATIO
+        # of differences, so it amplifies the rungs' noise far more
+        # than the differences do, and a ladder can pass the gate and
+        # still not determine an order. Measured on the sea wall's
+        # bare-wall ladder at nres 64, 96, 144: one draw of the engine
+        # gives p=1.06 and certifies, another gives p=0.15 and refuses,
+        # the two differing only by summation order. A verdict that
+        # flips between reruns is not a verdict. So move each
+        # difference by one sigma (sqrt(2)*noise: a difference is
+        # between two rungs) and ask how far the order travels. More
+        # than p_spread is the same width this function already calls
+        # unusable when two triplets disagree by it; the disagreement
+        # here is between a ladder and its own rerun. The gate above
+        # guarantees |d| > 10*noise, so the denominators stay positive.
+        sd = math.sqrt(2.0) * noise
+        for k in range(len(d) - 1):
+            a, b = abs(d[k]), abs(d[k + 1])
+            span = (math.log((a + sd) / (b - sd))
+                    - math.log((a - sd) / (b + sd))) / math.log(ratios[k])
+            if span > p_spread:
+                raise ValueError(
+                    f"no asymptotic range: the measured order "
+                    f"{ps[k]:.2f} is not determined by this ladder -- one "
+                    f"sigma of rung noise ({noise:.3g}) moves it across "
+                    f"{span:.2f}, wider than the {p_spread:g} this "
+                    f"certifier calls unusable; the rungs must separate "
+                    f"further before an order means anything")
     if min(ps) < p_floor or max(ps) - min(ps) > p_spread:
         raise ValueError("no asymptotic range: measured orders "
                          f"{', '.join(f'{p:.2f}' for p in ps)} are unstable "
@@ -6010,12 +6075,13 @@ def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
     # p=5.1 on a wall-force peak whose finer rung fell outside the err)
     p = min(min(ps), p_cap)
     r_last = hs[-2] / hs[-1]
-    err = safety * abs(d[-1]) / (r_last ** p - 1.0)
-    return Certified(vals[-1], _up(err), Tier.EMPIRICAL,
-                     (f"gci rungs={len(vals)} order measured "
-                      f"p={p:.2f} (not proven) safety={safety:g}; assumes "
-                      "the asymptotic range seen on the ladder persists "
-                      "to h=0",))
+    err = safety * abs(d[-1]) / (r_last ** p - 1.0) + noise
+    prov = (f"gci rungs={len(vals)} order measured "
+            f"p={p:.2f} (not proven) safety={safety:g}; assumes "
+            "the asymptotic range seen on the ladder persists to h=0")
+    if noise > 0:
+        prov += f"; rung reproducibility {noise:.3g} carried in err"
+    return Certified(vals[-1], _up(err), Tier.EMPIRICAL, (prov,))
 
 
 def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
@@ -6086,33 +6152,70 @@ def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
 # honest tier says so.
 
 
-def _sph_pairs(px, py, rad):
+def _sph_device(device: str):
+    """The array module for an SPH run.
+
+    The device is part of the DECLARED model here, not an ambient
+    setting, which is why it is a parameter and not a global switch
+    like use_gpu. Two reasons, both measured below in
+    test_sph_gpu_matches_cpu. The pair loop scatters forces with
+    atomics on the GPU, so summation order is not fixed and two GPU
+    runs of the same input are not bitwise equal; the CPU engine is.
+    And a dam break is chaotic, so any difference grows. A ladder
+    whose rungs came from different devices would be a ladder over two
+    models, and the grid-convergence certificate would be reading that
+    difference as discretisation error. Recorded runs carry the device
+    in their provenance for the same reason."""
+    if device == "cpu":
+        return np
+    if device == "gpu":
+        import cupy
+        return cupy
+    raise ValueError(f"unknown SPH device {device!r}: 'cpu' or 'gpu'")
+
+
+def _sph_scatter_add(xp, a, idx, val):
+    """a[idx] += val with repeats accumulated, on either device. This
+    is the whole reason the GPU pays: numpy's add.at is a serial ufunc
+    loop, so it dominates the CPU engine, while the GPU does it with
+    atomics. Those atomics are also why the GPU engine is not bitwise
+    reproducible -- see _sph_device."""
+    xp.add.at(a, idx, val)
+
+
+def _sph_host(a):
+    """Back to numpy, from either device."""
+    return a.get() if hasattr(a, "get") else a
+
+
+def _sph_pairs(px, py, rad, xp=np):
     """All particle pairs closer than rad, via a cell-linked list.
-    Returns (i, j) index arrays with i < j."""
-    cx = np.floor(px / rad).astype(np.int64)
-    cy = np.floor(py / rad).astype(np.int64)
-    ncy = cy.max() - cy.min() + 3
+    Returns (i, j) index arrays with i < j. xp is the array module:
+    numpy for the CPU engine, cupy for the GPU one."""
+    cx = xp.floor(px / rad).astype(np.int64)
+    cy = xp.floor(py / rad).astype(np.int64)
+    ncy = int(cy.max() - cy.min() + 3)
     key = (cx - cx.min() + 1) * ncy + (cy - cy.min() + 1)
-    order = np.argsort(key, kind="stable")
+    order = xp.argsort(key, kind="stable")
     ks = key[order]
     ii, jj = [], []
     for dk in (0, ncy - 1, ncy, ncy + 1, 1):
         tgt = ks + dk
-        lo = np.searchsorted(ks, tgt, side="left")
-        hi = np.searchsorted(ks, tgt, side="right")
+        lo = xp.searchsorted(ks, tgt, side="left")
+        hi = xp.searchsorted(ks, tgt, side="right")
         n = hi - lo
-        src = np.repeat(np.arange(len(ks)), n)
+        src = xp.repeat(xp.arange(len(ks)), n)
         if len(src) == 0:
             continue
-        dst = np.repeat(lo, n) + (np.arange(len(src))
-                                  - np.repeat(np.cumsum(n) - n, n))
+        dst = xp.repeat(lo, n) + (xp.arange(len(src))
+                                  - xp.repeat(xp.cumsum(n) - n, n))
         if dk == 0:
             keep = dst > src
             src, dst = src[keep], dst[keep]
         ii.append(order[src])
         jj.append(order[dst])
-    i = np.concatenate(ii)
-    j = np.concatenate(jj)
+    i = xp.concatenate(ii)
+    j = xp.concatenate(jj)
     d2 = (px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2
     keep = d2 < rad * rad
     return i[keep], j[keep]
@@ -6120,14 +6223,26 @@ def _sph_pairs(px, py, rad):
 
 def sph_dam_break(nres: int = 18, tank=(4.0, 3.0), column=(1.0, 1.0),
                   T: float = 4.6, alpha: float = None,
-                  obstacle=None, snapshots=()):
+                  obstacle=None, snapshots=(), device: str = "cpu"):
     """Run the dam break and return the horizontal force history on
     the right wall. nres is particles per unit length; g = rho0 = 1;
     the bore reaches the wall near t ~ 2.2 for the default geometry.
     obstacle, if given, is (x0, width, height): a rectangular berm on
     the floor in the bore's path, built from the same boundary
     particles as the walls. Returns a dict with ts, F (wall force),
-    and particle snapshots at the requested times."""
+    and particle snapshots at the requested times.
+
+    device selects the engine, and it is a model declaration rather
+    than a tuning knob: see _sph_device. 'cpu' is the default, is
+    bitwise reproducible, and is what every certificate on the site
+    was computed from. 'gpu' runs the same arithmetic in the same
+    precision through cupy. It is not bitwise reproducible, because
+    the force scatter uses atomics, and it pays only once the problem
+    is big enough to hide the launch latency: measured on an RTX 5090
+    against 32 cores, the bare-wall run is 1.8x at nres=48, 11.1x at
+    96 and 23.0x at 144, and it is 2.3x SLOWER at 36. The geometry is
+    laid out in numpy either way, so both engines start from identical
+    particle positions."""
     if alpha is None:
         # Monaghan viscosity scales with h, so fixed alpha would give
         # each ladder rung a different fluid (measured: arrival times
@@ -6164,56 +6279,62 @@ def sph_dam_break(nres: int = 18, tank=(4.0, 3.0), column=(1.0, 1.0),
 
     px = np.concatenate([fx, bx])
     py = np.concatenate([fy, by])
-    vx = np.zeros_like(px)
-    vy = np.zeros_like(px)
-    rho = np.full(len(px), rho0)
     fluid = np.zeros(len(px), bool)
     fluid[:nf] = True
+
+    xp = _sph_device(device)
+    px, py = xp.asarray(px), xp.asarray(py)
+    fluid, right = xp.asarray(fluid), xp.asarray(right)
+    vx = xp.zeros_like(px)
+    vy = xp.zeros_like(px)
+    rho = xp.full(len(px), rho0)
 
     dt = 0.25 * h / c0
     nsteps = int(T / dt)
     ts = np.arange(nsteps) * dt
-    F = np.zeros(nsteps)
+    F = xp.zeros(nsteps)
     snaps, want = [], sorted(snapshots)
 
     a2 = 7.0 / (4.0 * math.pi * h * h)
 
     def rates():
-        i, j = _sph_pairs(px, py, rad)
+        i, j = _sph_pairs(px, py, rad, xp)
         dxij = px[i] - px[j]
         dyij = py[i] - py[j]
-        r = np.sqrt(dxij ** 2 + dyij ** 2)
+        r = xp.sqrt(dxij ** 2 + dyij ** 2)
         q = r / h
-        f1 = np.maximum(1.0 - 0.5 * q, 0.0)
+        f1 = xp.maximum(1.0 - 0.5 * q, 0.0)
         W = a2 * f1 ** 4 * (1.0 + 2.0 * q)
         gfac = -5.0 * a2 * f1 ** 3 / (h * h)     # grad W = gfac * (dx, dy)
         gx_, gy_ = gfac * dxij, gfac * dyij
         # density by summation every step: drift-free, unlike the
         # continuity form (measured: continuity drifted the hydrostatic
         # pressure to 1.9x at one resolution and 0 at another)
-        rho = np.full(len(px), m * a2)           # self term W(0)
-        np.add.at(rho, i, m * W)
-        np.add.at(rho, j, m * W)
+        rho = xp.full(len(px), m * a2)           # self term W(0)
+        _sph_scatter_add(xp, rho, i, m * W)
+        _sph_scatter_add(xp, rho, j, m * W)
         # free-surface WCSPH: kernel deficiency at the surface reads
         # rho < rho0, and the Tait EOS would turn that into strong
         # negative (tensile) pressure and blow the flow apart; clamp
-        p = np.maximum(B * ((rho / rho0) ** gamma - 1.0), 0.0)
+        p = xp.maximum(B * ((rho / rho0) ** gamma - 1.0), 0.0)
         dvx = vx[i] - vx[j]
         dvy = vy[i] - vy[j]
         vr = dvx * dxij + dvy * dyij
-        mu = np.where(vr < 0, h * vr / (r * r + 0.01 * h * h), 0.0)
+        mu = xp.where(vr < 0, h * vr / (r * r + 0.01 * h * h), 0.0)
         pi_ij = -alpha * c0 * mu / (0.5 * (rho[i] + rho[j]))
         fac = m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2 + pi_ij)
-        ax = np.zeros(len(px))
-        ay = np.zeros(len(px))
-        np.add.at(ax, i, -fac * gx_)
-        np.add.at(ay, i, -fac * gy_)
-        np.add.at(ax, j, fac * gx_)
-        np.add.at(ay, j, fac * gy_)
+        ax = xp.zeros(len(px))
+        ay = xp.zeros(len(px))
+        _sph_scatter_add(xp, ax, i, -fac * gx_)
+        _sph_scatter_add(xp, ay, i, -fac * gy_)
+        _sph_scatter_add(xp, ax, j, fac * gx_)
+        _sph_scatter_add(xp, ay, j, fac * gy_)
         ay[fluid] -= g
-        wallF = float(np.sum(np.where(right[j] & fluid[i], m * fac * gx_, 0.0))
-                      - np.sum(np.where(right[i] & fluid[j], m * fac * gx_,
-                                        0.0)))
+        # kept on the device: reading it back every step would put a
+        # synchronisation in the inner loop for a number nothing here
+        # branches on
+        wallF = (xp.sum(xp.where(right[j] & fluid[i], m * fac * gx_, 0.0))
+                 - xp.sum(xp.where(right[i] & fluid[j], m * fac * gx_, 0.0)))
         return rho, ax, ay, wallF
 
     for k in range(nsteps):
@@ -6225,10 +6346,11 @@ def sph_dam_break(nres: int = 18, tank=(4.0, 3.0), column=(1.0, 1.0),
         py[fluid] += dt * vy[fluid]
         if want and k * dt >= want[0]:
             pfl = B * ((rho[fluid] / rho0) ** gamma - 1.0)
-            snaps.append((want.pop(0), px[fluid].copy(), py[fluid].copy(),
-                          pfl))
-    return {"ts": ts, "F": F, "snaps": snaps, "n_fluid": nf, "dx": dx,
-            "px": px, "py": py, "rho": rho, "fluid": fluid, "B": B,
+            snaps.append((want.pop(0), _sph_host(px[fluid]).copy(),
+                          _sph_host(py[fluid]).copy(), _sph_host(pfl)))
+    return {"ts": ts, "F": _sph_host(F), "snaps": snaps, "n_fluid": nf,
+            "dx": dx, "px": _sph_host(px), "py": _sph_host(py),
+            "rho": _sph_host(rho), "fluid": _sph_host(fluid), "B": B,
             "gamma": gamma}
 
 
@@ -6243,13 +6365,15 @@ def wave_impact_force(F, ts, tau: float):
     return float(np.max((c[w:] - c[:-w]) / w))
 
 
-def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2) -> float:
+def sph_wall_impulse(nres: int, obstacle=None, T: float = 3.2,
+                     device: str = "cpu") -> float:
     """The queried functional: total horizontal impulse delivered to
     the right wall over the first T time units (momentum transferred
     by the impact). Robust where the raw peak is not: it integrates
     out both the pressure-spike scatter and the arrival-time jitter
-    between resolutions."""
-    out = sph_dam_break(nres=nres, T=T, obstacle=obstacle)
+    between resolutions. device picks the engine and must not be mixed
+    within one ladder; see _sph_device."""
+    out = sph_dam_break(nres=nres, T=T, obstacle=obstacle, device=device)
     return float(np.sum(out["F"]) * (out["ts"][1] - out["ts"][0]))
 
 
