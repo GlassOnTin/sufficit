@@ -14,7 +14,7 @@ is written down.
 
 Working research code: one module of certified rewrites
 ([`sufficit.py`](sufficit.py)) and one test suite
-([`test_sufficit.py`](test_sufficit.py), 250 checks). Every claimed bound is
+([`test_sufficit.py`](test_sufficit.py), 251 checks). Every claimed bound is
 verified there against brute force, exact solutions, or independent
 constructions.
 

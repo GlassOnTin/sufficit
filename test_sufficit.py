@@ -2192,6 +2192,32 @@ def test_gci_refuses_an_order_its_ladder_cannot_determine():
                            [1 / 144, 1 / 216, 1 / 324], noise=sigma)
 
 
+def test_continuum_limit_forwards_the_rerun_floor():
+    """continuum_limit already compares the rungs' CERTIFIED error
+    against the ladder differences. That is a different quantity from
+    how far a rung moves when the same computation runs again: a rung
+    can carry a tight bracket and still be irreproducible, which is
+    what the sea wall turned out to be. So the floor is forwarded to
+    gci_extrapolate rather than confused with the brackets.
+
+    Measured for the three ladders that call this, by perturbing their
+    assembled operators at 1e-15 relative: the reactor amplifies by
+    4.4x at N=25 rising to 100x at N=200 (largest rung shift 1.0e-13
+    against a closest rung pair of 5.7e-06), the junction by 0.8x, and
+    the tokamak flux is bit-identical. All three are contractive, so
+    none of them needs a declared floor. That is the measured result,
+    not the assumption it replaces."""
+    rungs = [sf.Certified(v, 1e-9, sf.Tier.RIGOROUS, ("rung",))
+             for v in (0.0, 0.1, 0.1 + 0.1 / 2.25)]
+    hs = [1 / 16, 1 / 24, 1 / 36]
+    base = sf.continuum_limit(rungs, hs, "test ladder")
+    assert base.err > 0.0
+    quiet = sf.continuum_limit(rungs, hs, "test ladder", noise=1e-4)
+    assert quiet.err == pytest.approx(base.err + 1e-4, rel=1e-9)
+    with pytest.raises(ValueError, match="reproducibility"):
+        sf.continuum_limit(rungs, hs, "test ladder", noise=0.01)
+
+
 def test_gs_certified_energy_bound_ladder():
     """Grad-Shafranov via FEniCSx with a Prager-Synge certificate: the
     guaranteed energy-norm bound must contain the measured error

@@ -6085,7 +6085,7 @@ def gci_extrapolate(vals, hs, safety: float = 3.0, p_floor: float = 0.5,
 
 
 def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
-                    unit: str = "") -> Certified:
+                    unit: str = "", noise: float = 0.0) -> Certified:
     """Turn a ladder of certificates about discretized models into one
     certificate about the thing being modelled. Every rung is rigorous
     about its own mesh and silent about the mesh itself. This adds the
@@ -6110,6 +6110,22 @@ def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
     refusal that prices the fix: tighten the rungs or coarsen the
     ladder.
 
+    That check reads the rungs' CERTIFIED error, which is not the same
+    quantity as how far a rung moves when the same computation is run
+    again. A rung can carry a tight bracket and still be irreproducible;
+    the sea wall is the measured case, where the chaos of a dam break
+    grows one ulp into a floor that swallowed the ladder differences.
+    noise is that second quantity, one standard deviation of a rung
+    under rerun, and it is forwarded to gci_extrapolate rather than used
+    here. Default 0.0 asserts nothing.
+
+    Measured for the three ladders that call this, by perturbing the
+    assembled operators at 1e-15 relative: the reactor amplifies by 4x
+    at N=25 rising to 100x at N=200, the junction by 0.8x, and the
+    tokamak flux likewise stays at rounding. These are contractive
+    problems, so nothing here needs the parameter -- which is worth
+    knowing, and is why it defaults to off rather than to a guess.
+
     scale and unit only make the refusal readable in the field's own
     units, 10^5 and pcm for a reactor, 1 and nC/cm^2 for a junction.
     They touch no bound."""
@@ -6126,7 +6142,7 @@ def continuum_limit(rungs, hs, label: str, scale: float = 1.0,
             f"convergence order would be fitting bracket noise; tighten "
             f"the per-rung tolerance below "
             f"{min(diffs) * scale / 10:.2g}{unit} or coarsen the ladder")
-    g = gci_extrapolate(vals, hs)
+    g = gci_extrapolate(vals, hs, noise=noise)
     fine = rungs[-1]
     return Certified(g.value, _up(g.err + fine.err), min(g.tier, fine.tier),
                      fine.provenance + g.provenance
