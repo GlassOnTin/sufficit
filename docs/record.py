@@ -167,9 +167,12 @@ def sph_gpu_funnel():
     engine and at a fixed refinement ratio of 1.5 throughout, so it
     holds three overlapping triples: (64, 96, 144) checked at 216,
     (96, 144, 216) checked at 324, and (144, 216, 324) with nothing
-    finer to check it. At 324 the crest jet over the 12% berm is about
-    24 particles thick, against 3 at the resolutions a page build can
-    afford. Every rung is GPU, because a ladder must not mix devices.
+    finer to check it. Measured on the recorded snapshots (see
+    sph_crest, which replaced an asserted thickness with this): the
+    fluid in a 0.2-wide strip past the crest is 62 particle spacings
+    deep at 324 against 3.5 at nres=27, the finest rung the page's own
+    berm ladder runs. Every rung is GPU, because a ladder must not mix
+    devices.
     Needs cupy; about an hour on an RTX 5090."""
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing
@@ -186,8 +189,46 @@ def sph_gpu_funnel():
             "ratio": 1.5}
 
 
+CREST_BOX = ((3.05, 3.70), (0.0, 0.50))
+
+
+def sph_crest():
+    """The crest jet at nres=324, cropped so a page can draw it.
+
+    The page argues that the 12% berm refuses because its jet is
+    under-resolved, and until now it asserted a thickness rather than
+    measuring one. This records the particles themselves. Only the
+    crop is kept: 9,317 of 104,976, because 105,000 SVG circles is 7 MB
+    and the argument lives at the crest.
+
+    Also records the count in a 0.2-wide window past the crest at any
+    height, which is the resolution-robust way to say how well the
+    sheet is resolved. A single vertical cut is not: the jet wanders,
+    so one cut catches spray at one resolution and a sheet at another.
+    Volume is well defined where a pointwise thickness is not."""
+    import numpy
+    sys.path.insert(0, ROOT)
+    import sufficit as sf
+    o = sf.sph_dam_break(nres=324, T=3.6, snapshots=(2.8,),
+                         obstacle=(2.9, 0.4, 0.12), device="gpu")
+    t, x, y, p = o["snaps"][0]
+    (a, b), (c, d) = CREST_BOX
+    m = (x >= a) & (x <= b) & (y >= c) & (y <= d)
+    pm = float(p[m].max())
+    return {"nres": 324, "device": "gpu", "t": round(float(t), 3),
+            "obstacle": [2.9, 0.4, 0.12],
+            "box": [list(CREST_BOX[0]), list(CREST_BOX[1])],
+            "dx": 1.0 / 324,
+            "x": [round(float(v), 3) for v in x[m]],
+            "y": [round(float(v), 3) for v in y[m]],
+            "p": [round(float(v) / pm, 2) for v in p[m]],
+            "window": {"x0": 3.30, "x1": 3.50,
+                       "count": int(((x >= 3.30) & (x < 3.50)).sum())}}
+
+
 RECIPES = {"h10_ladder": h10_ladder, "sph_funnel": sph_funnel,
-           "sph_scatter": sph_scatter, "sph_gpu_funnel": sph_gpu_funnel}
+           "sph_scatter": sph_scatter, "sph_gpu_funnel": sph_gpu_funnel,
+           "sph_crest": sph_crest}
 
 
 def write(slug, payload):

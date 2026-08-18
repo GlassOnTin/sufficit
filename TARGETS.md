@@ -1171,9 +1171,14 @@ magnitude, and may flip the low-berm refusal to a certificate. Measured,
 August 2026, and the answer turned out to be about the model rather than the
 mesh. A recorded ladder at nres = 64, 96, 144, 192 shows no asymptotic range
 for the low-berm impulse and its differences change sign between 144 and 192
-(data/sph_funnel.json). A GPU engine then took the same ladder to 324, where
-the crest jet is about twenty-four particles thick, and it still does not
-flip (data/sph_gpu_funnel.json).
+(data/sph_funnel.json). A GPU engine then took the same ladder to 324, and it
+still does not flip (data/sph_gpu_funnel.json). The jet is genuinely resolved
+there: the fluid in a 0.2-wide strip past the crest is 62 particle spacings
+deep, against 3.5 at nres = 27, the finest rung the page's own berm ladder
+runs (data/sph_crest.json). Earlier notes claimed twenty-four against three,
+by scaling an old estimate rather than measuring; the depth those particles
+represent is also still moving, 0.130 to 0.190, so the flow has not settled
+either.
 
 The reason is a floor, and it is now measured rather than suspected. Rerunning
 the engine perturbs only the summation order, by one ulp, and the flow's chaos

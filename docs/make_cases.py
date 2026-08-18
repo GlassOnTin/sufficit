@@ -1124,6 +1124,63 @@ impulse versus resolution with certified intervals">
 <text x="{axf.ml + 6}" y="{axf.mt - 20}" class="board-text" font-size="11">
 delivered impulse; rust: bare wall, blue: 12% berm (nres, log)</text></svg>'''
 
+    # ---- the crest jet, at this page's budget and at nres=324
+    crest = load_recorded("sph_crest")
+    (cx0, cx1), (cy0, cy1) = crest["box"]
+    CW, CH, CM = 312, 250, 6           # two panels side by side
+    csc = (CW - 2 * CM) / (cx1 - cx0)
+
+    def crest_panel(xs, ys, ps, dx, ox):
+        r = max(0.7, 0.5 * csc * dx)
+        out = [f'<rect x="{ox + CM}" y="{CM}" width="{CW - 2 * CM}" '
+               f'height="{CH - 2 * CM}" fill="none" class="board-ink" '
+               f'opacity="0.35"/>']
+        bx0, bw, bh = 2.9, 0.4, 0.12   # the berm, drawn from geometry
+        out.append(
+            f'<rect x="{ox + CM + csc * (max(bx0, cx0) - cx0):.1f}" '
+            f'y="{CH - CM - csc * bh:.1f}" '
+            f'width="{csc * (bx0 + bw - max(bx0, cx0)):.1f}" '
+            f'height="{csc * bh:.1f}" class="board-ink" opacity="0.18"/>')
+        # r goes on every circle, not on the parent group: r is not an
+        # inherited SVG property, so a group-level r renders nothing
+        for cls, sel in (("blue-fill", ps <= 0.12), ("rust-fill", ps > 0.12)):
+            pts = "".join(
+                f'<circle cx="{ox + CM + csc * (x - cx0):.1f}" '
+                f'cy="{CH - CM - csc * (y - cy0):.1f}" r="{r:.1f}"/>'
+                for x, y in zip(xs[sel], ys[sel]))
+            out.append(f'<g class="{cls}">{pts}</g>')
+        return "".join(out)
+
+    # the live half: the finest rung this page's own berm ladder runs
+    LOW = 27
+    lo = sf.sph_dam_break(nres=LOW, T=3.6, snapshots=(crest["t"],),
+                          obstacle=tuple(crest["obstacle"]))
+    _t, lx, ly, lp = lo["snaps"][0]
+    lm = ((lx >= cx0) & (lx <= cx1) & (ly >= cy0) & (ly <= cy1))
+    lpm = float(lp[lm].max()) if lm.any() and lp[lm].max() > 0 else 1.0
+
+    def window_depth(count, dx):
+        """Fluid volume in the 0.2-wide window past the crest, as a mean
+        depth and as a count of particle spacings. A volume is well
+        defined where a pointwise thickness is not: the jet wanders, so
+        one vertical cut catches spray at one resolution and a sheet at
+        another."""
+        depth = count * dx * dx / 0.2
+        return depth, depth / dx
+
+    n_lo = int(((lx >= 3.30) & (lx < 3.50)).sum())
+    dep_lo, sp_lo = window_depth(n_lo, 1.0 / LOW)
+    dep_hi, sp_hi = window_depth(crest["window"]["count"], crest["dx"])
+    svg_crest = f'''<svg viewBox="0 0 {2 * CW} {CH}" role="img"
+aria-label="The crest jet at two resolutions, same crop and scale">
+{crest_panel(lx[lm], ly[lm], lp[lm] / lpm, 1.0 / LOW, 0)}
+{crest_panel(np.array(crest["x"]), np.array(crest["y"]),
+             np.array(crest["p"]), crest["dx"], CW)}
+<text x="{CM + 8}" y="{CM + 18}" class="board-text" font-size="11">
+nres = {LOW}, this page's budget</text>
+<text x="{CW + CM + 8}" y="{CM + 18}" class="board-text" font-size="11"
+      fill="var(--rust)">nres = 324, recorded</text></svg>'''
+
     # ---- the reproducibility floor, and the fine ladder it refuses
     gfun = load_recorded("sph_gpu_funnel")
     gJ = {c: {int(k): v for k, v in d.items()}
@@ -1406,9 +1463,38 @@ against time at two resolutions: peaks scatter, areas agree better">
             f"{rJ['low'][144]:.4f} and then turns back to "
             f"{rJ['low'][192]:.4f} at nres = 192, so the differences "
             "change sign and there is no asymptotic range to "
-            "extrapolate, even with the crest jet about fourteen "
-            "particles thick. The refusal at this page's own budget "
-            "was never a budget artifact.</p>"
+            "extrapolate. The refusal at this page's own budget was "
+            "never a budget artifact.</p>"
+            "<h2>What the resolution bought</h2>"
+            f"<figure>{svg_crest}<figcaption>The jet leaving the berm "
+            f"crest at t = {crest['t']:g}, the same crop and the same "
+            "scale at both resolutions; the berm is the grey block. "
+            "Left is the finest rung this page's own berm ladder runs, "
+            "and the sheet it is arguing about is a scatter of "
+            "particles. Right is the recorded run, drawn from "
+            f"{len(crest['x']):,} of its {104976:,} fluid particles, "
+            "the rest being outside the crop. Rust marks the higher "
+            "pressures.</figcaption></figure>"
+            "<p>This page used to assert a jet thickness and never "
+            "measured one, so here is the measurement. Counting the "
+            "fluid in a strip 0.2 wide just past the crest, and "
+            "reporting it as a mean depth rather than a single "
+            "vertical cut, because the jet wanders and one cut catches "
+            f"spray at one resolution and a sheet at another: nres = "
+            f"{LOW} holds {n_lo} particles there, a depth of "
+            f"{dep_lo:.3f}, which is {sp_lo:.1f} particle spacings. "
+            f"nres = 324 holds {crest['window']['count']:,}, a depth "
+            f"of {dep_hi:.3f}, which is {sp_hi:.0f} spacings.</p>"
+            "<p>Both halves of that matter. Seventeen times more "
+            "particles across the sheet is what the GPU bought, and it "
+            "is why the earlier claim of a jet three particles thick "
+            "against twenty-four was worth checking rather than "
+            "repeating. But the depth those particles represent is "
+            f"still moving, {dep_lo:.3f} against {dep_hi:.3f}, so the "
+            "flow itself has not settled either. A better-resolved "
+            "picture of an unconverged quantity is still an "
+            "unconverged quantity, which is the whole reason the "
+            "ladder above refuses.</p>"
             "<h2>The floor underneath the ladder</h2>"
             "<p>Every rung above is one number, and a number with no "
             "error bar can still have one. The GPU engine scatters "
